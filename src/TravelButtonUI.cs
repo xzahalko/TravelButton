@@ -1372,13 +1372,34 @@ public class TravelButtonUI : MonoBehaviour
             targetPos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
             TravelButtonMod.LogInfo($"AttemptTeleportToCity: using explicit coords {targetPos.Value}");
         }
+        else if (targetPos == null && city.coords != null)
+        {
+            TravelButtonMod.LogWarning($"AttemptTeleportToCity: coords provided but length < 3 for {city.name}. coords.length={city.coords.Length}");
+        }
 
         if (targetPos == null)
         {
-            TravelButtonMod.LogError($"AttemptTeleportToCity: no valid target for {city.name}. Aborting teleport.");
+            // Extra attempt: try to find a scene object with the city's name (case-insensitive)
+            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var tr in allTransforms)
+            {
+                if (tr.name.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    targetPos = tr.position;
+                    TravelButtonMod.LogInfo($"AttemptTeleportToCity: fallback found scene object '{tr.name}' for city '{city.name}' at {targetPos.Value}");
+                    break;
+                }
+            }
+        }
+
+        if (targetPos == null)
+        {
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            TravelButtonMod.LogError($"AttemptTeleportToCity: no valid target for {city.name} (scene='{scene.name}'). Aborting teleport.");
             return false;
         }
 
+        // Locate player transform more robustly
         Transform playerTransform = null;
         var tagged = GameObject.FindWithTag("Player");
         if (tagged != null)
@@ -1389,33 +1410,41 @@ public class TravelButtonUI : MonoBehaviour
 
         if (playerTransform == null)
         {
-            string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player" };
+            string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player", "PlayerController", "LocalPlayer" };
             foreach (var tname in playerTypeCandidates)
             {
-                var t = Type.GetType(tname + ", Assembly-CSharp");
-                if (t != null)
+                try
                 {
-                    var objs = UnityEngine.Object.FindObjectsOfType(t);
-                    if (objs != null && objs.Length > 0)
+                    var t = Type.GetType(tname + ", Assembly-CSharp");
+                    if (t != null)
                     {
-                        var comp = objs[0] as Component;
-                        if (comp != null)
+                        var objs = UnityEngine.Object.FindObjectsOfType(t);
+                        if (objs != null && objs.Length > 0)
                         {
-                            playerTransform = comp.transform;
-                            TravelButtonMod.LogInfo($"AttemptTeleportToCity: found player via type {tname}.");
-                            break;
+                            var comp = objs[0] as Component;
+                            if (comp != null)
+                            {
+                                playerTransform = comp.transform;
+                                TravelButtonMod.LogInfo($"AttemptTeleportToCity: found player via type {tname} (object name='{comp.name}').");
+                                break;
+                            }
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogWarning($"AttemptTeleportToCity: exception checking type {tname}: {ex.Message}");
                 }
             }
         }
 
         if (playerTransform == null)
         {
-            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-            foreach (var tr in allTransforms)
+            var allTransforms2 = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var tr in allTransforms2)
             {
-                if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    tr.name.IndexOf("pc_", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     playerTransform = tr;
                     TravelButtonMod.LogInfo($"AttemptTeleportToCity: found player by name heuristic: {tr.name}");
@@ -1430,21 +1459,131 @@ public class TravelButtonUI : MonoBehaviour
             return false;
         }
 
-        try
+        // Helper: perform teleport using the best available API
+        bool TrySetTransformPosition(Transform plyTransform, Vector3 pos)
         {
-            playerTransform.position = targetPos.Value;
-            var rb = playerTransform.GetComponent<Rigidbody>();
-            if (rb != null)
+            try
             {
-                rb.velocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
+                // Try NavMeshAgent warp first if present (use reflection to avoid compile-time dependency on UnityEngine.AIModule)
+                try
+                {
+                    var navAgentType = Type.GetType("UnityEngine.AI.NavMeshAgent, UnityEngine.AIModule");
+                    if (navAgentType != null)
+                    {
+                        var agentComp = plyTransform.GetComponent(navAgentType);
+                        if (agentComp != null)
+                        {
+                            // check isOnNavMesh property
+                            var isOnNavMeshProp = navAgentType.GetProperty("isOnNavMesh");
+                            bool isOnNavMesh = false;
+                            if (isOnNavMeshProp != null)
+                            {
+                                var val = isOnNavMeshProp.GetValue(agentComp);
+                                if (val is bool b) isOnNavMesh = b;
+                            }
+
+                            if (isOnNavMesh)
+                            {
+                                var warpMethod = navAgentType.GetMethod("Warp", new Type[] { typeof(Vector3) });
+                                if (warpMethod != null)
+                                {
+                                    warpMethod.Invoke(agentComp, new object[] { pos });
+                                    TravelButtonMod.LogInfo("AttemptTeleportToCity: teleported using NavMeshAgent.Warp (via reflection).");
+                                    return true;
+                                }
+                            }
+                            else
+                            {
+                                TravelButtonMod.LogWarning("AttemptTeleportToCity: NavMeshAgent found but not on NavMesh. Falling back.");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogWarning("AttemptTeleportToCity: NavMeshAgent reflection attempt failed: " + ex.Message);
+                }
+
+                // Try CharacterController: disable/enable around position set
+                var cc = plyTransform.GetComponent<CharacterController>();
+                if (cc != null)
+                {
+                    cc.enabled = false;
+                    plyTransform.position = pos;
+                    cc.enabled = true;
+                    TravelButtonMod.LogInfo("AttemptTeleportToCity: teleported using CharacterController disable/enable.");
+                    return true;
+                }
+
+                // Try Rigidbody.MovePosition / setting rigidbody position
+                var rb = plyTransform.GetComponent<Rigidbody>();
+                if (rb != null)
+                {
+                    // If it is kinematic, set transform, otherwise set rb.position and zero velocity
+                    if (rb.isKinematic)
+                    {
+                        plyTransform.position = pos;
+                    }
+                    else
+                    {
+                        rb.position = pos;
+                        rb.velocity = Vector3.zero;
+                        rb.angularVelocity = Vector3.zero;
+                    }
+                    TravelButtonMod.LogInfo("AttemptTeleportToCity: teleported using Rigidbody reposition.");
+                    return true;
+                }
+
+                // Try parent's rigidbody (some setups attach movement to parent)
+                if (plyTransform.parent != null)
+                {
+                    var parentRb = plyTransform.parent.GetComponent<Rigidbody>();
+                    if (parentRb != null)
+                    {
+                        parentRb.position = pos;
+                        parentRb.velocity = Vector3.zero;
+                        parentRb.angularVelocity = Vector3.zero;
+                        TravelButtonMod.LogInfo("AttemptTeleportToCity: teleported by moving parent Rigidbody.");
+                        return true;
+                    }
+                }
+
+                // Final fallback: set transform.position directly
+                plyTransform.position = pos;
+                TravelButtonMod.LogInfo("AttemptTeleportToCity: teleported by setting transform.position (fallback).");
+                return true;
             }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogError("AttemptTeleportToCity: teleport attempt failed: " + ex);
+                return false;
+            }
+        }
+
+        // If the found transform is not root of character, try to use root transform (some prefabs place the visible character below a root)
+        Transform effectiveTransform = playerTransform;
+        if (playerTransform.root != null && playerTransform.root != playerTransform)
+        {
+            TravelButtonMod.LogInfo($"AttemptTeleportToCity: player transform root is '{playerTransform.root.name}', using root for teleport attempts.");
+            effectiveTransform = playerTransform.root;
+        }
+
+        // Try teleporting; if it fails on the effectiveTransform, try using the original transform as a last attempt
+        bool teleported = TrySetTransformPosition(effectiveTransform, targetPos.Value);
+        if (!teleported && effectiveTransform != playerTransform)
+        {
+            TravelButtonMod.LogWarning("AttemptTeleportToCity: teleport via root failed, trying original player transform.");
+            teleported = TrySetTransformPosition(playerTransform, targetPos.Value);
+        }
+
+        if (teleported)
+        {
             TravelButtonMod.LogInfo($"AttemptTeleportToCity: teleported player to {targetPos.Value}.");
             return true;
         }
-        catch (Exception ex)
+        else
         {
-            TravelButtonMod.LogError("AttemptTeleportToCity: teleport failed: " + ex);
+            TravelButtonMod.LogError("AttemptTeleportToCity: teleport strategies exhausted and all failed.");
             return false;
         }
     }
