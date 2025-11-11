@@ -7,7 +7,7 @@ using System.IO;
 using UnityEngine;
 
 // Plugin GUID should be unique. Replace with your identifier.
-[BepInPlugin("com.xzahalko.outward.defmod", "OutwardDefMod", "0.1.0")]
+[BepInPlugin("com.deep.outward.defmod", "OutwardDefMod", "0.1.0")]
 public class OutwardDefMod : BaseUnityPlugin
 {
     public static ManualLogSource LogStatic;
@@ -33,7 +33,7 @@ public class OutwardDefMod : BaseUnityPlugin
 
         try
         {
-            harmony = new Harmony("com.xzahalko.outward.defmod.harmony");
+            harmony = new Harmony("com.deep.outward.defmod.harmony");
             // Example: add Harmony patches if/when you have a target method.
             // harmony.PatchAll(Assembly.GetExecutingAssembly());
         }
