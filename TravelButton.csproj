@@ -9,7 +9,7 @@
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 
-  <!-- This csproj expects a local `libs` folder (project-root/libs) that contains:
+  <!-- This csproj expects a local `lib` folder (project-root/lib) that contains:
        - BepInEx.dll
        - 0Harmony.dll
        - UnityEngine.CoreModule.dll
@@ -22,48 +22,39 @@
       <HintPath>lib\Assembly-CSharp.dll</HintPath>
     </Reference>
     <Reference Include="BepInEx">
-      <HintPath>libs\BepInEx.dll</HintPath>
+      <HintPath>lib\BepInEx.dll</HintPath>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>libs\0Harmony.dll</HintPath>
+      <HintPath>lib\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine">
       <HintPath>lib\UnityEngine.dll</HintPath>
-    </Reference>
-    <Reference Include="UnityEngine.CoreModule" Condition="Exists('libs\UnityEngine.CoreModule.dll')">
-      <HintPath>libs\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>lib\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
     <!-- IMGUI module: provides GUI, GUILayout, GUIStyle -->
-    <Reference Include="UnityEngine.IMGUIModule" Condition="Exists('libs\UnityEngine.IMGUIModule.dll')">
-      <HintPath>libs\UnityEngine.IMGUIModule.dll</HintPath>
-    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>lib\UnityEngine.IMGUIModule.dll</HintPath>
     </Reference>
     <!-- TextRendering module: provides TextAnchor and related types -->
-    <Reference Include="UnityEngine.TextRenderingModule" Condition="Exists('libs\UnityEngine.TextRenderingModule.dll')">
-      <HintPath>libs\UnityEngine.TextRenderingModule.dll</HintPath>
-    </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
       <HintPath>lib\UnityEngine.TextRenderingModule.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>libs\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>lib\UnityEngine.UIModule.dll</HintPath>
       <Private>True</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>libs\UnityEngine.UI.dll</HintPath>
+      <HintPath>lib\UnityEngine.UI.dll</HintPath>
       <Private>True</Private>
     </Reference>	
   <Reference Include="UnityEngine.JSONSerializeModule">
-	<HintPath>libs\UnityEngine.JSONSerializeModule.dll</HintPath>
+	<HintPath>lib\UnityEngine.JSONSerializeModule.dll</HintPath>
 	<Private>True</Private>
   </Reference>
   <Reference Include="UnityEngine.PhysicsModule">
-	<HintPath>libs\UnityEngine.PhysicsModule.dll</HintPath>
+	<HintPath>lib\UnityEngine.PhysicsModule.dll</HintPath>
 	<Private>True</Private>
   </Reference>	
   </ItemGroup>

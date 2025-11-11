@@ -37,13 +37,16 @@ public class TravelButtonMod : BaseUnityPlugin
         public string targetGameObjectName; // optional: GameObject name to find in scene
         public float[] coords; // optional: { x, y, z }
         public string description; // human-readable description shown in dialog
+        public bool visited; // whether player has visited this city
         public override string ToString()
         {
-            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")})";
+            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited})";
         }
     }
 
-    private class CityContainer
+    // Make CityContainer public so TravelButtonVisitedManager can use it
+    [Serializable]
+    public class CityContainer
     {
         public City[] cities;
     }
@@ -87,7 +90,7 @@ public class TravelButtonMod : BaseUnityPlugin
             }
             else
             {
-                this.Logger.LogInfo("TravelButtonUI not found — creating GameObject and attaching TravelButtonUI.");
+                this.Logger.LogInfo("TravelButtonUI not found ï¿½ creating GameObject and attaching TravelButtonUI.");
                 var go = new GameObject("TravelButtonUI");
                 go.AddComponent<TravelButtonUI>();
                 UnityEngine.Object.DontDestroyOnLoad(go);
@@ -110,15 +113,41 @@ public class TravelButtonMod : BaseUnityPlugin
                 LoadCities(); // reload after writing defaults
             }
 
+            // Load visited flags from JSON and merge into Cities
+            TravelButtonVisitedManager.EnsureLoaded();
+            TravelButtonVisitedManager.MergeVisitedFlagsIntoCities();
+
             // Create per-city config toggles (persistent)
             CreateCityConfigEntries();
 
             this.Logger.LogInfo($"Loaded {Cities.Count} cities from {CitiesFilePath}");
-            foreach (var c in Cities) this.Logger.LogInfo($" City: {c.name} - desc length: {(c.description ?? "").Length}");
+            foreach (var c in Cities) this.Logger.LogInfo($" City: {c.name} - desc length: {(c.description ?? "").Length}, visited: {c.visited}");
         }
         catch (Exception ex)
         {
             this.Logger.LogError("Error loading cities: " + ex);
+        }
+
+        // Create CityDiscovery component for auto-discovery
+        try
+        {
+            var existingDiscovery = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
+            if (existingDiscovery == null)
+            {
+                this.Logger.LogInfo("Creating CityDiscovery component for auto-discovery.");
+                var discoveryGO = new GameObject("CityDiscovery");
+                discoveryGO.AddComponent<CityDiscovery>();
+                UnityEngine.Object.DontDestroyOnLoad(discoveryGO);
+                this.Logger.LogInfo("CityDiscovery GameObject created and marked DontDestroyOnLoad.");
+            }
+            else
+            {
+                this.Logger.LogInfo("CityDiscovery already exists in scene.");
+            }
+        }
+        catch (Exception ex)
+        {
+            this.Logger.LogError("Error creating CityDiscovery: " + ex);
         }
     }
 

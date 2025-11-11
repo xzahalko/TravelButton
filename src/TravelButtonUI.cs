@@ -5,7 +5,6 @@ using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
-using System.Reflection;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -585,23 +584,25 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
-                    // If we have currency info, disable button if player lacks funds
+                    // UI Gating: visited flag overrides everything
+                    bool isVisited = city.visited;
+                    bool shouldBeInteractable = isVisited && enabledByConfig;
+                    
+                    // If we have currency info, also check money
                     if (haveMoneyInfo)
                     {
-                        if (playerMoney < cost)
-                        {
-                            bbtn.interactable = false;
-                            // dim the image to indicate disabled
-                            bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
-                        }
-                    }
-                    else
-                    {
-                        // If we couldn't determine player's money, leave buttons enabled but log.
-                        TravelButtonMod.LogWarning("OpenTravelDialog: could not determine player money; leaving city buttons enabled.");
+                        shouldBeInteractable = shouldBeInteractable && (playerMoney >= cost);
                     }
 
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable})");
+                    bbtn.interactable = shouldBeInteractable;
+                    
+                    // Dim the image to indicate disabled
+                    if (!shouldBeInteractable)
+                    {
+                        bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                    }
+
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (visited={isVisited}, interactable={bbtn.interactable})");
 
                     var capturedCity = city;
                     // NEW: immediate-pay-and-teleport when city button clicked (instead of separate confirmation)
@@ -962,6 +963,10 @@ public class TravelButtonUI : MonoBehaviour
             else
             {
                 TravelButtonMod.LogInfo($"TryPayAndTeleport: successfully teleported to {city.name}");
+                
+                // Mark city as visited and save
+                TravelButtonVisitedManager.MarkVisited(city.name);
+                
                 CloseDialogAndStopRefresh();
             }
         }
@@ -1016,9 +1021,16 @@ public class TravelButtonUI : MonoBehaviour
                         {
                             string cityName = objName.Substring("CityButton_".Length);
                             bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
-                            bool shouldBeInteractable = enabledByConfig;
+                            
+                            // Check visited state
+                            bool isVisited = TravelButtonVisitedManager.IsCityVisited(cityName);
+                            
+                            // UI gating: visited flag overrides everything
+                            bool shouldBeInteractable = isVisited && enabledByConfig;
+                            
                             if (haveMoneyInfo)
                                 shouldBeInteractable = shouldBeInteractable && (currentMoney >= cost);
+                            
                             // apply interactable state and tint
                             if (btn.interactable != shouldBeInteractable)
                             {
