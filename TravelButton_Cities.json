@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Cierzo",
+    "desc": "Cierzo - example description",
+    "coords": [100.0, 1.5, -20.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  },
+  {
+    "name": "Levant",
+    "desc": "Levant - example description",
+    "coords": [200.0, 2.0, 50.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  },
+  {
+    "name": "Monsoon",
+    "desc": "Monsoon - example description",
+    "coords": [300.0, 1.0, -150.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  },
+  {
+    "name": "Berg",
+    "desc": "Berg - example description",
+    "coords": [400.0, 0.0, -10.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  },
+  {
+    "name": "Harmattan",
+    "desc": "Harmattan - example description",
+    "coords": [500.0, 3.0, 80.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  },
+  {
+    "name": "Sirocco",
+    "desc": "Sirocco - example description",
+    "coords": [600.0, 1.2, -300.0],
+    "targetGameObjectName": "",
+    "isCityEnabled": true
+  }
+]
