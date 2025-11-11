@@ -1,177 +1,244 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 /// <summary>
-/// Manages the visited state of cities. Loads and saves visited flags to TravelButton_Cities.json
-/// in the plugin directory. Uses city name as the key for tracking visited state.
+/// Tracks visited cities and persists them to TravelButton_Visited.json placed next to the plugin DLL.
+/// Provides public initialization and a helper to merge persisted visited flags into the in-memory Cities list.
 /// </summary>
 public static class TravelButtonVisitedManager
 {
-    private static HashSet<string> visitedCities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private static HashSet<string> visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private static bool loaded = false;
+    private static string visitedFilePath;
 
-    /// <summary>
-    /// Ensures the visited cities data has been loaded from disk.
-    /// Safe to call multiple times - only loads once.
-    /// </summary>
-    public static void EnsureLoaded()
+    [Serializable]
+    private class VisitedWrapper
+    {
+        public List<string> visitedCities = new List<string>();
+    }
+
+    // Internal loader (kept private).
+    private static void EnsureLoaded()
     {
         if (loaded) return;
-
+        visitedFilePath = GetVisitedFilePath();
         try
         {
-            TravelButtonMod.LogInfo("TravelButtonVisitedManager.EnsureLoaded: loading visited cities from JSON.");
-            
-            string filePath = GetCitiesFilePath();
-            if (!File.Exists(filePath))
+            if (File.Exists(visitedFilePath))
             {
-                TravelButtonMod.LogInfo("TravelButtonVisitedManager: Cities file does not exist yet, starting with empty visited set.");
-                loaded = true;
-                return;
-            }
+                string json = File.ReadAllText(visitedFilePath);
+                var wrapper = JsonUtility.FromJson<VisitedWrapper>(json);
+                if (wrapper != null && wrapper.visitedCities != null)
+                    visited = new HashSet<string>(wrapper.visitedCities, StringComparer.OrdinalIgnoreCase);
+                else
+                    visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // Read the JSON file
-            string json = File.ReadAllText(filePath);
-            
-            // Parse using JsonUtility (handle both array format and wrapped format)
-            TravelButtonMod.CityContainer container = null;
-            
-            if (json.TrimStart().StartsWith("["))
-            {
-                // Wrap array format
-                string wrapped = "{\"cities\":" + json + "}";
-                container = JsonUtility.FromJson<TravelButtonMod.CityContainer>(wrapped);
+                TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Loaded {visited.Count} visited entries from {visitedFilePath}");
             }
             else
             {
-                container = JsonUtility.FromJson<TravelButtonMod.CityContainer>(json);
+                TravelButtonMod.LogInfo($"TravelButtonVisitedManager: No visited file at {visitedFilePath}, starting with empty visited set.");
+                visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
-
-            if (container != null && container.cities != null)
-            {
-                visitedCities.Clear();
-                foreach (var city in container.cities)
-                {
-                    if (city.visited && !string.IsNullOrEmpty(city.name))
-                    {
-                        visitedCities.Add(city.name);
-                        TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Loaded visited flag for city '{city.name}'");
-                    }
-                }
-                TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Loaded {visitedCities.Count} visited cities.");
-            }
-            
-            loaded = true;
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError($"TravelButtonVisitedManager.EnsureLoaded failed: {ex}");
-            loaded = true; // Mark as loaded even on error to avoid retry loops
+            TravelButtonMod.LogWarning("TravelButtonVisitedManager: Failed to load visited file: " + ex);
+            visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
+        loaded = true;
     }
 
-    /// <summary>
-    /// Check if a city has been visited by the player.
-    /// </summary>
-    /// <param name="cityName">Name of the city to check</param>
-    /// <returns>True if visited, false otherwise</returns>
-    public static bool IsCityVisited(string cityName)
+    // Public initialization wrapper for other classes to call safely.
+    public static void Initialize()
     {
         EnsureLoaded();
-        if (string.IsNullOrEmpty(cityName)) return false;
-        return visitedCities.Contains(cityName);
     }
 
-    /// <summary>
-    /// Mark a city as visited and save to disk immediately.
-    /// </summary>
-    /// <param name="cityName">Name of the city to mark as visited</param>
-    public static void MarkVisited(string cityName)
-    {
-        if (string.IsNullOrEmpty(cityName)) return;
-        
-        EnsureLoaded();
-        
-        if (visitedCities.Contains(cityName))
-        {
-            TravelButtonMod.LogInfo($"TravelButtonVisitedManager.MarkVisited: '{cityName}' already marked as visited.");
-            return;
-        }
-        
-        visitedCities.Add(cityName);
-        TravelButtonMod.LogInfo($"TravelButtonVisitedManager.MarkVisited: marked '{cityName}' as visited.");
-        
-        // Immediately save to disk
-        Save();
-    }
-
-    /// <summary>
-    /// Save the current visited state back to the JSON file.
-    /// Updates the visited flags in the in-memory Cities list and writes to disk.
-    /// </summary>
-    public static void Save()
+    private static string GetVisitedFilePath()
     {
         try
         {
-            // Merge visited flags into TravelButtonMod.Cities
-            MergeVisitedFlagsIntoCities();
-            
-            string filePath = GetCitiesFilePath();
-            
-            // Create container for serialization
-            var container = new TravelButtonMod.CityContainer
+            var asm = Assembly.GetExecutingAssembly();
+            if (asm != null)
             {
-                cities = TravelButtonMod.Cities.ToArray()
-            };
-            
-            string json = JsonUtility.ToJson(container, true);
-            
-            // Ensure directory exists
-            string directory = Path.GetDirectoryName(filePath);
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
+                string asmPath = asm.Location;
+                if (!string.IsNullOrEmpty(asmPath))
+                {
+                    string dir = Path.GetDirectoryName(asmPath);
+                    if (!string.IsNullOrEmpty(dir))
+                        return Path.Combine(dir, "TravelButton_Visited.json");
+                }
             }
-            
-            File.WriteAllText(filePath, json);
-            TravelButtonMod.LogInfo($"TravelButtonVisitedManager.Save: saved visited cities to {filePath}");
+        }
+        catch { }
+
+        // Fallback: put under roaming BepInEx plugins
+        try
+        {
+            string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            return Path.Combine(roaming, "BepInEx", "plugins", "TravelButton_Visited.json");
+        }
+        catch
+        {
+            return Path.Combine(".", "TravelButton_Visited.json");
+        }
+    }
+
+    public static bool IsCityVisited(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return false;
+        EnsureLoaded();
+        return visited.Contains(cityName);
+    }
+
+    public static void MarkVisited(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return;
+        EnsureLoaded();
+        if (visited.Add(cityName))
+        {
+            TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Marked visited: {cityName}");
+            Save();
+        }
+    }
+
+    public static void Save()
+    {
+        EnsureLoaded();
+        try
+        {
+            var wrapper = new VisitedWrapper() { visitedCities = new List<string>(visited) };
+            string json = JsonUtility.ToJson(wrapper, true);
+            File.WriteAllText(visitedFilePath, json);
+            TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Saved {visited.Count} visited entries to {visitedFilePath}");
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError($"TravelButtonVisitedManager.Save failed: {ex}");
+            TravelButtonMod.LogWarning("TravelButtonVisitedManager: Failed to save visited file: " + ex);
         }
     }
 
     /// <summary>
-    /// Merge the in-memory visited flags into the TravelButtonMod.Cities list.
-    /// Updates each city's visited field based on whether it's in the visitedCities set.
+    /// Merge persisted visited flags into the in-memory TravelButtonMod.Cities list.
+    /// After loading cities from TravelButton_Cities.json, call this to apply persisted visit state.
     /// </summary>
     public static void MergeVisitedFlagsIntoCities()
     {
-        if (TravelButtonMod.Cities == null) return;
-        
-        foreach (var city in TravelButtonMod.Cities)
+        try
         {
-            if (!string.IsNullOrEmpty(city.name))
+            EnsureLoaded();
+            // Try to get the Cities list from TravelButtonMod
+            var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+            IList<TravelButtonMod.City> cities = null;
+            if (citiesField != null)
             {
-                city.visited = visitedCities.Contains(city.name);
+                cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
             }
+            else
+            {
+                var prop = typeof(TravelButtonMod).GetProperty("Cities", BindingFlags.Public | BindingFlags.Static);
+                if (prop != null)
+                    cities = prop.GetValue(null, null) as IList<TravelButtonMod.City>;
+            }
+
+            if (cities == null)
+            {
+                TravelButtonMod.LogWarning("TravelButtonVisitedManager: MergeVisitedFlagsIntoCities - could not find TravelButtonMod.Cities.");
+                return;
+            }
+
+            int applied = 0;
+            foreach (var c in cities)
+            {
+                if (c == null || string.IsNullOrEmpty(c.name)) continue;
+                bool persisted = IsCityVisited(c.name);
+                if (persisted && !c.visited)
+                {
+                    c.visited = true;
+                    applied++;
+                }
+            }
+
+            TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Merged visited flags into Cities list. Applied={applied}");
         }
-        
-        TravelButtonMod.LogInfo("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: merged visited flags into Cities list.");
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("TravelButtonVisitedManager: MergeVisitedFlagsIntoCities failed: " + ex);
+        }
     }
 
-    /// <summary>
-    /// Get the file path for the cities JSON file.
-    /// Uses the plugin directory (next to the DLL) to ensure runtime plugin reads/writes in the correct location.
-    /// </summary>
-    /// <returns>Full path to TravelButton_Cities.json</returns>
-    public static string GetCitiesFilePath()
+    // PUBLIC diagnostic helper: logs candidate fields/properties on player components.
+    public static void LogPlayerCandidateVisitedFields()
     {
-        // Use BepInEx PluginPath which points to BepInEx/plugins
-        // This matches the path used in TravelButtonMod.cs
-        return Path.Combine(BepInEx.Paths.PluginPath, "TravelButton", "TravelButton_Cities.json");
+        try
+        {
+            var player = GameObject.FindWithTag("Player");
+            if (player == null)
+            {
+                TravelButtonMod.LogWarning("LogPlayerCandidateVisitedFields: Player not found (tag 'Player').");
+                return;
+            }
+
+            var comps = player.GetComponents<Component>();
+            TravelButtonMod.LogInfo($"LogPlayerCandidateVisitedFields: inspecting {comps.Length} components:");
+            foreach (var c in comps)
+            {
+                if (c == null) continue;
+                var t = c.GetType();
+                TravelButtonMod.LogInfo($"  Component: {t.FullName}");
+                foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    string fname = f.Name.ToLowerInvariant();
+                    if (fname.Contains("visit") || fname.Contains("discover") || fname.Contains("region") || fname.Contains("city") || fname.Contains("town"))
+                    {
+                        object val = null;
+                        try { val = f.GetValue(c); } catch (Exception ex) { val = $"<err:{ex.Message}>"; }
+                        TravelButtonMod.LogInfo($"    field: {f.FieldType.Name} {f.Name} = {SafeToString(val)}");
+                    }
+                }
+                foreach (var p in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    string pname = p.Name.ToLowerInvariant();
+                    if (pname.Contains("visit") || pname.Contains("discover") || pname.Contains("region") || pname.Contains("city") || pname.Contains("town"))
+                    {
+                        object val = null;
+                        try { val = p.GetValue(c, null); } catch (Exception ex) { val = $"<err:{ex.Message}>"; }
+                        TravelButtonMod.LogInfo($"    prop: {p.PropertyType.Name} {p.Name} = {SafeToString(val)}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("LogPlayerCandidateVisitedFields: failed: " + ex);
+        }
+    }
+
+    private static string SafeToString(object obj)
+    {
+        if (obj == null) return "null";
+        try
+        {
+            if (obj is System.Collections.IEnumerable en && !(obj is string))
+            {
+                int i = 0;
+                var sb = new System.Text.StringBuilder();
+                sb.Append("[");
+                foreach (var v in en)
+                {
+                    if (i++ > 0) sb.Append(", ");
+                    if (i > 20) { sb.Append("..."); break; }
+                    sb.Append(v?.ToString() ?? "null");
+                }
+                sb.Append("]");
+                return sb.ToString();
+            }
+            return obj.ToString();
+        }
+        catch { return "<tostr-error>"; }
     }
 }

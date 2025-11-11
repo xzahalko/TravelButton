@@ -1,159 +1,249 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>
-/// MonoBehaviour that auto-discovers cities when the player gets within a certain radius.
-/// Polls player position periodically and checks against city coordinates or target GameObjects.
-/// Marks cities as visited via TravelButtonVisitedManager when within discover radius.
+/// Polls player position to auto-mark cities visited and enforces dialog gating.
+/// Improvements:
+/// - More robust player transform detection (tries tag, common types, children of 'Players' containers, camera, etc.)
+/// - Diagnostic distance logging for each city
+/// - F9 logs player position; F10 force-marks nearest city (testing)
+/// - Slightly larger radius/logging to help debugging (tune DiscoverRadius as needed)
 /// </summary>
 public class CityDiscovery : MonoBehaviour
 {
-    // Discovery radius in Unity units (adjust based on game scale)
-    private const float DiscoverRadius = 50f;
-    
-    // How often to check for discovery (in seconds)
-    private const float CheckInterval = 5f;
-    
-    private Transform playerTransform;
-    private bool isRunning = false;
+    private const float PollInterval = 2.0f;
+    private const float DiscoverRadius = 20.0f; // you can temporarily increase this if needed
+
+    private float timer = 0f;
+
+    void Awake()
+    {
+        DontDestroyOnLoad(this.gameObject);
+    }
 
     void Start()
     {
         TravelButtonMod.LogInfo("CityDiscovery.Start: initializing city discovery system.");
-        DontDestroyOnLoad(this.gameObject);
-        
-        // Ensure visited manager is loaded
-        TravelButtonVisitedManager.EnsureLoaded();
-        
-        // Start the discovery polling coroutine
-        StartCoroutine(DiscoveryPollCoroutine());
+        // Diagnostic: try to print potential built-in visited fields
+        try { TravelButtonVisitedManager.LogPlayerCandidateVisitedFields(); } catch { }
     }
 
-    /// <summary>
-    /// Coroutine that periodically checks player position against city locations.
-    /// </summary>
-    private IEnumerator DiscoveryPollCoroutine()
+    void Update()
     {
-        isRunning = true;
-        TravelButtonMod.LogInfo("CityDiscovery: starting discovery poll coroutine.");
-        
-        while (isRunning)
+        try
         {
-            // Find player transform if we don't have it yet
-            if (playerTransform == null)
+            // Hotkeys for debugging
+            if (Input.GetKeyDown(KeyCode.F9))
             {
-                playerTransform = FindPlayerTransform();
-                if (playerTransform == null)
-                {
-                    // Wait and retry finding player
-                    yield return new WaitForSeconds(CheckInterval);
-                    continue;
-                }
+                LogPlayerPosition();
             }
-            
-            // Check each city for discovery
+            if (Input.GetKeyDown(KeyCode.F10))
+            {
+                ForceMarkNearestCity();
+            }
+
+            timer += Time.unscaledDeltaTime;
+            if (timer >= PollInterval)
+            {
+                timer = 0f;
+                PollForNearbyCities();
+                EnforceVisitedGating();
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("CityDiscovery.Update failed: " + ex);
+        }
+    }
+
+    private void LogPlayerPosition()
+    {
+        var pt = FindPlayerTransform();
+        if (pt != null)
+        {
+            var p = pt.position;
+            TravelButtonMod.LogInfo($"CityDiscovery: Player position = {p.x:F3}, {p.y:F3}, {p.z:F3} (found by {playerFinderDescription})");
+        }
+        else
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: Player Transform not found when logging position.");
+        }
+    }
+
+    private void ForceMarkNearestCity()
+    {
+        var pt = FindPlayerTransform();
+        if (pt == null)
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: ForceMarkNearestCity - player transform not found.");
+            return;
+        }
+
+        var ppos = pt.position;
+        var cities = GetCitiesList();
+        if (cities == null || cities.Count == 0)
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: ForceMarkNearestCity - no cities available.");
+            return;
+        }
+
+        float bestDist = float.MaxValue;
+        TravelButtonMod.City bestCity = null;
+        foreach (var city in cities)
+        {
+            var pos = GetCityPosition(city);
+            if (pos == null) continue;
+            float d = Vector3.Distance(ppos, pos.Value);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                bestCity = city;
+            }
+        }
+
+        if (bestCity != null)
+        {
+            TravelButtonVisitedManager.MarkVisited(bestCity.name);
+            TravelButtonMod.LogInfo($"CityDiscovery: Force-marked nearest city '{bestCity.name}' (dist {bestDist:F1}).");
+        }
+        else
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: ForceMarkNearestCity - no city positions available to mark.");
+        }
+    }
+
+    private void PollForNearbyCities()
+    {
+        var pt = FindPlayerTransform();
+        if (pt == null)
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: PollForNearbyCities - player transform not found.");
+            return;
+        }
+
+        var ppos = pt.position;
+        var cities = GetCitiesList();
+        if (cities == null)
+        {
+            TravelButtonMod.LogWarning("CityDiscovery: PollForNearbyCities - could not locate TravelButtonMod.Cities.");
+            return;
+        }
+
+        foreach (var city in cities)
+        {
             try
             {
-                if (TravelButtonMod.Cities != null)
+                if (string.IsNullOrEmpty(city.name)) continue;
+                if (TravelButtonVisitedManager.IsCityVisited(city.name)) continue;
+
+                Vector3? candidate = GetCityPosition(city);
+                if (candidate == null)
                 {
-                    foreach (var city in TravelButtonMod.Cities)
-                    {
-                        if (city == null || string.IsNullOrEmpty(city.name))
-                            continue;
-                        
-                        // Skip if already visited
-                        if (TravelButtonVisitedManager.IsCityVisited(city.name))
-                            continue;
-                        
-                        // Check if player is within discover radius
-                        if (IsPlayerNearCity(city))
-                        {
-                            TravelButtonMod.LogInfo($"CityDiscovery: Player discovered city '{city.name}'!");
-                            TravelButtonVisitedManager.MarkVisited(city.name);
-                        }
-                    }
+                    TravelButtonMod.LogInfo($"CityDiscovery: No candidate position for city '{city.name}' (skipping).");
+                    continue;
+                }
+
+                float dist = Vector3.Distance(ppos, candidate.Value);
+                TravelButtonMod.LogInfo($"CityDiscovery: Dist to '{city.name}' = {dist:F1} (threshold {DiscoverRadius}).");
+
+                if (dist <= DiscoverRadius)
+                {
+                    TravelButtonVisitedManager.MarkVisited(city.name);
+                    TravelButtonMod.LogInfo($"CityDiscovery: Auto-discovered city '{city.name}' at distance {dist:F1}.");
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonMod.LogWarning($"CityDiscovery: exception in poll coroutine: {ex}");
+                TravelButtonMod.LogWarning("CityDiscovery: error while checking city: " + ex);
             }
-            
-            // Wait before next check
-            yield return new WaitForSeconds(CheckInterval);
         }
     }
 
-    /// <summary>
-    /// Check if the player is near a city (within DiscoverRadius).
-    /// </summary>
-    private bool IsPlayerNearCity(TravelButtonMod.City city)
+    // Keep the UI gating function; it disables buttons for unvisited cities
+    private void EnforceVisitedGating()
     {
-        if (playerTransform == null)
-            return false;
-        
-        Vector3 playerPos = playerTransform.position;
-        Vector3? cityPos = GetCityPosition(city);
-        
-        if (!cityPos.HasValue)
-            return false;
-        
-        float distance = Vector3.Distance(playerPos, cityPos.Value);
-        return distance <= DiscoverRadius;
-    }
-
-    /// <summary>
-    /// Get the position of a city (from targetGameObject or coords).
-    /// Returns null if no valid position is available.
-    /// </summary>
-    private Vector3? GetCityPosition(TravelButtonMod.City city)
-    {
-        // Try to find target GameObject first
-        if (!string.IsNullOrEmpty(city.targetGameObjectName))
+        try
         {
-            GameObject targetGO = GameObject.Find(city.targetGameObjectName);
-            if (targetGO != null)
+            var roots = SceneManager.GetActiveScene().GetRootGameObjects();
+            foreach (var root in roots)
             {
-                return targetGO.transform.position;
+                if (root == null || !root.activeInHierarchy) continue;
+                var content = root.transform.Find("ScrollArea/Viewport/Content");
+                if (content == null) continue;
+
+                for (int i = 0; i < content.childCount; i++)
+                {
+                    var child = content.GetChild(i);
+                    var btn = child.GetComponent<UnityEngine.UI.Button>();
+                    var img = child.GetComponent<UnityEngine.UI.Image>();
+                    if (btn == null || img == null) continue;
+
+                    string objName = child.name;
+                    if (!objName.StartsWith("CityButton_")) continue;
+                    string cityName = objName.Substring("CityButton_".Length);
+
+                    bool visited = TravelButtonVisitedManager.IsCityVisited(cityName);
+                    if (!visited)
+                    {
+                        if (btn.interactable)
+                        {
+                            btn.interactable = false;
+                            img.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                        }
+                    }
+                    // if visited: leave existing interactable state to be handled by other checks
+                }
+                break;
             }
         }
-        
-        // Try coords
-        if (city.coords != null && city.coords.Length >= 3)
+        catch (Exception ex)
         {
-            return new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+            TravelButtonMod.LogWarning("CityDiscovery.EnforceVisitedGating failed: " + ex);
         }
-        
-        return null;
     }
 
-    /// <summary>
-    /// Find the player transform in the scene.
-    /// Uses multiple strategies to locate the player.
-    /// </summary>
+    // --- helper utilities ---
+
+    private IList<TravelButtonMod.City> GetCitiesList()
+    {
+        IList<TravelButtonMod.City> cities = null;
+        var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+        if (citiesField != null) cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
+        if (cities == null)
+        {
+            var prop = typeof(TravelButtonMod).GetProperty("Cities", BindingFlags.Public | BindingFlags.Static);
+            if (prop != null) cities = prop.GetValue(null, null) as IList<TravelButtonMod.City>;
+        }
+        return cities;
+    }
+
+    // More robust player transform detection. Sets playerFinderDescription for logging.
+    private string playerFinderDescription = "unknown";
     private Transform FindPlayerTransform()
     {
-        // Try by tag first
-        GameObject tagged = GameObject.FindWithTag("Player");
-        if (tagged != null)
+        // 1) Tag
+        try
         {
-            TravelButtonMod.LogInfo("CityDiscovery: found player by tag 'Player'.");
-            return tagged.transform;
+            var tagged = GameObject.FindWithTag("Player");
+            if (tagged != null)
+            {
+                playerFinderDescription = "tag:Player";
+                return tagged.transform;
+            }
         }
-        
-        // Try common player type names
-        string[] playerTypeCandidates = new string[] 
-        { 
-            "PlayerCharacter", "PlayerEntity", "Character", 
-            "PC_Player", "PlayerController", "LocalPlayer" 
-        };
-        
-        foreach (var typeName in playerTypeCandidates)
+        catch { }
+
+        // 2) Common runtime types
+        string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player", "PlayerController", "LocalPlayer", "Player" };
+        foreach (var tname in playerTypeCandidates)
         {
             try
             {
-                Type t = Type.GetType(typeName + ", Assembly-CSharp");
+                var t = Type.GetType(tname + ", Assembly-CSharp");
                 if (t != null)
                 {
                     var objs = UnityEngine.Object.FindObjectsOfType(t);
@@ -162,37 +252,97 @@ public class CityDiscovery : MonoBehaviour
                         var comp = objs[0] as Component;
                         if (comp != null)
                         {
-                            TravelButtonMod.LogInfo($"CityDiscovery: found player via type {typeName}.");
+                            playerFinderDescription = $"type:{tname}";
                             return comp.transform;
                         }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogWarning($"CityDiscovery: exception checking type {typeName}: {ex.Message}");
-            }
+            catch { }
         }
-        
-        // Try by name heuristic
-        var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-        foreach (var tr in allTransforms)
+
+        // 3) Heuristic: if there's a root named "Players" (or similar) look for a child that looks like the player
+        try
         {
-            if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                tr.name.IndexOf("pc_", StringComparison.OrdinalIgnoreCase) >= 0)
+            var allRoots = SceneManager.GetActiveScene().GetRootGameObjects();
+            foreach (var root in allRoots)
             {
-                TravelButtonMod.LogInfo($"CityDiscovery: found player by name heuristic: {tr.name}");
-                return tr;
+                if (root == null) continue;
+                string rn = root.name.ToLowerInvariant();
+                if (rn.Contains("player") || rn.Contains("players") || rn.Contains("playercontainer") || rn.Contains("players_root"))
+                {
+                    // search children for an object with 'player' in the name and active
+                    var transforms = root.GetComponentsInChildren<Transform>(true);
+                    foreach (var tr in transforms)
+                    {
+                        if (tr == null) continue;
+                        string nameLow = tr.name.ToLowerInvariant();
+                        if (nameLow.Contains("player") || nameLow.Contains("pc_") || nameLow.Contains("hero"))
+                        {
+                            playerFinderDescription = $"childOfRoot:{root.name}/{tr.name}";
+                            return tr;
+                        }
+                    }
+                }
             }
         }
-        
-        TravelButtonMod.LogWarning("CityDiscovery: could not locate player transform.");
+        catch { }
+
+        // 4) Fallback: camera's follow target or main camera transform
+        try
+        {
+            if (Camera.main != null)
+            {
+                playerFinderDescription = "Camera.main";
+                return Camera.main.transform;
+            }
+        }
+        catch { }
+
+        // 5) Brute-force heuristic: first transform with 'player' in name
+        try
+        {
+            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var tr in allTransforms)
+            {
+                if (tr == null) continue;
+                if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    playerFinderDescription = $"heuristic:name:{tr.name}";
+                    return tr;
+                }
+            }
+        }
+        catch { }
+
+        playerFinderDescription = "not-found";
         return null;
     }
 
-    void OnDestroy()
+    private Vector3? GetCityPosition(TravelButtonMod.City city)
     {
-        isRunning = false;
-        TravelButtonMod.LogInfo("CityDiscovery: destroyed.");
+        if (city == null) return null;
+        try
+        {
+            if (!string.IsNullOrEmpty(city.targetGameObjectName))
+            {
+                var go = GameObject.Find(city.targetGameObjectName);
+                if (go != null) return go.transform.position;
+            }
+            if (city.coords != null && city.coords.Length >= 3)
+            {
+                return new Vector3((float)city.coords[0], (float)city.coords[1], (float)city.coords[2]);
+            }
+            // heuristic search for scene transform name
+            var all = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var t in all)
+            {
+                if (t == null) continue;
+                if (t.name.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return t.position;
+            }
+        }
+        catch { }
+        return null;
     }
 }

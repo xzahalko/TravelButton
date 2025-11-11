@@ -13,6 +13,7 @@ using UnityEngine;
 [BepInPlugin("com.xzahalko.travelbutton", "TravelButtonMod", "0.1.0")]
 public class TravelButtonMod : BaseUnityPlugin
 {
+
     public static BepInEx.Logging.ManualLogSource LogStatic;
     private Harmony harmony;
 
@@ -38,6 +39,7 @@ public class TravelButtonMod : BaseUnityPlugin
         public float[] coords; // optional: { x, y, z }
         public string description; // human-readable description shown in dialog
         public bool visited; // whether player has visited this city
+        public bool isCityEnabled = true;
         public override string ToString()
         {
             return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited})";
@@ -114,7 +116,8 @@ public class TravelButtonMod : BaseUnityPlugin
             }
 
             // Load visited flags from JSON and merge into Cities
-            TravelButtonVisitedManager.EnsureLoaded();
+            // public initialize helper
+            TravelButtonVisitedManager.Initialize();
             TravelButtonVisitedManager.MergeVisitedFlagsIntoCities();
 
             // Create per-city config toggles (persistent)
