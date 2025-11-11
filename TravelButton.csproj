@@ -18,26 +18,40 @@
      Copy those from your BepInEx/game installation or the game's Managed folder.
   -->
   <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>lib\Assembly-CSharp.dll</HintPath>
+    </Reference>
     <Reference Include="BepInEx">
       <HintPath>libs\BepInEx.dll</HintPath>
     </Reference>
     <Reference Include="0Harmony">
       <HintPath>libs\0Harmony.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>lib\UnityEngine.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine.CoreModule" Condition="Exists('libs\UnityEngine.CoreModule.dll')">
       <HintPath>libs\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>lib\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
     <!-- IMGUI module: provides GUI, GUILayout, GUIStyle -->
     <Reference Include="UnityEngine.IMGUIModule" Condition="Exists('libs\UnityEngine.IMGUIModule.dll')">
       <HintPath>libs\UnityEngine.IMGUIModule.dll</HintPath>
     </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>lib\UnityEngine.IMGUIModule.dll</HintPath>
+    </Reference>
     <!-- TextRendering module: provides TextAnchor and related types -->
     <Reference Include="UnityEngine.TextRenderingModule" Condition="Exists('libs\UnityEngine.TextRenderingModule.dll')">
       <HintPath>libs\UnityEngine.TextRenderingModule.dll</HintPath>
     </Reference>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Include="src\OutwardDefMod.cs" />
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>lib\UnityEngine.TextRenderingModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>lib\UnityEngine.UI.dll</HintPath>
+    </Reference>
   </ItemGroup>
 </Project>
