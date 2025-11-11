@@ -50,8 +50,21 @@
     <Reference Include="UnityEngine.TextRenderingModule">
       <HintPath>lib\UnityEngine.TextRenderingModule.dll</HintPath>
     </Reference>
-    <Reference Include="UnityEngine.UI">
-      <HintPath>lib\UnityEngine.UI.dll</HintPath>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>libs\UnityEngine.UIModule.dll</HintPath>
+      <Private>True</Private>
     </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>libs\UnityEngine.UI.dll</HintPath>
+      <Private>True</Private>
+    </Reference>	
+  <Reference Include="UnityEngine.JSONSerializeModule">
+	<HintPath>libs\UnityEngine.JSONSerializeModule.dll</HintPath>
+	<Private>True</Private>
+  </Reference>
+  <Reference Include="UnityEngine.PhysicsModule">
+	<HintPath>libs\UnityEngine.PhysicsModule.dll</HintPath>
+	<Private>True</Private>
+  </Reference>	
   </ItemGroup>
 </Project>

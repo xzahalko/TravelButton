@@ -4,13 +4,15 @@ using BepInEx.Logging;
 using HarmonyLib;
 using System;
 using System.IO;
+using System.Collections.Generic;
 using UnityEngine;
 
-// Plugin GUID should be unique.
+/// <summary>
+/// Plugin GUID should be unique.
+/// </summary>
 [BepInPlugin("com.xzahalko.travelbutton", "TravelButtonMod", "0.1.0")]
 public class TravelButtonMod : BaseUnityPlugin
 {
-    // explicit BepInEx ManualLogSource type (avoid ambiguity)
     public static BepInEx.Logging.ManualLogSource LogStatic;
     private Harmony harmony;
 
@@ -19,28 +21,98 @@ public class TravelButtonMod : BaseUnityPlugin
     private ConfigEntry<KeyCode> cfgToggleKey;
     private ConfigEntry<string> cfgOverlayText;
 
+    // New config: enable actual teleport/payment
+    public static ConfigEntry<bool> cfgEnableTeleport;
+
     // runtime
     private bool showOverlay = false;
 
+    // Cities loaded from JSON
+    public class City
+    {
+        public string name;
+        public string targetGameObjectName; // optional: GameObject name to find in scene
+        public float[] coords; // optional: { x, y, z }
+        public string description; // human-readable description shown in dialog
+        public override string ToString()
+        {
+            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")})";
+        }
+    }
+
+    private class CityContainer
+    {
+        public City[] cities;
+    }
+
+    public static List<City> Cities = new List<City>();
+    private static string CitiesFilePath => Path.Combine(Paths.PluginPath, "TravelButton", "TravelButton_Cities.json");
+
+    // dynamic per-city config entries
+    private static Dictionary<string, ConfigEntry<bool>> cityConfigEntries = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
+
     private void Awake()
     {
-        // assign instance logger explicitly
         LogStatic = this.Logger;
         this.Logger.LogInfo("TravelButtonMod Awake");
 
-        // Use the instance Config property explicitly to avoid ambiguity
         cfgEnableOverlay = this.Config.Bind("General", "EnableOverlay", true, "Show small debug overlay in-game");
         cfgToggleKey = this.Config.Bind("General", "ToggleKey", KeyCode.F10, "Key to toggle overlay visibility");
         cfgOverlayText = this.Config.Bind("General", "OverlayText", "TravelButtonMod active", "Text shown in overlay");
 
+        cfgEnableTeleport = this.Config.Bind("General", "EnableTeleport", true, "If false, travel will not deduct money or teleport the player (UI-only mode)");
+
         try
         {
             harmony = new Harmony("com.xzahalko.travelbutton.harmony");
-            // harmony.PatchAll(Assembly.GetExecutingAssembly());
         }
         catch (Exception ex)
         {
             this.Logger.LogError("Failed to create Harmony instance: " + ex);
+        }
+
+        // Ensure the TravelButtonUI MonoBehaviour exists
+        try
+        {
+            var existing = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+            if (existing != null)
+            {
+                this.Logger.LogInfo("TravelButtonUI already present in scene.");
+            }
+            else
+            {
+                this.Logger.LogInfo("TravelButtonUI not found — creating GameObject and attaching TravelButtonUI.");
+                var go = new GameObject("TravelButtonUI");
+                go.AddComponent<TravelButtonUI>();
+                UnityEngine.Object.DontDestroyOnLoad(go);
+                this.Logger.LogInfo("TravelButtonUI GameObject created and marked DontDestroyOnLoad.");
+            }
+        }
+        catch (Exception ex)
+        {
+            this.Logger.LogError("Error while ensuring TravelButtonUI exists: " + ex);
+        }
+
+        // Load cities data from JSON (robust)
+        try
+        {
+            LoadCities();
+            // Make sure we have at least the defaults in memory; if empty, populate defaults (do not blindly overwrite user file if present but empty)
+            if (Cities == null || Cities.Count == 0)
+            {
+                WriteDefaultCitiesFile();
+                LoadCities(); // reload after writing defaults
+            }
+
+            // Create per-city config toggles (persistent)
+            CreateCityConfigEntries();
+
+            this.Logger.LogInfo($"Loaded {Cities.Count} cities from {CitiesFilePath}");
+            foreach (var c in Cities) this.Logger.LogInfo($" City: {c.name} - desc length: {(c.description ?? "").Length}");
+        }
+        catch (Exception ex)
+        {
+            this.Logger.LogError("Error loading cities: " + ex);
         }
     }
 
@@ -54,7 +126,6 @@ public class TravelButtonMod : BaseUnityPlugin
         this.Logger.LogInfo("TravelButtonMod Disabled");
         try
         {
-            // unpatch only this Harmony instance
             harmony?.UnpatchSelf();
         }
         catch (Exception ex)
@@ -65,7 +136,6 @@ public class TravelButtonMod : BaseUnityPlugin
 
     private void Update()
     {
-        // Toggle overlay with configured key - use instance Config and Logger
         if (cfgEnableOverlay.Value && Input.GetKeyDown(cfgToggleKey.Value))
         {
             showOverlay = !showOverlay;
@@ -77,7 +147,6 @@ public class TravelButtonMod : BaseUnityPlugin
     {
         if (!cfgEnableOverlay.Value || !showOverlay) return;
 
-        // Make sure we refer to Unity types unambiguously via namespaces (Unity types are fine here)
         GUI.backgroundColor = Color.black;
         GUI.contentColor = Color.white;
         var style = new GUIStyle(GUI.skin.box);
@@ -95,12 +164,11 @@ public class TravelButtonMod : BaseUnityPlugin
         GUILayout.EndArea();
     }
 
-    // Helper: write file to plugin folder
     private void WriteDebugFile(string name, string content)
     {
         try
         {
-            var baseDir = Paths.PluginPath; // BepInEx helper
+            var baseDir = Paths.PluginPath;
             var path = Path.Combine(baseDir, "TravelButtonMod");
             Directory.CreateDirectory(path);
             File.WriteAllText(Path.Combine(path, name), content);
@@ -109,5 +177,158 @@ public class TravelButtonMod : BaseUnityPlugin
         {
             this.Logger.LogError("WriteDebugFile failed: " + ex);
         }
+    }
+
+    public static void LogInfo(string message) => LogStatic?.LogInfo(message);
+    public static void LogWarning(string message) => LogStatic?.LogWarning(message);
+    public static void LogError(string message) => LogStatic?.LogError(message);
+    public static void LogDebug(string message) => LogStatic?.LogDebug(message);
+
+    // Robust loader: accepts both wrapped { "cities": [...] } and bare JSON arrays.
+    public static void LoadCities()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(CitiesFilePath);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            if (!File.Exists(CitiesFilePath))
+            {
+                WriteDefaultCitiesFile();
+            }
+
+            var txt = File.ReadAllText(CitiesFilePath).Trim();
+            CityContainer container = null;
+
+            // If file is an array, wrap it
+            if (txt.StartsWith("["))
+            {
+                var wrapped = "{\"cities\":" + txt + "}";
+                container = UnityEngine.JsonUtility.FromJson<CityContainer>(wrapped);
+            }
+            else
+            {
+                try
+                {
+                    container = UnityEngine.JsonUtility.FromJson<CityContainer>(txt);
+                }
+                catch { container = null; }
+            }
+
+            // fallback: try wrapping anyway
+            if ((container == null || container.cities == null || container.cities.Length == 0) && !txt.StartsWith("["))
+            {
+                var altWrapped = "{\"cities\":" + txt + "}";
+                try
+                {
+                    container = UnityEngine.JsonUtility.FromJson<CityContainer>(altWrapped);
+                }
+                catch { container = null; }
+            }
+
+            if (container != null && container.cities != null && container.cities.Length > 0)
+            {
+                Cities = new List<City>(container.cities);
+            }
+            else
+            {
+                // nothing useful parsed -> populate defaults in memory (don't overwrite an intentionally empty user file)
+                LogStatic?.LogWarning("LoadCities: no cities parsed from JSON, populating defaults in memory.");
+                Cities = DefaultCities();
+            }
+        }
+        catch (Exception ex)
+        {
+            LogStatic?.LogError("LoadCities failed: " + ex);
+            Cities = new List<City>();
+        }
+    }
+
+    private static void WriteDefaultCitiesFile()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(CitiesFilePath);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+
+            var defaults = new CityContainer
+            {
+                cities = DefaultCities().ToArray()
+            };
+            var json = UnityEngine.JsonUtility.ToJson(defaults, true);
+            File.WriteAllText(CitiesFilePath, json);
+            LogStatic?.LogInfo($"Created default cities file at {CitiesFilePath}");
+        }
+        catch (Exception ex)
+        {
+            LogStatic?.LogError("WriteDefaultCitiesFile failed: " + ex);
+        }
+    }
+
+    private static List<City> DefaultCities()
+    {
+        return new List<City>
+        {
+            new City {
+                name = "Cierzo",
+                targetGameObjectName = "",
+                description = "The cierzo is a strong, dry and usually cold wind that blows from the North or Northwest through the regions of Aragon, La Rioja and Navarra in the Ebro valley in Spain."
+            },
+            new City {
+                name = "Levant",
+                targetGameObjectName = "",
+                description = "The levant is an easterly wind that blows in the western Mediterranean Sea and southern France, an example of mountain-gap wind."
+            },
+            new City {
+                name = "Monsoon",
+                targetGameObjectName = "",
+                description = "A seasonal reversing wind accompanied by corresponding changes in precipitation."
+            },
+            new City {
+                name = "Berg",
+                targetGameObjectName = "",
+                description = "Berg wind is the South African name for a katabatic wind: a hot dry wind blowing down the Great Escarpment from the high central plateau to the coast."
+            },
+            new City {
+                name = "Harmattan",
+                targetGameObjectName = "",
+                description = "A dry and dusty northeasterly trade wind, which blows from the Sahara Desert over West Africa into the Gulf of Guinea."
+            },
+            new City {
+                name = "Sirocco",
+                targetGameObjectName = "",
+                description = "Sirocco is a Mediterranean wind that comes from the Sahara and can reach hurricane speeds in North Africa and Southern Europe, especially during the summer season."
+            }
+        };
+    }
+
+    // Create per-city config entries so each city can be toggled on/off
+    private void CreateCityConfigEntries()
+    {
+        try
+        {
+            cityConfigEntries.Clear();
+            foreach (var city in Cities)
+            {
+                // key-safe name: replace spaces with underscores
+                var safeName = city.name.Replace(' ', '_');
+                var cfg = this.Config.Bind("Cities", safeName + ".Enabled", true,
+                    $"Enable city: {city.name} (set false to hide this destination in the UI)");
+                cityConfigEntries[city.name] = cfg;
+            }
+        }
+        catch (Exception ex)
+        {
+            LogStatic?.LogError("CreateCityConfigEntries failed: " + ex);
+        }
+    }
+
+    // Public helper used by UI code
+    public static bool IsCityEnabled(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return true;
+        if (cityConfigEntries.TryGetValue(cityName, out var cfg)) return cfg.Value;
+        // fallback true if we don't have config entry
+        return true;
     }
 }
