@@ -12,11 +12,7 @@ using UnityEngine.EventSystems;
 /// - Copies layout from an existing button template where possible so the Travel button matches inventory buttons (with clamping).
 /// - Creates dialog in a dedicated top-most Canvas so it's never occluded and Close works.
 /// - Shows only cities enabled via per-city config (handled in TravelButtonMod).
-/// Improvements:
-/// - Uses RectMask2D for viewport masking (more robust),
-/// - Ensures viewport and ScrollRect setup is correct,
-/// - Defers final layout rebuild to a short coroutine to allow Unity to compute Rects, then forces layout rebuild and sets scroll position.
-/// - Adds detailed logging while populating list so you can see exactly what was created.
+/// - Uses TravelButtonMod.cfgTravelCost for displayed/cost value.
 /// </summary>
 public class TravelButtonUI : MonoBehaviour
 {
@@ -26,9 +22,6 @@ public class TravelButtonUI : MonoBehaviour
     // Dialog UI root (created at runtime)
     private GameObject dialogRoot;
     private GameObject dialogCanvas; // dedicated canvas for dialogs
-
-    // Cost
-    private const int TravelCost = 200;
 
     // Inventory parenting tracking
     private Transform inventoryContainer;
@@ -393,13 +386,750 @@ public class TravelButtonUI : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError("CreateTravelButton exception: " + ex);
+            TravelButtonMod.LogError("CreateTravelButton: exception: " + ex);
         }
     }
-    
+
+    void OpenTravelDialog()
+    {
+        TravelButtonMod.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
+
+        try
+        {
+            if (dialogRoot != null)
+            {
+                dialogRoot.SetActive(true);
+                // bring to top
+                var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : dialogRoot.GetComponentInParent<Canvas>();
+                if (canvas != null) canvas.sortingOrder = 2000;
+                dialogRoot.transform.SetAsLastSibling();
+                TravelButtonMod.LogInfo("OpenTravelDialog: re-activated existing dialogRoot.");
+                // prevent click-through for a frame when reactivating
+                StartCoroutine(TemporarilyDisableDialogRaycasts());
+                return;
+            }
+
+            // Create (or reuse) a dedicated top-level Canvas for the dialog so it's never occluded
+            if (dialogCanvas == null)
+            {
+                dialogCanvas = new GameObject("TravelDialogCanvas");
+                var canvasComp = dialogCanvas.AddComponent<Canvas>();
+                canvasComp.renderMode = RenderMode.ScreenSpaceOverlay;
+                canvasComp.overrideSorting = true;
+                canvasComp.sortingOrder = 2000;
+                dialogCanvas.AddComponent<GraphicRaycaster>();
+                dialogCanvas.AddComponent<CanvasGroup>();
+                UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
+                TravelButtonMod.LogInfo("OpenTravelDialog: created dedicated TravelDialogCanvas (top-most).");
+            }
+
+            dialogRoot = new GameObject("TravelDialog");
+            dialogRoot.transform.SetParent(dialogCanvas.transform, false);
+            dialogRoot.transform.SetAsLastSibling();
+            dialogRoot.AddComponent<CanvasRenderer>();
+            var rootRt = dialogRoot.AddComponent<RectTransform>();
+
+            // center the dialog explicitly (use anchored center)
+            rootRt.anchorMin = new Vector2(0.5f, 0.5f);
+            rootRt.anchorMax = new Vector2(0.5f, 0.5f);
+            rootRt.pivot = new Vector2(0.5f, 0.5f);
+            rootRt.localScale = Vector3.one;
+            rootRt.sizeDelta = new Vector2(520, 360);
+            rootRt.anchoredPosition = Vector2.zero;
+
+            var bg = dialogRoot.AddComponent<Image>();
+            bg.color = new Color(0f, 0f, 0f, 0.95f);
+
+            // Title
+            var titleGO = new GameObject("Title");
+            titleGO.transform.SetParent(dialogRoot.transform, false);
+            var titleRt = titleGO.AddComponent<RectTransform>();
+            titleRt.anchorMin = new Vector2(0f, 1f);
+            titleRt.anchorMax = new Vector2(1f, 1f);
+            titleRt.pivot = new Vector2(0.5f, 1f);
+            titleRt.anchoredPosition = new Vector2(0, -8);
+            titleRt.sizeDelta = new Vector2(0, 32);
+            var titleText = titleGO.AddComponent<Text>();
+            titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            titleText.text = $"Select destination (cost {TravelButtonMod.cfgTravelCost.Value} silver)";
+            titleText.alignment = TextAnchor.MiddleCenter;
+            titleText.fontSize = 18;
+            titleText.color = Color.white;
+
+            // ScrollRect + viewport for city list
+            var scrollGO = new GameObject("ScrollArea");
+            scrollGO.transform.SetParent(dialogRoot.transform, false);
+            var scrollRt = scrollGO.AddComponent<RectTransform>();
+            scrollRt.anchorMin = new Vector2(0f, 0f);
+            scrollRt.anchorMax = new Vector2(1f, 1f);
+            scrollRt.offsetMin = new Vector2(10, 60);  // leave room for title/top and close bottom
+            scrollRt.offsetMax = new Vector2(-10, -70);
+
+            var scrollRect = scrollGO.AddComponent<ScrollRect>();
+            scrollGO.AddComponent<CanvasRenderer>();
+            // nicer defaults
+            scrollRect.movementType = ScrollRect.MovementType.Clamped;
+            scrollRect.inertia = true;
+            scrollRect.scrollSensitivity = 20f;
+
+            var viewport = new GameObject("Viewport");
+            viewport.transform.SetParent(scrollGO.transform, false);
+            var vpRt = viewport.AddComponent<RectTransform>();
+            vpRt.anchorMin = Vector2.zero;
+            vpRt.anchorMax = Vector2.one;
+            vpRt.offsetMin = Vector2.zero;
+            vpRt.offsetMax = Vector2.zero;
+            viewport.AddComponent<CanvasRenderer>();
+            // Use RectMask2D which is generally more reliable for dynamically created viewports
+            var vImg = viewport.AddComponent<Image>();
+            vImg.color = Color.clear;
+            viewport.AddComponent<UnityEngine.UI.RectMask2D>();
+
+            // Content container
+            var content = new GameObject("Content");
+            content.transform.SetParent(viewport.transform, false);
+            var contentRt = content.AddComponent<RectTransform>();
+            contentRt.anchorMin = new Vector2(0f, 1f);
+            contentRt.anchorMax = new Vector2(1f, 1f);
+            contentRt.pivot = new Vector2(0.5f, 1f);
+            contentRt.anchoredPosition = Vector2.zero;
+            contentRt.sizeDelta = new Vector2(0, 0);
+
+            var vlayout = content.AddComponent<VerticalLayoutGroup>();
+            vlayout.childControlHeight = true;
+            vlayout.childForceExpandHeight = false;
+            vlayout.childControlWidth = true;
+            vlayout.spacing = 6;
+            var csf = content.AddComponent<ContentSizeFitter>();
+            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            scrollRect.content = contentRt;
+            scrollRect.viewport = vpRt;
+            scrollRect.horizontal = false;
+            scrollRect.vertical = true;
+
+            // --- Populate items (with logging) ---
+            TravelButtonMod.LogInfo($"OpenTravelDialog: TravelButtonMod.Cities.Count = {(TravelButtonMod.Cities == null ? 0 : TravelButtonMod.Cities.Count)}");
+            bool anyCity = false;
+            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            {
+                TravelButtonMod.LogWarning("OpenTravelDialog: No cities configured (TravelButtonMod.Cities empty).");
+            }
+            else
+            {
+                foreach (var city in TravelButtonMod.Cities)
+                {
+                    bool enabled = TravelButtonMod.IsCityEnabled(city.name);
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: city '{city.name}' IsCityEnabled={enabled}");
+                    if (!enabled) continue; // skip disabled cities
+
+                    anyCity = true;
+
+                    var bgo = new GameObject("CityButton_" + city.name);
+                    bgo.transform.SetParent(content.transform, false);
+                    bgo.AddComponent<CanvasRenderer>();
+                    var brt = bgo.AddComponent<RectTransform>();
+                    brt.sizeDelta = new Vector2(0, 44);
+
+                    // Ensure button participates in layout by adding a LayoutElement
+                    var ble = bgo.AddComponent<LayoutElement>();
+                    ble.preferredHeight = 44f;
+                    ble.minHeight = 30f;
+                    ble.flexibleWidth = 1f;
+
+                    var bimg = bgo.AddComponent<Image>();
+                    bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+
+                    var bbtn = bgo.AddComponent<Button>();
+                    bbtn.targetGraphic = bimg;
+                    bbtn.interactable = true;
+                    var cb = bbtn.colors;
+                    cb.normalColor = new Color(0.45f, 0.26f, 0.13f, 1f);
+                    cb.highlightedColor = new Color(0.55f, 0.33f, 0.16f, 1f);
+                    cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
+                    bbtn.colors = cb;
+
+                    // Label left
+                    var lgo = new GameObject("Label");
+                    lgo.transform.SetParent(bgo.transform, false);
+                    var lrt = lgo.AddComponent<RectTransform>();
+                    lrt.anchorMin = new Vector2(0f, 0f);
+                    lrt.anchorMax = new Vector2(1f, 1f);
+                    lrt.offsetMin = new Vector2(8, 0);
+                    lrt.offsetMax = new Vector2(-8, 0);
+                    var ltxt = lgo.AddComponent<Text>();
+                    ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    ltxt.text = city.name;
+                    ltxt.color = new Color(0.98f, 0.94f, 0.87f, 1.0f);
+                    ltxt.alignment = TextAnchor.MiddleLeft;
+                    ltxt.fontSize = 14;
+                    ltxt.raycastTarget = false;
+
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}'");
+
+                    var capturedCity = city;
+                    bbtn.onClick.AddListener(() =>
+                    {
+                        OpenConfirmDialog(capturedCity);
+                    });
+                }
+            }
+
+            // If no enabled city was added, create visible debug placeholders so user can see something
+            if (!anyCity)
+            {
+                TravelButtonMod.LogWarning("OpenTravelDialog: no enabled cities were added to the dialog - adding debug placeholders for inspection.");
+                for (int i = 0; i < 3; i++)
+                {
+                    var dbg = new GameObject("DBG_Placeholder_" + i);
+                    dbg.transform.SetParent(content.transform, false);
+                    dbg.AddComponent<CanvasRenderer>();
+                    var drt = dbg.AddComponent<RectTransform>();
+                    drt.sizeDelta = new Vector2(0, 36);
+                    var dle = dbg.AddComponent<LayoutElement>();
+                    dle.preferredHeight = 36f;
+                    dle.flexibleWidth = 1f;
+                    var dimg = dbg.AddComponent<Image>();
+                    dimg.color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                    var dtxtGO = new GameObject("Label");
+                    dtxtGO.transform.SetParent(dbg.transform, false);
+                    var dtxt = dtxtGO.AddComponent<Text>();
+                    dtxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    dtxt.text = "DEBUG: no enabled cities";
+                    dtxt.color = Color.white;
+                    dtxt.alignment = TextAnchor.MiddleCenter;
+                    dtxt.raycastTarget = false;
+                }
+            }
+
+            // Defer final layout fix to a coroutine (wait a frame for Unity to calculate rects, then force rebuilds)
+            StartCoroutine(FinishDialogLayoutAndShow(scrollRect, viewport.GetComponent<RectTransform>(), contentRt));
+
+            // Close button (bottom center) - ensure clickable
+            var closeGO = new GameObject("Close");
+            closeGO.transform.SetParent(dialogRoot.transform, false);
+            closeGO.AddComponent<CanvasRenderer>();
+            var closeRt = closeGO.AddComponent<RectTransform>();
+            closeRt.anchorMin = new Vector2(0.5f, 0f);
+            closeRt.anchorMax = new Vector2(0.5f, 0f);
+            closeRt.pivot = new Vector2(0.5f, 0f);
+            closeRt.anchoredPosition = new Vector2(0, 12);
+            closeRt.sizeDelta = new Vector2(120, 34);
+            var cimg = closeGO.AddComponent<Image>();
+            cimg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
+            var cbtn = closeGO.AddComponent<Button>();
+            cbtn.targetGraphic = cimg;
+            cbtn.interactable = true;
+            closeGO.transform.SetAsLastSibling();
+
+            var closeTxtGO = new GameObject("Label");
+            closeTxtGO.transform.SetParent(closeGO.transform, false);
+            var ctxt = closeTxtGO.AddComponent<Text>();
+            ctxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            ctxt.text = "Close";
+            ctxt.alignment = TextAnchor.MiddleCenter;
+            ctxt.color = Color.white;
+            ctxt.raycastTarget = false;
+            var cLabelRt = closeTxtGO.GetComponent<RectTransform>();
+            cLabelRt.anchorMin = Vector2.zero;
+            cLabelRt.anchorMax = Vector2.one;
+            cLabelRt.offsetMin = Vector2.zero;
+            cLabelRt.offsetMax = Vector2.zero;
+
+            cbtn.onClick.AddListener(() =>
+            {
+                try
+                {
+                    if (dialogRoot != null) dialogRoot.SetActive(false);
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogError("Close button click failed: " + ex);
+                }
+            });
+
+            // Prevent immediate click-through: disable interactability for one frame
+            StartCoroutine(TemporarilyDisableDialogRaycasts());
+
+            TravelButtonMod.LogInfo("OpenTravelDialog: dialog created and centered (dialogRoot assigned).");
+            TravelButtonMod.LogInfo($"OpenTravelDialog: dialogCanvas sortingOrder={dialogCanvas.GetComponent<Canvas>().sortingOrder}, dialogRoot size={rootRt.sizeDelta}");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogError("OpenTravelDialog: exception while creating dialog: " + ex);
+        }
+    }
+
+    // Finish layout after a short delay so Unity's RectTransforms have valid sizes
+    private IEnumerator FinishDialogLayoutAndShow(ScrollRect scrollRect, RectTransform viewportRt, RectTransform contentRt)
+    {
+        // Wait up to two frames before doing layout work so rects have time to update.
+        // These yields must be outside any try/catch to avoid CS1626.
+        yield return null;
+        yield return null;
+
+        try
+        {
+            // Ensure content width matches viewport width so children that stretch/anchor properly will fill the width
+            float viewportWidth = viewportRt.rect.width;
+
+            if (viewportWidth > 0f)
+            {
+                contentRt.SetSizeWithCurrentAnchors(RectTransform.Axis.Horizontal, viewportWidth);
+                TravelButtonMod.LogInfo($"FinishDialogLayoutAndShow: set content width to {viewportWidth}");
+            }
+            else
+            {
+                TravelButtonMod.LogWarning("FinishDialogLayoutAndShow: viewport width is zero after two frames - layout may be incorrect.");
+            }
+
+            // Rebuild layouts top-down
+            Canvas.ForceUpdateCanvases();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(contentRt);
+            LayoutRebuilder.ForceRebuildLayoutImmediate(viewportRt);
+            LayoutRebuilder.ForceRebuildLayoutImmediate(scrollRect.GetComponent<RectTransform>());
+
+            // Make sure ScrollRect shows top
+            scrollRect.verticalNormalizedPosition = 1f;
+
+            TravelButtonMod.LogInfo("FinishDialogLayoutAndShow: finished rebuild and set scroll position.");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("FinishDialogLayoutAndShow exception: " + ex);
+        }
+    }
+
+    // Prevent click-through by disabling CanvasGroup.interactable for one frame while the initial click finishes
+    private IEnumerator TemporarilyDisableDialogRaycasts()
+    {
+        CanvasGroup cg = null;
+        if (dialogCanvas != null)
+        {
+            cg = dialogCanvas.GetComponent<CanvasGroup>();
+            if (cg == null)
+            {
+                cg = dialogCanvas.AddComponent<CanvasGroup>();
+            }
+        }
+
+        if (cg == null)
+            yield break;
+
+        cg.interactable = false;
+        cg.blocksRaycasts = false;
+
+        // wait two frames (yields must not be inside a try/catch)
+        yield return null;
+        yield return null;
+
+        cg.interactable = true;
+        cg.blocksRaycasts = true;
+    }
+
     private Canvas FindCanvas()
     {
-        Canvas canvas = FindObjectOfType<Canvas>();
-        return canvas != null ? canvas : null;
+        var canvas = UnityEngine.Object.FindObjectOfType<Canvas>();
+        if (canvas != null) return canvas;
+
+        Type canvasType = Type.GetType("UnityEngine.Canvas, UnityEngine.UIModule");
+        if (canvasType != null)
+        {
+            var objs = UnityEngine.Object.FindObjectsOfType(canvasType);
+            if (objs != null && objs.Length > 0)
+            {
+                var comp = objs[0] as Canvas;
+                return comp;
+            }
+        }
+        return null;
+    }
+
+    private void OpenConfirmDialog(TravelButtonMod.City city)
+    {
+        TravelButtonMod.LogInfo($"OpenConfirmDialog: {city.name}");
+
+        var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : FindCanvas();
+        if (canvas == null) { TravelButtonMod.LogError("OpenConfirmDialog: No canvas found."); return; }
+
+        var confirm = new GameObject("TravelConfirm");
+        confirm.AddComponent<CanvasRenderer>();
+        var canvasComp = confirm.AddComponent<Canvas>();
+        canvasComp.overrideSorting = true;
+        canvasComp.sortingOrder = 2100;
+        confirm.AddComponent<GraphicRaycaster>();
+        confirm.transform.SetParent(dialogRoot != null ? dialogRoot.transform : canvas.transform, false);
+        confirm.transform.SetAsLastSibling();
+
+        var rt = confirm.AddComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(420, 180);
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = new Vector2(0, 0);
+
+        var bg = confirm.AddComponent<Image>();
+        bg.color = new Color(0f, 0f, 0f, 0.95f);
+
+        // City name
+        var nameGO = new GameObject("Name");
+        nameGO.transform.SetParent(confirm.transform, false);
+        var nameRt = nameGO.AddComponent<RectTransform>();
+        nameRt.anchorMin = new Vector2(0f, 1f);
+        nameRt.anchorMax = new Vector2(1f, 1f);
+        nameRt.pivot = new Vector2(0.5f, 1f);
+        nameRt.anchoredPosition = new Vector2(0, -8);
+        nameRt.sizeDelta = new Vector2(0, 28);
+        var nameText = nameGO.AddComponent<Text>();
+        nameText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        nameText.text = city.name;
+        nameText.alignment = TextAnchor.MiddleCenter;
+        nameText.fontSize = 16;
+        nameText.color = Color.white;
+
+        // Description
+        var descGO = new GameObject("Desc");
+        descGO.transform.SetParent(confirm.transform, false);
+        var descRt = descGO.AddComponent<RectTransform>();
+        descRt.anchorMin = new Vector2(0f, 0.25f);
+        descRt.anchorMax = new Vector2(1f, 1f);
+        descRt.offsetMin = new Vector2(10, 40);
+        descRt.offsetMax = new Vector2(-10, -40);
+        var descText = descGO.AddComponent<Text>();
+        descText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        descText.text = city.description ?? "(no description)";
+        descText.alignment = TextAnchor.UpperLeft;
+        descText.fontSize = 14;
+        descText.color = Color.white;
+        descText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        descText.verticalOverflow = VerticalWrapMode.Truncate;
+
+        // Confirm (Yes) button
+        var yesGO = new GameObject("Yes");
+        yesGO.transform.SetParent(confirm.transform, false);
+        yesGO.AddComponent<CanvasRenderer>();
+        var yesRt = yesGO.AddComponent<RectTransform>();
+        yesRt.anchorMin = new Vector2(0.25f, 0f);
+        yesRt.anchorMax = new Vector2(0.25f, 0f);
+        yesRt.pivot = new Vector2(0.5f, 0f);
+        yesRt.anchoredPosition = new Vector2(0, 12);
+        yesRt.sizeDelta = new Vector2(120, 34);
+        var yimg = yesGO.AddComponent<Image>();
+        yimg.color = new Color(0.1f, 0.6f, 0.1f, 1f);
+        var ybtn = yesGO.AddComponent<Button>();
+        ybtn.targetGraphic = yimg;
+        ybtn.interactable = true;
+        var ytxt = new GameObject("Label");
+        ytxt.transform.SetParent(yesGO.transform, false);
+        var ytext = ytxt.AddComponent<Text>();
+        ytext.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        ytext.text = $"Pay & Travel ({TravelButtonMod.cfgTravelCost.Value} silver)";
+        ytext.alignment = TextAnchor.MiddleCenter;
+        ytext.color = Color.white;
+
+        // Cancel button
+        var noGO = new GameObject("No");
+        noGO.transform.SetParent(confirm.transform, false);
+        noGO.AddComponent<CanvasRenderer>();
+        var noRt = noGO.AddComponent<RectTransform>();
+        noRt.anchorMin = new Vector2(0.75f, 0f);
+        noRt.anchorMax = new Vector2(0.75f, 0f);
+        noRt.pivot = new Vector2(0.5f, 0f);
+        noRt.anchoredPosition = new Vector2(0, 12);
+        noRt.sizeDelta = new Vector2(120, 34);
+        var nimg = noGO.AddComponent<Image>();
+        nimg.color = new Color(0.6f, 0.1f, 0.1f, 1f);
+        var nbtn = noGO.AddComponent<Button>();
+        nbtn.targetGraphic = nimg;
+        nbtn.interactable = true;
+        var ntxt = new GameObject("Label");
+        ntxt.transform.SetParent(noGO.transform, false);
+        var ntext = ntxt.AddComponent<Text>();
+        ntext.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        ntext.text = "Cancel";
+        ntext.alignment = TextAnchor.MiddleCenter;
+        ntext.color = Color.white;
+
+        // Yes behavior takes cfgEnableTeleport into account and uses cfgTravelCost
+        ybtn.onClick.AddListener(() =>
+        {
+            try
+            {
+                if (!TravelButtonMod.cfgEnableTeleport.Value)
+                {
+                    TravelButtonMod.LogInfo("Teleport disabled by config. Skipping payment and teleport (UI-only mode).");
+                }
+                else
+                {
+                    int cost = TravelButtonMod.cfgTravelCost.Value;
+                    bool paid = AttemptDeductSilver(cost);
+                    if (!paid)
+                    {
+                        TravelButtonMod.LogWarning("AttemptDeductSilver: failed - aborting travel.");
+                    }
+                    else
+                    {
+                        bool teleported = AttemptTeleportToCity(city);
+                        if (!teleported)
+                        {
+                            TravelButtonMod.LogError("AttemptTeleportToCity: failed to teleport.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogError("Confirm click error: " + ex);
+            }
+            UnityEngine.Object.Destroy(confirm);
+        });
+
+        nbtn.onClick.AddListener(() =>
+        {
+            UnityEngine.Object.Destroy(confirm);
+        });
+    }
+
+    private bool AttemptDeductSilver(int amount)
+    {
+        TravelButtonMod.LogInfo($"AttemptDeductSilver: trying to deduct {amount} silver.");
+
+        var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+        foreach (var mb in allMonoBehaviours)
+        {
+            var t = mb.GetType();
+
+            string[] methodNames = new string[] { "RemoveMoney", "SpendMoney", "RemoveSilver", "SpendSilver", "RemoveCurrency", "TakeMoney", "UseMoney" };
+            foreach (var mn in methodNames)
+            {
+                var mi = t.GetMethod(mn, new Type[] { typeof(int) });
+                if (mi != null)
+                {
+                    try
+                    {
+                        var res = mi.Invoke(mb, new object[] { amount });
+                        TravelButtonMod.LogInfo($"AttemptDeductSilver: called {t.FullName}.{mn}({amount}) -> {res}");
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptDeductSilver: calling {t.FullName}.{mn} threw: {ex}");
+                    }
+                }
+            }
+
+            foreach (var fi in t.GetFields())
+            {
+                var name = fi.Name.ToLower();
+                if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
+                {
+                    try
+                    {
+                        if (fi.FieldType == typeof(int))
+                        {
+                            int cur = (int)fi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                fi.SetValue(mb, cur - amount);
+                                TravelButtonMod.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonMod.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                        else if (fi.FieldType == typeof(long))
+                        {
+                            long cur = (long)fi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                fi.SetValue(mb, cur - amount);
+                                TravelButtonMod.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonMod.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptDeductSilver: field access {t.FullName}.{fi.Name} threw: {ex}");
+                    }
+                }
+            }
+
+            foreach (var pi in t.GetProperties())
+            {
+                var name = pi.Name.ToLower();
+                if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
+                {
+                    try
+                    {
+                        if (pi.PropertyType == typeof(int) && pi.CanRead && pi.CanWrite)
+                        {
+                            int cur = (int)pi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                pi.SetValue(mb, cur - amount);
+                                TravelButtonMod.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonMod.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                        else if (pi.PropertyType == typeof(long) && pi.CanRead && pi.CanWrite)
+                        {
+                            long cur = (long)pi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                pi.SetValue(mb, cur - amount);
+                                TravelButtonMod.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonMod.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptDeductSilver: property access {t.FullName}.{pi.Name} threw: {ex}");
+                    }
+                }
+            }
+        }
+
+        TravelButtonMod.LogWarning("AttemptDeductSilver: could not find an inventory/money field or method automatically. Travel aborted.");
+        return false;
+    }
+
+    private bool AttemptTeleportToCity(TravelButtonMod.City city)
+    {
+        TravelButtonMod.LogInfo($"AttemptTeleportToCity: trying to teleport to {city.name}");
+
+        Vector3? targetPos = null;
+        if (!string.IsNullOrEmpty(city.targetGameObjectName))
+        {
+            var targetGO = GameObject.Find(city.targetGameObjectName);
+            if (targetGO != null)
+            {
+                targetPos = targetGO.transform.position;
+                TravelButtonMod.LogInfo($"AttemptTeleportToCity: found GameObject '{city.targetGameObjectName}' at {targetPos.Value}");
+            }
+            else
+            {
+                TravelButtonMod.LogWarning($"AttemptTeleportToCity: target GameObject '{city.targetGameObjectName}' not found in scene.");
+            }
+        }
+
+        if (targetPos == null && city.coords != null && city.coords.Length >= 3)
+        {
+            targetPos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+            TravelButtonMod.LogInfo($"AttemptTeleportToCity: using explicit coords {targetPos.Value}");
+        }
+
+        if (targetPos == null)
+        {
+            TravelButtonMod.LogError($"AttemptTeleportToCity: no valid target for {city.name}. Aborting teleport.");
+            return false;
+        }
+
+        Transform playerTransform = null;
+        var tagged = GameObject.FindWithTag("Player");
+        if (tagged != null)
+        {
+            playerTransform = tagged.transform;
+            TravelButtonMod.LogInfo("AttemptTeleportToCity: found player by tag 'Player'.");
+        }
+
+        if (playerTransform == null)
+        {
+            string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player" };
+            foreach (var tname in playerTypeCandidates)
+            {
+                var t = Type.GetType(tname + ", Assembly-CSharp");
+                if (t != null)
+                {
+                    var objs = UnityEngine.Object.FindObjectsOfType(t);
+                    if (objs != null && objs.Length > 0)
+                    {
+                        var comp = objs[0] as Component;
+                        if (comp != null)
+                        {
+                            playerTransform = comp.transform;
+                            TravelButtonMod.LogInfo($"AttemptTeleportToCity: found player via type {tname}.");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (playerTransform == null)
+        {
+            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var tr in allTransforms)
+            {
+                if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    playerTransform = tr;
+                    TravelButtonMod.LogInfo($"AttemptTeleportToCity: found player by name heuristic: {tr.name}");
+                    break;
+                }
+            }
+        }
+
+        if (playerTransform == null)
+        {
+            TravelButtonMod.LogError("AttemptTeleportToCity: could not locate player transform. Aborting.");
+            return false;
+        }
+
+        try
+        {
+            playerTransform.position = targetPos.Value;
+            var rb = playerTransform.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.velocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+            TravelButtonMod.LogInfo($"AttemptTeleportToCity: teleported player to {targetPos.Value}.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogError("AttemptTeleportToCity: teleport failed: " + ex);
+            return false;
+        }
+    }
+
+    // ClickLogger for debugging
+    private class ClickLogger : MonoBehaviour, IPointerClickHandler, IPointerEnterHandler, IPointerExitHandler
+    {
+        public void OnPointerClick(PointerEventData eventData)
+        {
+            TravelButtonMod.LogInfo("ClickLogger: OnPointerClick received on " + gameObject.name + " button.");
+        }
+
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            TravelButtonMod.LogInfo("ClickLogger: OnPointerEnter on " + gameObject.name);
+        }
+
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            TravelButtonMod.LogInfo("ClickLogger: OnPointerExit on " + gameObject.name);
+        }
     }
 }

@@ -24,6 +24,9 @@ public class TravelButtonMod : BaseUnityPlugin
     // New config: enable actual teleport/payment
     public static ConfigEntry<bool> cfgEnableTeleport;
 
+    // New config: travel cost in silver
+    public static ConfigEntry<int> cfgTravelCost;
+
     // runtime
     private bool showOverlay = false;
 
@@ -61,6 +64,9 @@ public class TravelButtonMod : BaseUnityPlugin
         cfgOverlayText = this.Config.Bind("General", "OverlayText", "TravelButtonMod active", "Text shown in overlay");
 
         cfgEnableTeleport = this.Config.Bind("General", "EnableTeleport", true, "If false, travel will not deduct money or teleport the player (UI-only mode)");
+
+        // NEW: travel cost config
+        cfgTravelCost = this.Config.Bind("General", "TravelCost", 200, "Cost (in silver coins) to pay for teleporting via the travel UI");
 
         try
         {
