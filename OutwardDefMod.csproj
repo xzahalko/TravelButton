@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>OutwardDefMod</AssemblyName>
+    <RootNamespace>OutwardDefMod</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <!-- This csproj expects a local `libs` folder (project-root/libs) that contains:
+       - BepInEx.dll
+       - 0Harmony.dll
+       - UnityEngine.CoreModule.dll (or other Unity assemblies)
+     Copy those from your BepInEx/game installation or the game's Managed folder.
+  -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>libs\BepInEx.dll</HintPath>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>libs\0Harmony.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule" Condition="Exists('libs\UnityEngine.CoreModule.dll')">
+      <HintPath>libs\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="src\OutwardDefMod.cs" />
+  </ItemGroup>
+</Project>

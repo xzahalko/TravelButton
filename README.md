@@ -1,35 +1,27 @@
-```markdown
-# TravelButton
+# TravelButton — Outward: Definitive Edition Sample Mod
 
-TravelButton is a minimal, cross-platform demo project that shows a small web UI with a "Travel" button. When clicked the button displays a styled waiting/progress dialog (spinner + message) while simulating a long-running operation, then shows a result.
+This repository contains a minimal example BepInEx plugin for Outward: Definitive Edition.
+It demonstrates a safe, non-invasive plugin structure: configuration entries, a simple toggleable on-screen overlay,
+and a place to add Harmony patches later.
 
-This repository is intended as a tiny starter you can extend or embed into a larger web/app project.
+Warning / prerequisites
+- This project is a compile-time skeleton only. To compile, you must provide the game's Unity assemblies and BepInEx/Harmony DLLs in a `libs/` folder as described below.
+- DO NOT ship Unity engine DLLs or game files in a public repository. Keep the `libs/` folder local to your machine (gitignore excludes it).
 
-Quick start
-1. Clone or download this repository to your machine.
-2. Open `index.html` in a modern browser (no build required).
-3. Click the "Travel" button to see the waiting dialog and simulated result.
+Quick instructions
+1. Create a `libs/` directory in the project root and copy these runtime/compile-time DLLs there from your game/BepInEx installation:
+   - BepInEx.dll (from BepInEx/core/)
+   - 0Harmony.dll
+   - UnityEngine.CoreModule.dll (or UnityEngine.dll depending on game)
+2. Open the .csproj in Visual Studio (target .NET Framework 4.7.2) and build.
+3. Copy the compiled DLL (`OutwardDefMod.dll`) into the BepInEx/plugins/ folder of your Outward installation.
+4. Launch Outward; check BepInEx logs for plugin load messages.
 
-Files
-- `index.html` — demo UI
-- `styles.css` — styling, centered layout and styled waiting dialog
-- `src/script.js` — button handler and waiting dialog logic
-- `README.md` — this file
-- `LICENSE` — MIT license
-- `.gitignore` — recommended ignores for the repo
+Files included
+- `src/OutwardDefMod.cs` — minimal plugin code (overlay + config)
+- `OutwardDefMod.csproj` — project file; expects libs/ with required DLLs
+- `README.md`, `LICENSE`, `.gitignore`
 
-How to create the GitHub repo and push (quick)
-1. Create the repo on GitHub (web) named `TravelButton` (public).
-2. Or run (if you have the GitHub CLI installed) locally in the project folder:
-   - git init
-   - git add .
-   - git commit -m "Initial commit"
-   - gh repo create xzahalko/TravelButton --public --source=. --remote=origin --push
-3. Or the plain git flow after creating the repo in GitHub web:
-   - git remote add origin https://github.com/xzahalko/TravelButton.git
-   - git branch -M main
-   - git push -u origin main
-
-License
-This project is MIT-licensed. See `LICENSE`.
-```
+Notes
+- The plugin uses BepInEx config entries and a simple OnGUI overlay.
+- Use Harmony patches carefully — commented example provided in the code.

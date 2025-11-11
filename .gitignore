@@ -1,0 +1,15 @@
+# ignore libs and build outputs
+libs/
+bin/
+obj/
+
+# IDEs
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+
+# OS
+.DS_Store
+Thumbs.db
