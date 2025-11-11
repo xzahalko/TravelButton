@@ -1,9 +1,11 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using System.Reflection;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -12,7 +14,8 @@ using UnityEngine.EventSystems;
 /// - Copies layout from an existing button template where possible so the Travel button matches inventory buttons (with clamping).
 /// - Creates dialog in a dedicated top-most Canvas so it's never occluded and Close works.
 /// - Shows only cities enabled via per-city config (handled in TravelButtonMod).
-/// - Uses TravelButtonMod.cfgTravelCost for displayed/cost value.
+/// - Buttons are interactable only when player has enough silver (checked on-open and updated while dialog open).
+/// - Clicking a city will now immediately attempt to pay and teleport the player (no extra confirm).
 /// </summary>
 public class TravelButtonUI : MonoBehaviour
 {
@@ -29,6 +32,9 @@ public class TravelButtonUI : MonoBehaviour
 
     // The real GameObject we watch for visibility changes (window, panel, or an object with CanvasGroup)
     private GameObject inventoryVisibilityTarget;
+
+    // Coroutine that refreshes city button interactability while dialog is open
+    private Coroutine refreshButtonsCoroutine;
 
     void Start()
     {
@@ -396,6 +402,13 @@ public class TravelButtonUI : MonoBehaviour
 
         try
         {
+            // Stop any previous refresh coroutine
+            if (refreshButtonsCoroutine != null)
+            {
+                StopCoroutine(refreshButtonsCoroutine);
+                refreshButtonsCoroutine = null;
+            }
+
             if (dialogRoot != null)
             {
                 dialogRoot.SetActive(true);
@@ -406,6 +419,8 @@ public class TravelButtonUI : MonoBehaviour
                 TravelButtonMod.LogInfo("OpenTravelDialog: re-activated existing dialogRoot.");
                 // prevent click-through for a frame when reactivating
                 StartCoroutine(TemporarilyDisableDialogRaycasts());
+                // start refreshing buttons while open
+                refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
                 return;
             }
 
@@ -517,11 +532,16 @@ public class TravelButtonUI : MonoBehaviour
             }
             else
             {
+                // read player currency now to set initial interactable state
+                long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
+                bool haveMoneyInfo = playerMoney >= 0;
+                int cost = TravelButtonMod.cfgTravelCost.Value;
+
                 foreach (var city in TravelButtonMod.Cities)
                 {
-                    bool enabled = TravelButtonMod.IsCityEnabled(city.name);
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: city '{city.name}' IsCityEnabled={enabled}");
-                    if (!enabled) continue; // skip disabled cities
+                    bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: city '{city.name}' IsCityEnabled={enabledByConfig}");
+                    if (!enabledByConfig) continue; // skip disabled cities
 
                     anyCity = true;
 
@@ -565,12 +585,29 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}'");
+                    // If we have currency info, disable button if player lacks funds
+                    if (haveMoneyInfo)
+                    {
+                        if (playerMoney < cost)
+                        {
+                            bbtn.interactable = false;
+                            // dim the image to indicate disabled
+                            bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                        }
+                    }
+                    else
+                    {
+                        // If we couldn't determine player's money, leave buttons enabled but log.
+                        TravelButtonMod.LogWarning("OpenTravelDialog: could not determine player money; leaving city buttons enabled.");
+                    }
+
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable})");
 
                     var capturedCity = city;
+                    // NEW: immediate-pay-and-teleport when city button clicked (instead of separate confirmation)
                     bbtn.onClick.AddListener(() =>
                     {
-                        OpenConfirmDialog(capturedCity);
+                        TryPayAndTeleport(capturedCity);
                     });
                 }
             }
@@ -604,6 +641,9 @@ public class TravelButtonUI : MonoBehaviour
 
             // Defer final layout fix to a coroutine (wait a frame for Unity to calculate rects, then force rebuilds)
             StartCoroutine(FinishDialogLayoutAndShow(scrollRect, viewport.GetComponent<RectTransform>(), contentRt));
+
+            // start refreshing buttons while open
+            refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
 
             // Close button (bottom center) - ensure clickable
             var closeGO = new GameObject("Close");
@@ -641,6 +681,12 @@ public class TravelButtonUI : MonoBehaviour
                 try
                 {
                     if (dialogRoot != null) dialogRoot.SetActive(false);
+                    // stop refresh coroutine when dialog closed
+                    if (refreshButtonsCoroutine != null)
+                    {
+                        StopCoroutine(refreshButtonsCoroutine);
+                        refreshButtonsCoroutine = null;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -658,6 +704,341 @@ public class TravelButtonUI : MonoBehaviour
         {
             TravelButtonMod.LogError("OpenTravelDialog: exception while creating dialog: " + ex);
         }
+    }
+
+    // Try to determine target position for a city without moving anything.
+    // Returns true and sets out position when found (coords or GameObject), false otherwise.
+    private bool TryGetTargetPosition(TravelButtonMod.City city, out Vector3 pos)
+    {
+        pos = Vector3.zero;
+        try
+        {
+            if (!string.IsNullOrEmpty(city.targetGameObjectName))
+            {
+                var targetGO = GameObject.Find(city.targetGameObjectName);
+                if (targetGO != null)
+                {
+                    pos = targetGO.transform.position;
+                    TravelButtonMod.LogInfo($"TryGetTargetPosition: found GameObject '{city.targetGameObjectName}' at {pos}");
+                    return true;
+                }
+                else
+                {
+                    TravelButtonMod.LogWarning($"TryGetTargetPosition: target GameObject '{city.targetGameObjectName}' not found in scene for city '{city.name}'.");
+                }
+            }
+
+            if (city.coords != null && city.coords.Length >= 3)
+            {
+                pos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                TravelButtonMod.LogInfo($"TryGetTargetPosition: using explicit coords {pos} for city '{city.name}'");
+                return true;
+            }
+
+            // not found
+            return false;
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("TryGetTargetPosition exception: " + ex);
+            pos = Vector3.zero;
+            return false;
+        }
+    }
+
+    // Teleport player to a specific world position. Returns true on success.
+    private bool AttemptTeleportToPosition(Vector3 targetPos)
+    {
+        try
+        {
+            Transform playerTransform = null;
+            var tagged = GameObject.FindWithTag("Player");
+            if (tagged != null)
+            {
+                playerTransform = tagged.transform;
+                TravelButtonMod.LogInfo("AttemptTeleportToPosition: found player by tag 'Player'.");
+            }
+
+            if (playerTransform == null)
+            {
+                string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player" };
+                foreach (var tname in playerTypeCandidates)
+                {
+                    var t = Type.GetType(tname + ", Assembly-CSharp");
+                    if (t != null)
+                    {
+                        var objs = UnityEngine.Object.FindObjectsOfType(t);
+                        if (objs != null && objs.Length > 0)
+                        {
+                            var comp = objs[0] as Component;
+                            if (comp != null)
+                            {
+                                playerTransform = comp.transform;
+                                TravelButtonMod.LogInfo($"AttemptTeleportToPosition: found player via type {tname}.");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (playerTransform == null)
+            {
+                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var tr in allTransforms)
+                {
+                    if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        playerTransform = tr;
+                        TravelButtonMod.LogInfo($"AttemptTeleportToPosition: found player by name heuristic: {tr.name}");
+                        break;
+                    }
+                }
+            }
+
+            if (playerTransform == null)
+            {
+                TravelButtonMod.LogError("AttemptTeleportToPosition: could not locate player transform. Aborting.");
+                return false;
+            }
+
+            playerTransform.position = targetPos;
+            var rb = playerTransform.GetComponent<Rigidbody>();
+            if (rb != null)
+            {
+                rb.velocity = Vector3.zero;
+                rb.angularVelocity = Vector3.zero;
+            }
+            TravelButtonMod.LogInfo($"AttemptTeleportToPosition: teleported player to {targetPos}.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogError("AttemptTeleportToPosition: teleport failed: " + ex);
+            return false;
+        }
+    }
+
+    // Best-effort refund by trying to call common Add/Give methods or incrementing detected money fields/properties.
+    // Returns true if a refund action was performed successfully.
+    private bool AttemptRefundSilver(int amount)
+    {
+        TravelButtonMod.LogInfo($"AttemptRefundSilver: trying to refund {amount} silver.");
+
+        var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+        foreach (var mb in allMonoBehaviours)
+        {
+            var t = mb.GetType();
+
+            // Try methods that add money
+            string[] addMethodNames = new string[] { "AddMoney", "GrantMoney", "GiveMoney", "AddSilver", "GiveSilver", "GrantSilver", "AddCoins" };
+            foreach (var mn in addMethodNames)
+            {
+                var mi = t.GetMethod(mn, new Type[] { typeof(int) });
+                if (mi != null)
+                {
+                    try
+                    {
+                        mi.Invoke(mb, new object[] { amount });
+                        TravelButtonMod.LogInfo($"AttemptRefundSilver: called {t.FullName}.{mn}({amount})");
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptRefundSilver: calling {t.FullName}.{mn} threw: {ex}");
+                    }
+                }
+            }
+
+            // Try to increment fields/properties that look like currency
+            foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            {
+                var name = fi.Name.ToLower();
+                if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
+                {
+                    try
+                    {
+                        if (fi.FieldType == typeof(int))
+                        {
+                            int cur = (int)fi.GetValue(mb);
+                            fi.SetValue(mb, cur + amount);
+                            TravelButtonMod.LogInfo($"AttemptRefundSilver: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
+                            return true;
+                        }
+                        else if (fi.FieldType == typeof(long))
+                        {
+                            long cur = (long)fi.GetValue(mb);
+                            fi.SetValue(mb, cur + amount);
+                            TravelButtonMod.LogInfo($"AttemptRefundSilver: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
+                            return true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptRefundSilver: field access {t.FullName}.{fi.Name} threw: {ex}");
+                    }
+                }
+            }
+
+            foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            {
+                var name = pi.Name.ToLower();
+                if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
+                {
+                    try
+                    {
+                        if (pi.PropertyType == typeof(int))
+                        {
+                            int cur = (int)pi.GetValue(mb);
+                            pi.SetValue(mb, cur + amount);
+                            TravelButtonMod.LogInfo($"AttemptRefundSilver: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
+                            return true;
+                        }
+                        else if (pi.PropertyType == typeof(long))
+                        {
+                            long cur = (long)pi.GetValue(mb);
+                            pi.SetValue(mb, cur + amount);
+                            TravelButtonMod.LogInfo($"AttemptRefundSilver: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
+                            return true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonMod.LogWarning($"AttemptRefundSilver: property access {t.FullName}.{pi.Name} threw: {ex}");
+                    }
+                }
+            }
+        }
+
+        TravelButtonMod.LogWarning("AttemptRefundSilver: could not find a place to refund the currency automatically.");
+        return false;
+    }
+
+    // Attempt to deduct cost and teleport immediately. If cfgEnableTeleport is false, teleport only (UI-only)
+    private void TryPayAndTeleport(TravelButtonMod.City city)
+    {
+        try
+        {
+            int cost = TravelButtonMod.cfgTravelCost.Value;
+
+            // First: find a valid target position. If none, abort (do not deduct).
+            if (!TryGetTargetPosition(city, out Vector3 targetPos))
+            {
+                TravelButtonMod.LogError($"TryPayAndTeleport: no valid target for {city.name}. Aborting without charging.");
+                return;
+            }
+
+            if (!TravelButtonMod.cfgEnableTeleport.Value)
+            {
+                TravelButtonMod.LogInfo($"TryPayAndTeleport: teleport disabled by config - performing UI-only teleport to {city.name}");
+                bool t = AttemptTeleportToPosition(targetPos);
+                if (t) CloseDialogAndStopRefresh();
+                return;
+            }
+
+            // Deduct; AttemptDeductSilver logs actions
+            bool paid = AttemptDeductSilver(cost);
+            if (!paid)
+            {
+                TravelButtonMod.LogWarning($"TryPayAndTeleport: not enough funds or deduction failed for cost {cost} - aborting.");
+                return;
+            }
+
+            // Teleport
+            bool teleported = AttemptTeleportToPosition(targetPos);
+            if (!teleported)
+            {
+                TravelButtonMod.LogError("TryPayAndTeleport: teleport failed after deduction; attempting refund.");
+
+                // Best-effort refund
+                bool refunded = AttemptRefundSilver(cost);
+                if (refunded)
+                    TravelButtonMod.LogInfo($"TryPayAndTeleport: refund of {cost} silver succeeded after failed teleport.");
+                else
+                    TravelButtonMod.LogWarning($"TryPayAndTeleport: refund of {cost} silver FAILED after failed teleport. Manual correction may be required.");
+
+                return;
+            }
+            else
+            {
+                TravelButtonMod.LogInfo($"TryPayAndTeleport: successfully teleported to {city.name}");
+                CloseDialogAndStopRefresh();
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogError("TryPayAndTeleport exception: " + ex);
+        }
+    }
+
+    private void CloseDialogAndStopRefresh()
+    {
+        try
+        {
+            if (dialogRoot != null) dialogRoot.SetActive(false);
+            if (refreshButtonsCoroutine != null)
+            {
+                StopCoroutine(refreshButtonsCoroutine);
+                refreshButtonsCoroutine = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("CloseDialogAndStopRefresh failed: " + ex);
+        }
+    }
+
+    // Refresh city buttons while dialog is open: re-evaluates player's currency and enables/disables buttons.
+    private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialog)
+    {
+        while (dialog != null && dialog.activeInHierarchy)
+        {
+            try
+            {
+                // fetch current player money
+                long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
+                bool haveMoneyInfo = currentMoney >= 0;
+                int cost = TravelButtonMod.cfgTravelCost.Value;
+
+                var content = dialog.transform.Find("ScrollArea/Viewport/Content");
+                if (content != null)
+                {
+                    for (int i = 0; i < content.childCount; i++)
+                    {
+                        var child = content.GetChild(i);
+                        var btn = child.GetComponent<Button>();
+                        var img = child.GetComponent<Image>();
+                        if (btn == null || img == null) continue;
+
+                        // extract city name from GameObject name "CityButton_<name>"
+                        string objName = child.name;
+                        if (objName.StartsWith("CityButton_"))
+                        {
+                            string cityName = objName.Substring("CityButton_".Length);
+                            bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
+                            bool shouldBeInteractable = enabledByConfig;
+                            if (haveMoneyInfo)
+                                shouldBeInteractable = shouldBeInteractable && (currentMoney >= cost);
+                            // apply interactable state and tint
+                            if (btn.interactable != shouldBeInteractable)
+                            {
+                                btn.interactable = shouldBeInteractable;
+                                img.color = shouldBeInteractable ? new Color(0.35f, 0.20f, 0.08f, 1f) : new Color(0.18f, 0.18f, 0.18f, 1f);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogWarning("RefreshCityButtonsWhileOpen exception: " + ex);
+            }
+
+            // refresh every 1 second while open
+            yield return new WaitForSeconds(1f);
+        }
+
+        refreshButtonsCoroutine = null;
     }
 
     // Finish layout after a short delay so Unity's RectTransforms have valid sizes
@@ -745,149 +1126,103 @@ public class TravelButtonUI : MonoBehaviour
         return null;
     }
 
-    private void OpenConfirmDialog(TravelButtonMod.City city)
+    /// <summary>
+    /// Try to detect player's currency amount. Returns -1 if could not determine.
+    /// This is a best-effort reflection-based reader scanning MonoBehaviours, fields and properties.
+    /// </summary>
+    private long GetPlayerCurrencyAmountOrMinusOne()
     {
-        TravelButtonMod.LogInfo($"OpenConfirmDialog: {city.name}");
-
-        var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : FindCanvas();
-        if (canvas == null) { TravelButtonMod.LogError("OpenConfirmDialog: No canvas found."); return; }
-
-        var confirm = new GameObject("TravelConfirm");
-        confirm.AddComponent<CanvasRenderer>();
-        var canvasComp = confirm.AddComponent<Canvas>();
-        canvasComp.overrideSorting = true;
-        canvasComp.sortingOrder = 2100;
-        confirm.AddComponent<GraphicRaycaster>();
-        confirm.transform.SetParent(dialogRoot != null ? dialogRoot.transform : canvas.transform, false);
-        confirm.transform.SetAsLastSibling();
-
-        var rt = confirm.AddComponent<RectTransform>();
-        rt.sizeDelta = new Vector2(420, 180);
-        rt.anchorMin = new Vector2(0.5f, 0.5f);
-        rt.anchorMax = new Vector2(0.5f, 0.5f);
-        rt.pivot = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = new Vector2(0, 0);
-
-        var bg = confirm.AddComponent<Image>();
-        bg.color = new Color(0f, 0f, 0f, 0.95f);
-
-        // City name
-        var nameGO = new GameObject("Name");
-        nameGO.transform.SetParent(confirm.transform, false);
-        var nameRt = nameGO.AddComponent<RectTransform>();
-        nameRt.anchorMin = new Vector2(0f, 1f);
-        nameRt.anchorMax = new Vector2(1f, 1f);
-        nameRt.pivot = new Vector2(0.5f, 1f);
-        nameRt.anchoredPosition = new Vector2(0, -8);
-        nameRt.sizeDelta = new Vector2(0, 28);
-        var nameText = nameGO.AddComponent<Text>();
-        nameText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-        nameText.text = city.name;
-        nameText.alignment = TextAnchor.MiddleCenter;
-        nameText.fontSize = 16;
-        nameText.color = Color.white;
-
-        // Description
-        var descGO = new GameObject("Desc");
-        descGO.transform.SetParent(confirm.transform, false);
-        var descRt = descGO.AddComponent<RectTransform>();
-        descRt.anchorMin = new Vector2(0f, 0.25f);
-        descRt.anchorMax = new Vector2(1f, 1f);
-        descRt.offsetMin = new Vector2(10, 40);
-        descRt.offsetMax = new Vector2(-10, -40);
-        var descText = descGO.AddComponent<Text>();
-        descText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-        descText.text = city.description ?? "(no description)";
-        descText.alignment = TextAnchor.UpperLeft;
-        descText.fontSize = 14;
-        descText.color = Color.white;
-        descText.horizontalOverflow = HorizontalWrapMode.Wrap;
-        descText.verticalOverflow = VerticalWrapMode.Truncate;
-
-        // Confirm (Yes) button
-        var yesGO = new GameObject("Yes");
-        yesGO.transform.SetParent(confirm.transform, false);
-        yesGO.AddComponent<CanvasRenderer>();
-        var yesRt = yesGO.AddComponent<RectTransform>();
-        yesRt.anchorMin = new Vector2(0.25f, 0f);
-        yesRt.anchorMax = new Vector2(0.25f, 0f);
-        yesRt.pivot = new Vector2(0.5f, 0f);
-        yesRt.anchoredPosition = new Vector2(0, 12);
-        yesRt.sizeDelta = new Vector2(120, 34);
-        var yimg = yesGO.AddComponent<Image>();
-        yimg.color = new Color(0.1f, 0.6f, 0.1f, 1f);
-        var ybtn = yesGO.AddComponent<Button>();
-        ybtn.targetGraphic = yimg;
-        ybtn.interactable = true;
-        var ytxt = new GameObject("Label");
-        ytxt.transform.SetParent(yesGO.transform, false);
-        var ytext = ytxt.AddComponent<Text>();
-        ytext.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-        ytext.text = $"Pay & Travel ({TravelButtonMod.cfgTravelCost.Value} silver)";
-        ytext.alignment = TextAnchor.MiddleCenter;
-        ytext.color = Color.white;
-
-        // Cancel button
-        var noGO = new GameObject("No");
-        noGO.transform.SetParent(confirm.transform, false);
-        noGO.AddComponent<CanvasRenderer>();
-        var noRt = noGO.AddComponent<RectTransform>();
-        noRt.anchorMin = new Vector2(0.75f, 0f);
-        noRt.anchorMax = new Vector2(0.75f, 0f);
-        noRt.pivot = new Vector2(0.5f, 0f);
-        noRt.anchoredPosition = new Vector2(0, 12);
-        noRt.sizeDelta = new Vector2(120, 34);
-        var nimg = noGO.AddComponent<Image>();
-        nimg.color = new Color(0.6f, 0.1f, 0.1f, 1f);
-        var nbtn = noGO.AddComponent<Button>();
-        nbtn.targetGraphic = nimg;
-        nbtn.interactable = true;
-        var ntxt = new GameObject("Label");
-        ntxt.transform.SetParent(noGO.transform, false);
-        var ntext = ntxt.AddComponent<Text>();
-        ntext.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-        ntext.text = "Cancel";
-        ntext.alignment = TextAnchor.MiddleCenter;
-        ntext.color = Color.white;
-
-        // Yes behavior takes cfgEnableTeleport into account and uses cfgTravelCost
-        ybtn.onClick.AddListener(() =>
+        try
         {
-            try
+            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            foreach (var mb in allMono)
             {
-                if (!TravelButtonMod.cfgEnableTeleport.Value)
+                var t = mb.GetType();
+
+                // Try common property names first (read-only or read/write)
+                string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
+                foreach (var pn in propNames)
                 {
-                    TravelButtonMod.LogInfo("Teleport disabled by config. Skipping payment and teleport (UI-only mode).");
-                }
-                else
-                {
-                    int cost = TravelButtonMod.cfgTravelCost.Value;
-                    bool paid = AttemptDeductSilver(cost);
-                    if (!paid)
+                    var pi = t.GetProperty(pn, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                    if (pi != null && pi.CanRead)
                     {
-                        TravelButtonMod.LogWarning("AttemptDeductSilver: failed - aborting travel.");
-                    }
-                    else
-                    {
-                        bool teleported = AttemptTeleportToCity(city);
-                        if (!teleported)
+                        try
                         {
-                            TravelButtonMod.LogError("AttemptTeleportToCity: failed to teleport.");
+                            var val = pi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
                         }
+                        catch (Exception) { }
+                    }
+                }
+
+                // Try methods like GetMoney(), GetSilver()
+                string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
+                foreach (var mn in methodNames)
+                {
+                    var mi = t.GetMethod(mn, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                    if (mi != null && mi.GetParameters().Length == 0)
+                    {
+                        try
+                        {
+                            var res = mi.Invoke(mb, null);
+                            if (res is int) return (int)res;
+                            if (res is long) return (long)res;
+                            if (res is float) return (long)((float)res);
+                            if (res is double) return (long)((double)res);
+                        }
+                        catch (Exception) { }
+                    }
+                }
+
+                // Fields
+                foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase))
+                {
+                    var name = fi.Name.ToLower();
+                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                    {
+                        try
+                        {
+                            var val = fi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch (Exception) { }
+                    }
+                }
+
+                // Properties (generic scan)
+                foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase))
+                {
+                    var name = pi.Name.ToLower();
+                    if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency")) && pi.CanRead)
+                    {
+                        try
+                        {
+                            var val = pi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch (Exception) { }
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogError("Confirm click error: " + ex);
-            }
-            UnityEngine.Object.Destroy(confirm);
-        });
 
-        nbtn.onClick.AddListener(() =>
+            // Not found
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            return -1;
+        }
+        catch (Exception ex)
         {
-            UnityEngine.Object.Destroy(confirm);
-        });
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            return -1;
+        }
     }
 
     private bool AttemptDeductSilver(int amount)
@@ -918,7 +1253,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            foreach (var fi in t.GetFields())
+            foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var name = fi.Name.ToLower();
                 if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
@@ -963,7 +1298,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            foreach (var pi in t.GetProperties())
+            foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var name = pi.Name.ToLower();
                 if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
