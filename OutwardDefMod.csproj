@@ -12,7 +12,9 @@
   <!-- This csproj expects a local `libs` folder (project-root/libs) that contains:
        - BepInEx.dll
        - 0Harmony.dll
-       - UnityEngine.CoreModule.dll (or other Unity assemblies)
+       - UnityEngine.CoreModule.dll
+       - UnityEngine.IMGUIModule.dll
+       - UnityEngine.TextRenderingModule.dll
      Copy those from your BepInEx/game installation or the game's Managed folder.
   -->
   <ItemGroup>
@@ -24,6 +26,14 @@
     </Reference>
     <Reference Include="UnityEngine.CoreModule" Condition="Exists('libs\UnityEngine.CoreModule.dll')">
       <HintPath>libs\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <!-- IMGUI module: provides GUI, GUILayout, GUIStyle -->
+    <Reference Include="UnityEngine.IMGUIModule" Condition="Exists('libs\UnityEngine.IMGUIModule.dll')">
+      <HintPath>libs\UnityEngine.IMGUIModule.dll</HintPath>
+    </Reference>
+    <!-- TextRendering module: provides TextAnchor and related types -->
+    <Reference Include="UnityEngine.TextRenderingModule" Condition="Exists('libs\UnityEngine.TextRenderingModule.dll')">
+      <HintPath>libs\UnityEngine.TextRenderingModule.dll</HintPath>
     </Reference>
   </ItemGroup>
 
