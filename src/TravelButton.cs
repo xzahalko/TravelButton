@@ -53,7 +53,7 @@ public class OutwardDefMod : BaseUnityPlugin
         Logger.LogInfo("OutwardDefMod Disabled");
         try
         {
-            harmony?.UnpatchAll(harmony.Id);
+            harmony?.UnpatchSelf();
         }
         catch (Exception ex)
         {
