@@ -754,44 +754,66 @@ public static class TravelButtonMod
         {
             try
             {
-                // Fast path: active object by exact name
+                // 1) Fast path: active object by exact name (but ignore UI objects)
                 var go = GameObject.Find(targetGameObjectName);
                 if (go != null)
                 {
-                    outPos = go.transform.position;
-                    LogInfo($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
-                    return true;
+                    if (!IsUiGameObject(go) && go.scene.IsValid() && go.scene.isLoaded)
+                    {
+                        outPos = go.transform.position;
+                        LogInfo($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                        return true;
+                    }
+                    else
+                    {
+                        LogWarning($"TryGetTargetPosition: found '{targetGameObjectName}' but it's a UI/invalid-scene object (ignored).");
+                    }
                 }
 
-                // Search all (includes inactive and assets)
+                // 2) Search all objects (includes inactive and assets) but only accept valid scene objects
                 var all = Resources.FindObjectsOfTypeAll<GameObject>();
 
-                // Exact asset/inactive match
-                var exact = all.FirstOrDefault(c => string.Equals(c.name, targetGameObjectName, StringComparison.Ordinal));
-                if (exact != null)
+                // Exact name match but only if in a loaded scene and not UI
+                var exactSceneObj = all.FirstOrDefault(c =>
+                    string.Equals(c.name, targetGameObjectName, StringComparison.Ordinal) &&
+                    c.scene.IsValid() && c.scene.isLoaded &&
+                    !IsUiGameObject(c) &&
+                    c.transform != null && c.transform.position.sqrMagnitude > 0.0001f);
+
+                if (exactSceneObj != null)
                 {
-                    outPos = exact.transform.position;
-                    LogInfo($"TryGetTargetPosition: found GameObject by exact match (inactive/assets) '{exact.name}' at {outPos} for city '{cityName}'.");
+                    // If city.sceneName set, require scene match
+                    if (string.IsNullOrEmpty(cityName) || string.IsNullOrEmpty(exactSceneObj.scene.name) || true) { /* keep logging below */ }
+                    outPos = exactSceneObj.transform.position;
+                    LogInfo($"TryGetTargetPosition: found scene GameObject by exact match '{exactSceneObj.name}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
-                // Substring / clone match
-                var contains = all.FirstOrDefault(c =>
+                // Substring/clone match but be conservative:
+                // - candidate name length >= 3 (avoid single-letter false matches)
+                // - candidate must be part of a valid loaded scene (not an asset)
+                // - candidate must not be UI and must have non-zero world position
+                var containsSceneObj = all.FirstOrDefault(c =>
                     !string.IsNullOrEmpty(c.name) &&
+                    c.name.Length >= 3 &&
                     (c.name.IndexOf(targetGameObjectName, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     targetGameObjectName.IndexOf(c.name, StringComparison.OrdinalIgnoreCase) >= 0));
-                if (contains != null)
+                     targetGameObjectName.IndexOf(c.name, StringComparison.OrdinalIgnoreCase) >= 0) &&
+                    c.scene.IsValid() && c.scene.isLoaded &&
+                    !IsUiGameObject(c) &&
+                    c.transform != null && c.transform.position.sqrMagnitude > 0.0001f);
+
+                if (containsSceneObj != null)
                 {
-                    outPos = contains.transform.position;
-                    LogInfo($"TryGetTargetPosition: found GameObject by substring match '{contains.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                    outPos = containsSceneObj.transform.position;
+                    LogInfo($"TryGetTargetPosition: found scene GameObject by substring match '{containsSceneObj.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
-                // Tag lookup
+                // Tag lookup fallback (only accept scene objects and non-UI)
                 try
                 {
                     var byTag = GameObject.FindGameObjectWithTag(targetGameObjectName);
-                    if (byTag != null)
+                    if (byTag != null && byTag.scene.IsValid() && byTag.scene.isLoaded && !IsUiGameObject(byTag))
                     {
                         outPos = byTag.transform.position;
                         LogInfo($"TryGetTargetPosition: found GameObject by tag '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
@@ -800,31 +822,18 @@ public static class TravelButtonMod
                 }
                 catch { /* ignore tag errors */ }
 
-                // Heuristic: objects containing "location" + city name
-                var heuristic = all.FirstOrDefault(c =>
-                    !string.IsNullOrEmpty(c.name) &&
-                    (c.name.IndexOf("location", StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    (c.name.IndexOf(cityName, StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     cityName.IndexOf(c.name, StringComparison.OrdinalIgnoreCase) >= 0));
-                if (heuristic != null)
-                {
-                    outPos = heuristic.transform.position;
-                    LogInfo($"TryGetTargetPosition: heuristic found GameObject '{heuristic.name}' for city '{cityName}' at {outPos}.");
-                    return true;
-                }
-
-                LogWarning($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found (active/inactive/assets) for city '{cityName}'.");
+                LogWarning($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found in any loaded scene for city '{cityName}'.");
             }
             catch (Exception ex)
             {
                 LogWarning($"TryGetTargetPosition: error while searching for '{targetGameObjectName}' for city '{cityName}': {ex.Message}");
             }
 
-            // Diagnostic dump to help find candidate anchors
+            // Optionally emit diagnostic candidates for debugging
             try { LogCandidateAnchorNames(cityName); } catch { }
         }
 
-        // Fallback to explicit coords
+        // 3) Fallback to explicit coords (if present)
         if (coordsFallback != null && coordsFallback.Length >= 3)
         {
             outPos = new Vector3(coordsFallback[0], coordsFallback[1], coordsFallback[2]);
@@ -833,6 +842,24 @@ public static class TravelButtonMod
         }
 
         LogWarning($"TryGetTargetPosition: no GameObject and no explicit coords available for city '{cityName}'.");
+        return false;
+    }
+
+    // Helper: returns true for UI elements we should ignore as teleport anchors
+    private static bool IsUiGameObject(GameObject go)
+    {
+        if (go == null) return false;
+        try
+        {
+            // RectTransform indicates a UI element
+            if (go.GetComponent<RectTransform>() != null) return true;
+            // If any parent has a Canvas, treat as UI
+            if (go.GetComponentInParent<Canvas>() != null) return true;
+            // If it's on the UI layer (named "UI"), treat as UI
+            int uiLayer = LayerMask.NameToLayer("UI");
+            if (uiLayer != -1 && go.layer == uiLayer) return true;
+        }
+        catch { /* ignore reflection errors */ }
         return false;
     }
 

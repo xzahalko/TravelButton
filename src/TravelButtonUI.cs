@@ -2322,17 +2322,63 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     public float anchorWaitTimeout = 6.0f;
     public float pollInterval = 0.25f;
 
+    private bool IsUiOrRectTransform(GameObject go)
+    {
+        if (go == null) return false;
+        // RectTransform is used by UI elements; reject them
+        if (go.GetComponent<RectTransform>() != null) return true;
+        // Also reject objects that have a Canvas component in their parents
+        if (go.GetComponentInParent<Canvas>() != null) return true;
+        // Reject objects whose layer is UI (optional: check layer name "UI")
+        try
+        {
+            int uiLayer = LayerMask.NameToLayer("UI");
+            if (uiLayer != -1 && go.layer == uiLayer) return true;
+        }
+        catch { }
+        return false;
+    }
+
+    // Helper: try to find an object at a position in a specific scene (best-effort).
+    private GameObject FindGameObjectAtPositionInScene(Vector3 pos, string expectedName, string sceneName)
+    {
+        try
+        {
+            var scene = SceneManager.GetSceneByName(sceneName);
+            if (!scene.IsValid() || !scene.isLoaded) return null;
+            var roots = scene.GetRootGameObjects();
+            foreach (var r in roots)
+            {
+                if (r == null) continue;
+                // breadth-first search under root
+                var tlist = r.GetComponentsInChildren<Transform>(true);
+                foreach (var t in tlist)
+                {
+                    if (t == null || t.gameObject == null) continue;
+                    if (IsUiOrRectTransform(t.gameObject)) continue;
+                    // name match + proximity check
+                    if (!string.IsNullOrEmpty(expectedName) && t.name.IndexOf(expectedName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        // prefer exact/close name matches; ensure candidate isn't at (0,0,0)
+                        if (t.position.sqrMagnitude > 0.0001f) return t.gameObject;
+                    }
+                    // If no expected name, check position closeness (rare)
+                    if ((t.position - pos).sqrMagnitude < 0.01f) return t.gameObject;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
     // Entry coroutine: waits for scene/anchor then teleports.
     public IEnumerator TeleportWhenReady(TravelButtonMod.City city, Action<bool> onComplete = null)
     {
-        if (city == null)
-        {
-            onComplete?.Invoke(false);
-            yield break;
-        }
+        if (city == null) { onComplete?.Invoke(false); yield break; }
 
-        // If a sceneName is given and not loaded, load it additively
         bool sceneWasLoadedByUs = false;
+
+        // If a sceneName is specified, ensure that scene is loaded additively and set active.
         if (!string.IsNullOrEmpty(city.sceneName))
         {
             var sc = SceneManager.GetSceneByName(city.sceneName);
@@ -2340,84 +2386,156 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             {
                 TravelButtonMod.LogInfo($"TeleportWhenReady: scene '{city.sceneName}' not loaded - loading additively.");
                 var op = SceneManager.LoadSceneAsync(city.sceneName, LoadSceneMode.Additive);
-                if (op == null)
-                {
-                    TravelButtonMod.LogWarning($"TeleportWhenReady: SceneManager.LoadSceneAsync returned null for '{city.sceneName}'");
-                }
-                else
+                if (op != null)
                 {
                     float start = Time.time;
                     while (!op.isDone && Time.time - start < sceneLoadTimeout)
                     {
                         yield return new WaitForSeconds(pollInterval);
                     }
-                    if (!op.isDone)
-                    {
-                        TravelButtonMod.LogWarning($"TeleportWhenReady: scene '{city.sceneName}' did not finish loading within timeout ({sceneLoadTimeout}s).");
-                    }
-                    else
+                    if (op.isDone)
                     {
                         TravelButtonMod.LogInfo($"TeleportWhenReady: scene '{city.sceneName}' loaded.");
                         sceneWasLoadedByUs = true;
                     }
+                    else
+                    {
+                        TravelButtonMod.LogWarning($"TeleportWhenReady: scene '{city.sceneName}' did not finish loading within timeout ({sceneLoadTimeout}s).");
+                    }
+                }
+                else
+                {
+                    TravelButtonMod.LogWarning($"TeleportWhenReady: LoadSceneAsync returned null for '{city.sceneName}'.");
                 }
             }
             else
             {
                 TravelButtonMod.LogInfo($"TeleportWhenReady: scene '{city.sceneName}' is already loaded.");
             }
-        }
 
-        // Wait for the target anchor (if specified) to appear, or until timeout
-        Vector3 resolvedPos = Vector3.zero;
-        bool resolved = false;
-
-        // If there's an anchor name, try to find it repeatedly
-        if (!string.IsNullOrEmpty(city.targetGameObjectName))
-        {
-            float startWait = Time.time;
-            while (Time.time - startWait < anchorWaitTimeout)
+            // If we loaded the scene additively, set it as active so subsequent finds and spawns resolve to it.
+            var loadedScene = SceneManager.GetSceneByName(city.sceneName);
+            if (loadedScene.IsValid() && loadedScene.isLoaded)
             {
-                // TryGetTargetPosition returns true if it obtains a usable position (from GameObject or coords)
-                Vector3 pos;
-                bool found = TravelButtonMod.TryGetTargetPosition(city.targetGameObjectName, city.coords, city.name, out pos);
-                if (found)
+                try
                 {
-                    // If it found by GameObject, our TryGetTargetPosition has already logged that.
-                    // Verify whether it came from a GameObject by attempting GameObject.Find
-                    var go = string.IsNullOrEmpty(city.targetGameObjectName) ? null : GameObject.Find(city.targetGameObjectName);
-                    if (go != null)
-                    {
-                        resolvedPos = pos;
-                        resolved = true;
-                        TravelButtonMod.LogInfo($"TeleportWhenReady: anchor '{city.targetGameObjectName}' found and will be used for city '{city.name}'.");
-                        break;
-                    }
-                    else
-                    {
-                        // TryGetTargetPosition may have returned coords fallback; if scene was loaded by us, allow one quick retry
-                        if (sceneWasLoadedByUs)
-                        {
-                            // wait a bit for objects to instantiate in the newly loaded scene
-                            yield return new WaitForSeconds(0.2f);
-                            // next loop iteration will re-check
-                        }
-                        else
-                        {
-                            // If scene wasn't loaded and no anchor found, don't block long — accept coords fallback below
-                            break;
-                        }
-                    }
+                    SceneManager.SetActiveScene(loadedScene);
+                    TravelButtonMod.LogInfo($"TeleportWhenReady: set active scene to '{city.sceneName}'.");
                 }
-                else
+                catch (Exception ex)
                 {
-                    // not found yet -> wait and retry
-                    yield return new WaitForSeconds(pollInterval);
+                    TravelButtonMod.LogWarning($"TeleportWhenReady: SetActiveScene('{city.sceneName}') failed: {ex.Message}");
                 }
+
+                // wait a few frames to allow scene init scripts to run and anchor gameobjects to appear
+                int framesToWait = 3;
+                for (int i = 0; i < framesToWait; i++) yield return null;
             }
         }
 
-        // If not resolved via GameObject anchor, try explicit coords (may be provided)
+        Vector3 resolvedPos = Vector3.zero;
+        bool resolved = false;
+
+        // If a specific anchor name is provided, wait for it (longer if we loaded the scene)
+        if (!string.IsNullOrEmpty(city.targetGameObjectName))
+        {
+            float startWait = Time.time;
+            float effectiveTimeout = sceneWasLoadedByUs ? Math.Max(anchorWaitTimeout, 6f) : anchorWaitTimeout;
+            while (Time.time - startWait < effectiveTimeout)
+            {
+                // Prefer direct active find
+                try
+                {
+                    var anchorGO = GameObject.Find(city.targetGameObjectName);
+                    if (anchorGO != null)
+                    {
+                        // reject UI elements / RectTransform objects
+                        if (IsUiOrRectTransform(anchorGO))
+                        {
+                            TravelButtonMod.LogWarning($"TeleportWhenReady: found '{city.targetGameObjectName}' but it is a UI object (ignored). scene='{anchorGO.scene.name}'");
+                        }
+                        else
+                        {
+                            // if city.sceneName is set, require match to avoid UI or wrong-scene hits
+                            if (!string.IsNullOrEmpty(city.sceneName))
+                            {
+                                if (anchorGO.scene.IsValid() && anchorGO.scene.name == city.sceneName)
+                                {
+                                    resolvedPos = anchorGO.transform.position;
+                                    resolved = true;
+                                    TravelButtonMod.LogInfo($"TeleportWhenReady: anchor '{city.targetGameObjectName}' found (active) in scene '{anchorGO.scene.name}' for city '{city.name}'.");
+                                    break;
+                                }
+                                else
+                                {
+                                    TravelButtonMod.LogWarning($"TeleportWhenReady: anchor '{city.targetGameObjectName}' found but in scene '{anchorGO.scene.name}', expected '{city.sceneName}' (ignored).");
+                                }
+                            }
+                            else
+                            {
+                                // no sceneName constraint — accept any non-UI scene object with non-zero position
+                                if (anchorGO.transform != null && anchorGO.transform.position.sqrMagnitude > 0.0001f)
+                                {
+                                    resolvedPos = anchorGO.transform.position;
+                                    resolved = true;
+                                    TravelButtonMod.LogInfo($"TeleportWhenReady: anchor '{city.targetGameObjectName}' found (active) at {resolvedPos} for city '{city.name}'.");
+                                    break;
+                                }
+                                else
+                                {
+                                    TravelButtonMod.LogWarning($"TeleportWhenReady: anchor '{city.targetGameObjectName}' had near-zero position (ignored).");
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogWarning("TeleportWhenReady: GameObject.Find threw: " + ex.Message);
+                }
+
+                // Conservative fallback: use TryGetTargetPosition (which we keep conservative). It will only return scene/game objects.
+                Vector3 posCandidate = Vector3.zero;
+                bool found = false;
+                try { found = TravelButtonMod.TryGetTargetPosition(city.targetGameObjectName, city.coords, city.name, out posCandidate); } catch { found = false; }
+
+                if (found && posCandidate.sqrMagnitude > 0.0001f)
+                {
+                    // If city.sceneName was specified, prefer candidates that belong to that scene
+                    if (!string.IsNullOrEmpty(city.sceneName))
+                    {
+                        // attempt to find a GameObject at that position in the target scene (best-effort)
+                        var g = FindGameObjectAtPositionInScene(posCandidate, city.targetGameObjectName, city.sceneName);
+                        if (g != null)
+                        {
+                            resolvedPos = g.transform.position;
+                            resolved = true;
+                            TravelButtonMod.LogInfo($"TeleportWhenReady: resolved anchor in scene '{city.sceneName}' via FindAtPos for city '{city.name}' at {resolvedPos}.");
+                            break;
+                        }
+                        else
+                        {
+                            // candidate did not belong to the requested scene — keep waiting if we loaded scene
+                            TravelButtonMod.LogInfo($"TeleportWhenReady: candidate found but not in scene '{city.sceneName}' (will keep waiting).");
+                        }
+                    }
+                    else
+                    {
+                        resolvedPos = posCandidate;
+                        resolved = true;
+                        TravelButtonMod.LogInfo($"TeleportWhenReady: TryGetTargetPosition returned candidate {resolvedPos} for city '{city.name}'.");
+                        break;
+                    }
+                }
+
+                // If we didn't load scene ourselves, don't wait too long: quick retry then break to coords fallback.
+                if (!sceneWasLoadedByUs && Time.time - startWait >= 0.5f) break;
+
+                yield return new WaitForSeconds(pollInterval);
+            }
+        }
+
+        // if not resolved by anchor, fall back to coords if present
         if (!resolved)
         {
             if (city.coords != null && city.coords.Length >= 3)
@@ -2428,22 +2546,33 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             }
             else
             {
-                TravelButtonMod.LogWarning($"TeleportWhenReady: no anchor and no coords for city '{city.name}'. Teleport aborted.");
+                TravelButtonMod.LogWarning($"TeleportWhenReady: no anchor and no coords for city '{city.name}'. Aborting teleport.");
                 onComplete?.Invoke(false);
                 yield break;
             }
         }
 
-        // Ground/clear the resolved position and perform safe teleport
+        // Ground and ensure clearance
         Vector3 grounded = TeleportHelpers.GetGroundedPosition(resolvedPos);
         grounded = TeleportHelpers.EnsureClearance(grounded);
 
-        // Use your safe teleport routine - this is the one that disables controllers etc.
+        // If we loaded the scene additively and want the player to be in that scene,
+        // ensure the loaded scene is set active again before teleport (defensive)
+        if (!string.IsNullOrEmpty(city.sceneName))
+        {
+            var s = SceneManager.GetSceneByName(city.sceneName);
+            if (s.IsValid() && s.isLoaded)
+            {
+                try { SceneManager.SetActiveScene(s); } catch { }
+                // allow a frame for cameras / systems to attach
+                yield return null;
+            }
+        }
+
+        // perform safe teleport
         bool teleported = TeleportHelpers.AttemptTeleportToPositionSafe(grounded);
 
-        // Optionally: if we loaded the scene additively and you want to unload it after teleport, do it here.
-        // Example (commented): if (sceneWasLoadedByUs) SceneManager.UnloadSceneAsync(city.sceneName);
-
+        // optionally persist discovered coords back into city (not shown here)
         onComplete?.Invoke(teleported);
         yield break;
     }
