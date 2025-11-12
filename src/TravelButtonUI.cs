@@ -13,8 +13,9 @@ using System.Reflection;
 /// - Detects the inventory's actual visibility target (window/panel/canvasgroup) and syncs the button's active state to it.
 /// - Copies layout from an existing button template where possible so the Travel button matches inventory buttons (with clamping).
 /// - Creates dialog in a dedicated top-most Canvas so it's never occluded and Close works.
-/// - Shows only cities enabled via per-city config (handled in TravelButtonMod).
-/// - Buttons are interactable only when player has enough silver (checked on-open and updated while dialog open).
+/// - Shows all configured cities (visible in dialog). Buttons are interactable only when player has visited OR city is enabled in config,
+///   and coordinates are configured (or a targetGameObject exists).
+/// - Buttons are also disabled if the player doesn't have enough currency (and show the exact message "not enough resources to travel" on click).
 /// - Clicking a city will now immediately attempt to pay and teleport the player (no extra confirm).
 /// </summary>
 public class TravelButtonUI : MonoBehaviour
@@ -454,6 +455,9 @@ public class TravelButtonUI : MonoBehaviour
 
             travelButton.onClick.AddListener(OpenTravelDialog);
 
+            // Hide the button until we reparent to the inventory UI; prevents showing on main HUD
+            buttonObject.SetActive(false);
+
             TravelButtonMod.LogInfo("CreateTravelButton: Travel button created, ClickLogger attached, and listener attached.");
         }
         catch (Exception ex)
@@ -532,10 +536,27 @@ public class TravelButtonUI : MonoBehaviour
             titleRt.sizeDelta = new Vector2(0, 32);
             var titleText = titleGO.AddComponent<Text>();
             titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (cost {TravelButtonMod.cfgTravelCost.Value} silver)";
+            // note: keep showing global cost in title but list per-city cost individually below
+            titleText.text = $"Select destination (default cost {TravelButtonMod.cfgTravelCost.Value} silver)";
             titleText.alignment = TextAnchor.MiddleCenter;
             titleText.fontSize = 18;
             titleText.color = Color.white;
+
+            // Inline message area (for "not enough resources to travel" and similar)
+            var inlineMsgGO = new GameObject("InlineMessage");
+            inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
+            var inlineRt = inlineMsgGO.AddComponent<RectTransform>();
+            inlineRt.anchorMin = new Vector2(0f, 0.92f);
+            inlineRt.anchorMax = new Vector2(1f, 0.99f);
+            inlineRt.anchoredPosition = Vector2.zero;
+            inlineRt.sizeDelta = Vector2.zero;
+            var inlineText = inlineMsgGO.AddComponent<Text>();
+            inlineText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            inlineText.text = "";
+            inlineText.alignment = TextAnchor.MiddleCenter;
+            inlineText.color = Color.yellow;
+            inlineText.fontSize = 14;
+            inlineText.raycastTarget = false;
 
             // ScrollRect + viewport for city list
             var scrollGO = new GameObject("ScrollArea");
@@ -601,14 +622,10 @@ public class TravelButtonUI : MonoBehaviour
                 // read player currency now to set initial interactable state
                 long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = playerMoney >= 0;
-                int cost = TravelButtonMod.cfgTravelCost.Value;
 
                 foreach (var city in TravelButtonMod.Cities)
                 {
-                    bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: city '{city.name}' IsCityEnabled={enabledByConfig}");
-                    if (!enabledByConfig) continue; // skip disabled cities
-
+                    // Always show the city in the list (the user requested that all cities appear)
                     anyCity = true;
 
                     var bgo = new GameObject("CityButton_" + city.name);
@@ -651,28 +668,107 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
-                    // If we have currency info, disable button if player lacks funds
-                    if (haveMoneyInfo)
+                    // Determine per-city cost when present, otherwise fallback to global cost
+                    int cost = TravelButtonMod.cfgTravelCost.Value;
+                    try
                     {
-                        if (playerMoney < cost)
+                        var priceField = city.GetType().GetField("price");
+                        if (priceField != null)
                         {
-                            bbtn.interactable = false;
-                            // dim the image to indicate disabled
-                            bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                            var pv = priceField.GetValue(city);
+                            if (pv is int) cost = (int)pv;
+                            else if (pv is long) cost = (int)(long)pv;
+                        }
+                        else
+                        {
+                            // try property
+                            var priceProp = city.GetType().GetProperty("price");
+                            if (priceProp != null)
+                            {
+                                var pv = priceProp.GetValue(city);
+                                if (pv is int) cost = (int)pv;
+                                else if (pv is long) cost = (int)(long)pv;
+                            }
                         }
                     }
-                    else
+                    catch { /* ignore reflection issues; fallback to global */ }
+
+                    // Price label right
+                    var priceGO = new GameObject("Price");
+                    priceGO.transform.SetParent(bgo.transform, false);
+                    var ptxt = priceGO.AddComponent<Text>();
+                    ptxt.text = cost.ToString();
+                    ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    ptxt.color = Color.white;
+                    ptxt.alignment = TextAnchor.MiddleRight;
+                    var pRect = priceGO.GetComponent<RectTransform>();
+                    pRect.anchorMin = new Vector2(0.6f, 0);
+                    pRect.anchorMax = new Vector2(1, 1);
+                    pRect.offsetMin = new Vector2(-10, 0);
+                    pRect.offsetMax = new Vector2(-10, 0);
+
+                    // Determine whether this city is enabled by config or visited
+                    bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
+                    bool visited = false;
+                    try
                     {
-                        // If we couldn't determine player's money, leave buttons enabled but log.
-                        TravelButtonMod.LogWarning("OpenTravelDialog: could not determine player money; leaving city buttons enabled.");
+                        visited = VisitedTracker.HasVisited(city.name);
+                    }
+                    catch { /* if VisitedTracker not available ignore; default false */ }
+
+                    // Determine whether coordinates/target exist for this city (if not, mark unavailable)
+                    bool coordsAvailable = false;
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(city.targetGameObjectName))
+                        {
+                            var targetGO = GameObject.Find(city.targetGameObjectName);
+                            coordsAvailable = targetGO != null;
+                        }
+                        if (!coordsAvailable && city.coords != null && city.coords.Length >= 3)
+                        {
+                            coordsAvailable = true;
+                        }
+                    }
+                    catch { /* ignore */ }
+
+                    // Set interactability: only if (visited OR enabled by config) AND coords available. Later refresh coroutine will also check money.
+                    bool initialInteractable = (visited || enabledByConfig) && coordsAvailable;
+                    if (haveMoneyInfo && playerMoney >= 0)
+                    {
+                        if (playerMoney < cost) initialInteractable = false;
                     }
 
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable})");
+                    bbtn.interactable = initialInteractable;
+                    if (!initialInteractable)
+                    {
+                        bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                    }
+
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable})");
 
                     var capturedCity = city;
                     // NEW: immediate-pay-and-teleport when city button clicked (instead of separate confirmation)
                     bbtn.onClick.AddListener(() =>
                     {
+                        // Before attempting deduction, show exact "not enough resources to travel" when insufficient funds
+                        long pm = GetPlayerCurrencyAmountOrMinusOne();
+                        if (pm >= 0 && pm < cost)
+                        {
+                            ShowInlineDialogMessage("not enough resources to travel");
+                            return;
+                        }
+
+                        // If we couldn't detect money upfront, still attempt deduction and show message on failure
+                        bool paid = AttemptDeductSilver(cost);
+                        if (!paid)
+                        {
+                            ShowInlineDialogMessage("not enough resources to travel");
+                            return;
+                        }
+
+                        // Now attempt to teleport; If teleport fails, AttemptRefundSilver will be attempted inside TryPayAndTeleport path in other code.
+                        // But here we can reuse existing TryPayAndTeleport which does deduct+teleport+refund logic.
                         TryPayAndTeleport(capturedCity);
                     });
                 }
@@ -698,7 +794,7 @@ public class TravelButtonUI : MonoBehaviour
                     dtxtGO.transform.SetParent(dbg.transform, false);
                     var dtxt = dtxtGO.AddComponent<Text>();
                     dtxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                    dtxt.text = "DEBUG: no enabled cities";
+                    dtxt.text = "DEBUG: no configured cities";
                     dtxt.color = Color.white;
                     dtxt.alignment = TextAnchor.MiddleCenter;
                     dtxt.raycastTarget = false;
@@ -985,12 +1081,35 @@ public class TravelButtonUI : MonoBehaviour
     {
         try
         {
+            // Determine per-city cost or fallback to global
             int cost = TravelButtonMod.cfgTravelCost.Value;
+            try
+            {
+                var priceField = city.GetType().GetField("price");
+                if (priceField != null)
+                {
+                    var pv = priceField.GetValue(city);
+                    if (pv is int) cost = (int)pv;
+                    else if (pv is long) cost = (int)(long)pv;
+                }
+                else
+                {
+                    var priceProp = city.GetType().GetProperty("price");
+                    if (priceProp != null)
+                    {
+                        var pv = priceProp.GetValue(city);
+                        if (pv is int) cost = (int)pv;
+                        else if (pv is long) cost = (int)(long)pv;
+                    }
+                }
+            }
+            catch { /* ignore reflection fail -> use global cost */ }
 
             // First: find a valid target position. If none, abort (do not deduct).
             if (!TryGetTargetPosition(city, out Vector3 targetPos))
             {
                 TravelButtonMod.LogError($"TryPayAndTeleport: no valid target for {city.name}. Aborting without charging.");
+                ShowInlineDialogMessage($"Location for {city.name} is not configured.");
                 return;
             }
 
@@ -1002,11 +1121,21 @@ public class TravelButtonUI : MonoBehaviour
                 return;
             }
 
-            // Deduct; AttemptDeductSilver logs actions
+            // Check money before attempting a deduction (show exact message on insufficient funds)
+            long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
+            if (playerMoney >= 0 && playerMoney < cost)
+            {
+                ShowInlineDialogMessage("not enough resources to travel");
+                TravelButtonMod.LogWarning($"TryPayAndTeleport: not enough funds (playerMoney={playerMoney} < cost={cost}). Aborting.");
+                return;
+            }
+
+            // Deduct; AttemptDeductSilver logs actions and returns false if insufficient or not found
             bool paid = AttemptDeductSilver(cost);
             if (!paid)
             {
-                TravelButtonMod.LogWarning($"TryPayAndTeleport: not enough funds or deduction failed for cost {cost} - aborting.");
+                ShowInlineDialogMessage("not enough resources to travel");
+                TravelButtonMod.LogWarning($"TryPayAndTeleport: deduction failed or funds insufficient for cost {cost} - aborting.");
                 return;
             }
 
@@ -1023,11 +1152,17 @@ public class TravelButtonUI : MonoBehaviour
                 else
                     TravelButtonMod.LogWarning($"TryPayAndTeleport: refund of {cost} silver FAILED after failed teleport. Manual correction may be required.");
 
+                ShowInlineDialogMessage("Teleport failed");
                 return;
             }
             else
             {
                 TravelButtonMod.LogInfo($"TryPayAndTeleport: successfully teleported to {city.name}");
+                try
+                {
+                    VisitedTracker.MarkVisited(city.name);
+                }
+                catch { /* ignore if tracker unavailable */ }
                 CloseDialogAndStopRefresh();
             }
         }
@@ -1064,7 +1199,6 @@ public class TravelButtonUI : MonoBehaviour
                 // fetch current player money
                 long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = currentMoney >= 0;
-                int cost = TravelButtonMod.cfgTravelCost.Value;
 
                 var content = dialog.transform.Find("ScrollArea/Viewport/Content");
                 if (content != null)
@@ -1082,10 +1216,74 @@ public class TravelButtonUI : MonoBehaviour
                         {
                             string cityName = objName.Substring("CityButton_".Length);
                             bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
-                            bool shouldBeInteractable = enabledByConfig;
+                            bool visited = false;
+                            try { visited = VisitedTracker.HasVisited(cityName); } catch { visited = false; }
+
+                            // determine cost (per-city or global) by reflection similar to creation
+                            int cost = TravelButtonMod.cfgTravelCost.Value;
+                            try
+                            {
+                                // try to find the city object in TravelButtonMod.Cities
+                                TravelButtonMod.City foundCity = null;
+                                foreach (var c in TravelButtonMod.Cities)
+                                {
+                                    if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        foundCity = c;
+                                        break;
+                                    }
+                                }
+                                if (foundCity != null)
+                                {
+                                    var priceField = foundCity.GetType().GetField("price");
+                                    if (priceField != null)
+                                    {
+                                        var pv = priceField.GetValue(foundCity);
+                                        if (pv is int) cost = (int)pv;
+                                        else if (pv is long) cost = (int)(long)pv;
+                                    }
+                                    else
+                                    {
+                                        var priceProp = foundCity.GetType().GetProperty("price");
+                                        if (priceProp != null)
+                                        {
+                                            var pv = priceProp.GetValue(foundCity);
+                                            if (pv is int) cost = (int)pv;
+                                            else if (pv is long) cost = (int)(long)pv;
+                                        }
+                                    }
+                                }
+                            }
+                            catch { /* ignore */ }
+
+                            bool coordsAvailable = false;
+                            try
+                            {
+                                // quick check for coords or targetGameObject
+                                TravelButtonMod.City found = null;
+                                foreach (var c in TravelButtonMod.Cities)
+                                {
+                                    if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        found = c; break;
+                                    }
+                                }
+                                if (found != null)
+                                {
+                                    if (!string.IsNullOrEmpty(found.targetGameObjectName))
+                                    {
+                                        var go = GameObject.Find(found.targetGameObjectName);
+                                        coordsAvailable = go != null;
+                                    }
+                                    if (!coordsAvailable && found.coords != null && found.coords.Length >= 3) coordsAvailable = true;
+                                }
+                            }
+                            catch { coordsAvailable = false; }
+
+                            bool shouldBeInteractable = (visited || enabledByConfig) && coordsAvailable;
                             if (haveMoneyInfo)
                                 shouldBeInteractable = shouldBeInteractable && (currentMoney >= cost);
-                            // apply interactable state and tint
+
                             if (btn.interactable != shouldBeInteractable)
                             {
                                 btn.interactable = shouldBeInteractable;
@@ -1652,6 +1850,56 @@ public class TravelButtonUI : MonoBehaviour
             TravelButtonMod.LogError("AttemptTeleportToCity: teleport strategies exhausted and all failed.");
             return false;
         }
+    }
+
+    // Show a short, inline message in the open dialog (if present). Clears after a few seconds.
+    private Coroutine inlineMessageClearCoroutine;
+    private void ShowInlineDialogMessage(string msg)
+    {
+        try
+        {
+            TravelButtonMod.LogInfo("[TravelButton] Inline message: " + msg);
+            if (dialogRoot == null) return;
+            var inline = dialogRoot.transform.Find("InlineMessage");
+            if (inline == null)
+            {
+                TravelButtonMod.LogWarning("ShowInlineDialogMessage: InlineMessage element not found in dialogRoot.");
+                return;
+            }
+            var txt = inline.GetComponent<Text>();
+            if (txt == null) return;
+            txt.text = msg;
+
+            if (inlineMessageClearCoroutine != null)
+            {
+                StopCoroutine(inlineMessageClearCoroutine);
+                inlineMessageClearCoroutine = null;
+            }
+            inlineMessageClearCoroutine = StartCoroutine(ClearInlineMessageAfterDelay(3f));
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("ShowInlineDialogMessage exception: " + ex);
+        }
+    }
+
+    private IEnumerator ClearInlineMessageAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        try
+        {
+            if (dialogRoot != null)
+            {
+                var inline = dialogRoot.transform.Find("InlineMessage");
+                if (inline != null)
+                {
+                    var txt = inline.GetComponent<Text>();
+                    if (txt != null) txt.text = "";
+                }
+            }
+        }
+        catch { }
+        inlineMessageClearCoroutine = null;
     }
 
     // ClickLogger for debugging

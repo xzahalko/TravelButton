@@ -1,56 +1,73 @@
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Xml;
 using UnityEngine;
-using Newtonsoft.Json;
 
-// Simple config manager for TravelButton mod.
-// Reads config/travel_config.json, ensures defaults, and exposes config to other classes.
-public class ConfigManager
+// ConfigManager: load/save travel_config.json (per-city config).
+// This version is intentionally simple and robust: it creates default config if missing,
+// fills missing cities (from TravelConfig.Default) and exposes the TravelConfig object for other code to use.
+
+public static class ConfigManager
 {
-    private static readonly string ConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "travel_config.json");
-    public static TravelConfig Config { get; private set; }
+    // NOTE: keep this path in sync with where you place the mod files.
+    // This returns a path like "<GameData>/Mods/TravelButton/config/travel_config.json".
+    private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "travel_config.json");
+    public static TravelConfig Config { get; set; } = null;
 
-    static ConfigManager()
+    public static string ConfigPathForLog()
     {
-        Load();
+        return DefaultConfigPath;
     }
 
     public static void Load()
     {
         try
         {
-            if (!File.Exists(ConfigPath))
+            var dir = Path.GetDirectoryName(DefaultConfigPath);
+            if (!Directory.Exists(dir))
             {
-                // Ensure directory exists
-                Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
-                // write default
+                Directory.CreateDirectory(dir);
+            }
+
+            if (!File.Exists(DefaultConfigPath))
+            {
                 Config = TravelConfig.Default();
-                File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(Config, Formatting.Indented));
-                Debug.Log("[TravelButton] Created default config at " + ConfigPath);
+                File.WriteAllText(DefaultConfigPath, JsonConvert.SerializeObject(Config, Formatting.Indented));
+                Debug.Log("[TravelButton] ConfigManager: created default config at " + DefaultConfigPath);
                 return;
             }
 
-            var json = File.ReadAllText(ConfigPath);
-            Config = JsonConvert.DeserializeObject<TravelConfig>(json) ?? TravelConfig.Default();
+            var json = File.ReadAllText(DefaultConfigPath);
+            var des = JsonConvert.DeserializeObject<TravelConfig>(json);
+            if (des == null) des = TravelConfig.Default();
 
-            // Fill missing keys with defaults (backwards compatibility)
-            var defaultConfig = TravelConfig.Default();
-            if (Config.cities == null) Config.cities = defaultConfig.cities;
-            if (string.IsNullOrEmpty(Config.currencyItem)) Config.currencyItem = defaultConfig.currencyItem;
-            if (Config.globalTeleportPrice == 0) Config.globalTeleportPrice = defaultConfig.globalTeleportPrice;
-            // ensure entries exist for default winds if missing
-            foreach (var kv in defaultConfig.cities)
+            // fill missing keys with defaults for backward compatibility
+            var defaults = TravelConfig.Default();
+            if (des.cities == null) des.cities = defaults.cities;
+            if (string.IsNullOrEmpty(des.currencyItem)) des.currencyItem = defaults.currencyItem;
+            if (des.globalTeleportPrice == 0) des.globalTeleportPrice = defaults.globalTeleportPrice;
+
+            // ensure default wind-named entries exist (so config always contains the known city keys)
+            foreach (var kv in defaults.cities)
             {
-                if (!Config.cities.ContainsKey(kv.Key)) Config.cities[kv.Key] = kv.Value;
+                if (!des.cities.ContainsKey(kv.Key))
+                {
+                    des.cities[kv.Key] = kv.Value;
+                }
             }
 
-            Save(); // write back any added defaults
-            Debug.Log("[TravelButton] Config loaded and defaults applied.");
+            Config = des;
+
+            // Write back any defaults that were added
+            Save();
+
+            Debug.Log("[TravelButton] ConfigManager: config loaded and defaults applied.");
         }
         catch (Exception ex)
         {
-            Debug.LogError("[TravelButton] Failed to load config: " + ex);
+            Debug.LogError("[TravelButton] ConfigManager.Load exception: " + ex);
             Config = TravelConfig.Default();
         }
     }
@@ -59,18 +76,20 @@ public class ConfigManager
     {
         try
         {
-            var dir = Path.GetDirectoryName(ConfigPath);
+            var dir = Path.GetDirectoryName(DefaultConfigPath);
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(Config, Formatting.Indented));
-            Debug.Log("[TravelButton] Config saved.");
+            var json = JsonConvert.SerializeObject(Config ?? TravelConfig.Default(), Formatting.Indented);
+            File.WriteAllText(DefaultConfigPath, json);
+            Debug.Log("[TravelButton] ConfigManager: config saved to " + DefaultConfigPath);
         }
         catch (Exception ex)
         {
-            Debug.LogError("[TravelButton] Failed to save config: " + ex);
+            Debug.LogError("[TravelButton] ConfigManager.Save exception: " + ex);
         }
     }
 }
 
+// Serializable config mapping matching config/travel_config.json
 [Serializable]
 public class TravelConfig
 {
@@ -87,12 +106,12 @@ public class TravelConfig
         t.globalTeleportPrice = 100;
         t.cities = new Dictionary<string, CityConfig>
         {
-            { "Cierzo", new CityConfig { enabled = false } },
-            { "Levant", new CityConfig { enabled = false } },
-            { "Monsoon", new CityConfig { enabled = false } },
-            { "Berg", new CityConfig { enabled = false } },
-            { "Harmattan", new CityConfig { enabled = false } },
-            { "Sirocco", new CityConfig { enabled = false } }
+            { "Cierzo", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } },
+            { "Levant", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } },
+            { "Monsoon", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } },
+            { "Berg", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } },
+            { "Harmattan", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } },
+            { "Sirocco", new CityConfig { enabled = false, price = null, coords = null, note = "coords required" } }
         };
         return t;
     }
@@ -103,7 +122,9 @@ public class CityConfig
 {
     public bool enabled = false;
     public int? price = null;
-    // coords: [x,y,z] or null
+    // coords array [x,y,z] or null
     public float[] coords = null;
     public string note = null;
+    // optional runtime helper: name of a GameObject to find instead of coordinates
+    public string targetGameObjectName = null;
 }
