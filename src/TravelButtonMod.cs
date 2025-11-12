@@ -1,340 +1,258 @@
-using BepInEx;
-using BepInEx.Configuration;
-using HarmonyLib;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
-// add the plugin metadata so BepInEx will load this class
-[BepInPlugin("com.xzahalko.travelbutton", "TravelButton", "0.1.0")]
-public class TravelButtonMod : BaseUnityPlugin
+/// <summary>
+/// TravelButtonMod - central mod runtime helper.
+/// Responsible for:
+/// - exposing config-backed values (cfgTravelCost, cfgEnableTeleport, cfgEnableMod)
+/// - exposing Cities list (built from config/travel_config.json)
+/// - helper IsCityEnabled(name)
+/// - syncing runtime city data back to config when modified
+///
+/// NOTE: This is intentionally conservative: it reads the config produced by ConfigManager (travel_config.json)
+/// and maps each city entry into a TravelButtonMod.City instance which the UI code expects.
+/// </summary>
+public static class TravelButtonMod
 {
-    public static BepInEx.Logging.ManualLogSource LogStatic;
-    private Harmony harmony;
+    // ---- Logging helpers (added to satisfy TravelButtonUI references) ----
+    public static void LogInfo(string message)
+    {
+        Debug.Log($"[TravelButton][INFO] {message}");
+    }
 
-    // Config entries
-    private ConfigEntry<bool> cfgEnableOverlay;
-    private ConfigEntry<KeyCode> cfgToggleKey;
-    private ConfigEntry<string> cfgOverlayText;
+    public static void LogWarning(string message)
+    {
+        Debug.LogWarning($"[TravelButton][WARN] {message}");
+    }
 
-    // New config: enable actual teleport/payment
-    public static ConfigEntry<bool> cfgEnableTeleport;
+    public static void LogError(string message)
+    {
+        Debug.LogError($"[TravelButton][ERROR] {message}");
+    }
 
-    // New config: travel cost in silver
-    public static ConfigEntry<int> cfgTravelCost;
+    public static void LogDebug(string message)
+    {
+        // Keep debug logs optional; you can toggle this behavior later.
+        Debug.Log($"[TravelButton][DEBUG] {message}");
+    }
 
-    // runtime
-    private bool showOverlay = false;
+    // Simple configurable wrappers to keep compatibility with existing code
+    public class ConfigEntry<T>
+    {
+        public T Value;
+        public ConfigEntry(T v) { Value = v; }
+    }
 
-    // Cities loaded from JSON
+    // Global config entries (accessed as TravelButtonMod.cfgTravelCost.Value in existing UI)
+    public static ConfigEntry<int> cfgTravelCost = new ConfigEntry<int>(100);
+    public static ConfigEntry<bool> cfgEnableTeleport = new ConfigEntry<bool>(true);
+    public static ConfigEntry<bool> cfgEnableMod = new ConfigEntry<bool>(true);
+    public static ConfigEntry<string> cfgCurrencyItem = new ConfigEntry<string>("Silver");
+
+    // City representation consumed by UI code
+    [Serializable]
     public class City
     {
         public string name;
-        public string targetGameObjectName; // optional: GameObject name to find in scene
-        public float[] coords; // optional: { x, y, z }
-        public string description; // human-readable description shown in dialog
-        public bool visited; // whether player has visited this city
-        public bool isCityEnabled = true;
-        public override string ToString()
+        // coords array [x,y,z] or null
+        public float[] coords;
+        // optional name of a GameObject to find at runtime
+        public string targetGameObjectName;
+        // optional per-city price; null means use global
+        public int? price;
+        // whether city is explicitly enabled in config (default false)
+        public bool enabled;
+
+        public City(string name)
         {
-            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited})";
-        }
-    }
-
-    // Make CityContainer public so TravelButtonVisitedManager can use it if desired
-    [Serializable]
-    public class CityContainer
-    {
-        public City[] cities;
-    }
-
-    public static List<City> Cities = new List<City>();
-
-    private static string CitiesFilePath => Path.Combine(Paths.PluginPath, "TravelButton", "TravelButton_Cities.json");
-
-    // dynamic per-city config entries
-    private static Dictionary<string, ConfigEntry<bool>> cityConfigEntries = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
-
-    private void Awake()
-    {
-        LogStatic = this.Logger;
-        this.Logger.LogInfo("TravelButtonMod Awake");
-
-        cfgEnableOverlay = this.Config.Bind("General", "EnableOverlay", true, "Show small debug overlay in-game");
-        cfgToggleKey = this.Config.Bind("General", "ToggleKey", KeyCode.F10, "Key to toggle overlay visibility");
-        cfgOverlayText = this.Config.Bind("General", "OverlayText", "TravelButtonMod active", "Text shown in overlay");
-
-        cfgEnableTeleport = this.Config.Bind("General", "EnableTeleport", true, "If false, travel will not deduct money or teleport the player (UI-only mode)");
-        cfgTravelCost = this.Config.Bind("General", "TravelCost", 200, "Cost (in silver coins) to pay for teleporting via the travel UI");
-
-        try
-        {
-            harmony = new Harmony("com.xzahalko.travelbutton.harmony");
-        }
-        catch (Exception ex)
-        {
-            this.Logger.LogError("Failed to create Harmony instance: " + ex);
+            this.name = name;
+            this.coords = null;
+            this.targetGameObjectName = null;
+            this.price = null;
+            this.enabled = false;
         }
 
-        // Ensure the TravelButtonUI MonoBehaviour exists
-        try
+        // Compatibility properties expected by older code:
+        // property 'visited' (lowercase) — maps to VisitedTracker
+        public bool visited
         {
-            var existing = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
-            if (existing != null)
+            get
             {
-                this.Logger.LogInfo("TravelButtonUI already present in scene.");
+                try { return VisitedTracker.HasVisited(this.name); }
+                catch { return false; }
+            }
+            set
+            {
+                try
+                {
+                    if (value) VisitedTracker.MarkVisited(this.name);
+                }
+                catch { }
+            }
+        }
+
+        // compatibility method name used previously in code: isCityEnabled()
+        public bool isCityEnabled()
+        {
+            return TravelButtonMod.IsCityEnabled(this.name);
+        }
+    }
+
+    // Public list used by UI code (TravelButtonUI reads TravelButtonMod.Cities)
+    public static List<City> Cities { get; private set; } = new List<City>();
+
+    // Path/filename helpers exposed for debugging
+    public static string ConfigFilePath => ConfigManager.ConfigPathForLog();
+
+    // Initialize mod state from JSON config -> should be called once at mod load
+    public static void InitFromConfig()
+    {
+        try
+        {
+            ConfigManager.Load(); // ensure config is loaded and defaults are applied
+            var cfg = ConfigManager.Config;
+            if (cfg == null)
+            {
+                Debug.LogWarning("[TravelButtonMod] InitFromConfig: ConfigManager.Config is null; using defaults.");
+                cfg = TravelConfig.Default();
+            }
+
+            // populate wrapper entries
+            cfgEnableMod.Value = cfg.enabled;
+            cfgCurrencyItem.Value = string.IsNullOrEmpty(cfg.currencyItem) ? "Silver" : cfg.currencyItem;
+            cfgTravelCost.Value = cfg.globalTeleportPrice == 0 ? 100 : cfg.globalTeleportPrice;
+
+            // by default allow teleport (cfg field may be extended in config later)
+            cfgEnableTeleport.Value = true;
+
+            // Build Cities list from cfg.cities dictionary. Preserve iteration order from config where available.
+            Cities.Clear();
+            if (cfg.cities != null)
+            {
+                foreach (var kv in cfg.cities)
+                {
+                    var cname = kv.Key;
+                    var cityCfg = kv.Value ?? new CityConfig();
+
+                    var city = new City(cname);
+                    city.enabled = cityCfg.enabled;
+                    city.price = cityCfg.price;
+                    if (cityCfg.coords != null && cityCfg.coords.Length == 3)
+                    {
+                        city.coords = new float[3] { cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2] };
+                    }
+                    else
+                    {
+                        city.coords = null;
+                    }
+
+                    // If the JSON had a note or gameObject name, allow targetGameObjectName (compatibility)
+                    if (!string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+                    {
+                        city.targetGameObjectName = cityCfg.targetGameObjectName;
+                    }
+                    else
+                    {
+                        city.targetGameObjectName = null;
+                    }
+
+                    Cities.Add(city);
+                }
             }
             else
             {
-                this.Logger.LogInfo("TravelButtonUI not found - creating GameObject and attaching TravelButtonUI.");
-                var go = new GameObject("TravelButtonUI");
-                go.AddComponent<TravelButtonUI>();
-                UnityEngine.Object.DontDestroyOnLoad(go);
-                this.Logger.LogInfo("TravelButtonUI GameObject created and marked DontDestroyOnLoad.");
+                Debug.LogWarning("[TravelButtonMod] InitFromConfig: no cfg.cities found; Cities list will be empty.");
             }
+
+            Debug.Log($"[TravelButtonMod] InitFromConfig: Loaded {Cities.Count} cities from config ({ConfigFilePath}).");
         }
         catch (Exception ex)
         {
-            this.Logger.LogError("Error while ensuring TravelButtonUI exists: " + ex);
-        }
-
-        // Load cities data from JSON (robust)
-        try
-        {
-            LoadCities();
-            if (Cities == null || Cities.Count == 0)
-            {
-                WriteDefaultCitiesFile();
-                LoadCities(); // reload after writing defaults
-            }
-
-            // Load visited flags from JSON
-            TravelButtonVisitedManager.Initialize();
-
-            // Merge visited flags & coords into Cities so visited cities appear in dialog
-            TravelButtonVisitedManager.MergeVisitedFlagsIntoCities();
-
-            // Create per-city config toggles (persistent)
-            CreateCityConfigEntries();
-
-            this.Logger.LogInfo($"Loaded {Cities.Count} cities from {CitiesFilePath}");
-            foreach (var c in Cities) this.Logger.LogInfo($" City: {c.name} - desc length: {(c.description ?? "").Length}, visited: {c.visited}");
-        }
-        catch (Exception ex)
-        {
-            this.Logger.LogError("Error loading cities: " + ex);
-        }
-
-        // Create CityDiscovery component for auto-discovery
-        try
-        {
-            var existingDiscovery = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
-            if (existingDiscovery == null)
-            {
-                this.Logger.LogInfo("Creating CityDiscovery component for auto-discovery.");
-                var discoveryGO = new GameObject("CityDiscovery");
-                discoveryGO.AddComponent<CityDiscovery>();
-                UnityEngine.Object.DontDestroyOnLoad(discoveryGO);
-                this.Logger.LogInfo("CityDiscovery GameObject created and marked DontDestroyOnLoad.");
-            }
-            else
-            {
-                this.Logger.LogInfo("CityDiscovery already exists in scene.");
-            }
-        }
-        catch (Exception ex)
-        {
-            this.Logger.LogError("Error creating CityDiscovery: " + ex);
+            Debug.LogError("[TravelButtonMod] InitFromConfig exception: " + ex);
         }
     }
 
-    // Create per-city config entries so each city can be toggled on/off
-    private void CreateCityConfigEntries()
-    {
-        try
-        {
-            cityConfigEntries.Clear();
-            foreach (var city in Cities)
-            {
-                var safeName = city.name.Replace(' ', '_');
-                var cfg = this.Config.Bind("Cities", safeName + ".Enabled", city.isCityEnabled,
-                    $"Enable city: {city.name} (set false to hide this destination in the UI)");
-                cityConfigEntries[city.name] = cfg;
-            }
-        }
-        catch (Exception ex)
-        {
-            LogStatic?.LogError("CreateCityConfigEntries failed: " + ex);
-        }
-    }
-
-    // Public helper used by UI code
+    // Query if a city is enabled in config (does not consider visited state)
     public static bool IsCityEnabled(string cityName)
     {
-        if (string.IsNullOrEmpty(cityName)) return true;
-
-        // If city was visited (persisted or in-memory), always enable it
-        try
+        if (string.IsNullOrEmpty(cityName)) return false;
+        var cfg = ConfigManager.Config;
+        if (cfg == null || cfg.cities == null) return false;
+        if (cfg.cities.TryGetValue(cityName, out CityConfig c))
         {
-            if (TravelButtonVisitedManager.IsCityVisited(cityName)) return true;
-
-            // also check in-memory flag in Cities list (in case MarkVisited updated in-memory object but file hasn't been reloaded yet)
-            var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-            if (citiesField != null)
-            {
-                var cities = citiesField.GetValue(null) as IList<City>;
-                if (cities != null)
-                {
-                    foreach (var c in cities)
-                    {
-                        if (c != null && string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (c.visited) return true;
-                            break;
-                        }
-                    }
-                }
-            }
+            return c.enabled;
         }
-        catch { /* ignore and fall back to config */ }
-
-        // If we have an explicit config entry, respect it for unvisited cities
-        if (cityConfigEntries.TryGetValue(cityName, out var cfg))
-        {
-            try
-            {
-                return cfg.Value;
-            }
-            catch
-            {
-                return true;
-            }
-        }
-
-        // fallback true if we don't have config entry
-        return true;
+        return false;
     }
 
-    // Robust loader: accepts both wrapped { "cities": [...] } and bare JSON arrays.
-    public static void LoadCities()
+    // Update in-memory Cities -> config and save; useful if user toggles a city via UI/editor
+    public static void PersistCitiesToConfig()
     {
         try
         {
-            var dir = Path.GetDirectoryName(CitiesFilePath);
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var cfg = ConfigManager.Config ?? TravelConfig.Default();
+            if (cfg.cities == null) cfg.cities = new Dictionary<string, CityConfig>();
 
-            if (!File.Exists(CitiesFilePath))
+            foreach (var city in Cities)
             {
-                WriteDefaultCitiesFile();
-            }
-
-            var txt = File.ReadAllText(CitiesFilePath).Trim();
-            CityContainer container = null;
-
-            // If file is an array, wrap it
-            if (txt.StartsWith("["))
-            {
-                var wrapped = "{\"cities\":" + txt + "}";
-                container = UnityEngine.JsonUtility.FromJson<CityContainer>(wrapped);
-            }
-            else
-            {
-                try
+                CityConfig cc = null;
+                if (cfg.cities.ContainsKey(city.name))
                 {
-                    container = UnityEngine.JsonUtility.FromJson<CityContainer>(txt);
+                    cc = cfg.cities[city.name];
                 }
-                catch { container = null; }
-            }
-
-            // fallback: try wrapping anyway
-            if ((container == null || container.cities == null || container.cities.Length == 0) && !txt.StartsWith("["))
-            {
-                var altWrapped = "{\"cities\":" + txt + "}";
-                try
+                else
                 {
-                    container = UnityEngine.JsonUtility.FromJson<CityContainer>(altWrapped);
+                    cc = new CityConfig();
+                    cfg.cities[city.name] = cc;
                 }
-                catch { container = null; }
+
+                cc.enabled = city.enabled;
+                cc.price = city.price;
+                cc.coords = city.coords;
+                // preserve note / targetGameObjectName if present in cc
+                cc.targetGameObjectName = city.targetGameObjectName ?? cc.targetGameObjectName;
             }
 
-            if (container != null && container.cities != null && container.cities.Length > 0)
-            {
-                Cities = new List<City>(container.cities);
-            }
-            else
-            {
-                LogStatic?.LogWarning("LoadCities: no cities parsed from JSON, populating defaults in memory.");
-                Cities = DefaultCities();
-            }
+            // Persist global values too
+            cfg.enabled = cfgEnableMod.Value;
+            cfg.currencyItem = cfgCurrencyItem.Value;
+            cfg.globalTeleportPrice = cfgTravelCost.Value;
+
+            ConfigManager.Config = cfg;
+            ConfigManager.Save();
+            Debug.Log("[TravelButtonMod] PersistCitiesToConfig: saved cities/config.");
         }
         catch (Exception ex)
         {
-            LogStatic?.LogError("LoadCities failed: " + ex);
-            Cities = new List<City>();
+            Debug.LogError("[TravelButtonMod] PersistCitiesToConfig exception: " + ex);
         }
     }
 
-    private static void WriteDefaultCitiesFile()
+    // Convenience: find a City by name (case-insensitive)
+    public static City FindCity(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        foreach (var c in Cities)
+        {
+            if (string.Equals(c.name, name, StringComparison.OrdinalIgnoreCase)) return c;
+        }
+        return null;
+    }
+
+    // Called by UI after successful teleport to mark visited and persist if needed
+    public static void OnSuccessfulTeleport(string cityName)
     {
         try
         {
-            var dir = Path.GetDirectoryName(CitiesFilePath);
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-            var defaults = new CityContainer
-            {
-                cities = DefaultCities().ToArray()
-            };
-            var json = UnityEngine.JsonUtility.ToJson(defaults, true);
-            File.WriteAllText(CitiesFilePath, json);
-            LogStatic?.LogInfo($"Created default cities file at {CitiesFilePath}");
+            if (string.IsNullOrEmpty(cityName)) return;
+            try { VisitedTracker.MarkVisited(cityName); } catch { }
+            // optionally persist any runtime changes (e.g., visited flags are separate, we persist cities only if changed)
         }
         catch (Exception ex)
         {
-            LogStatic?.LogError("WriteDefaultCitiesFile failed: " + ex);
+            Debug.LogError("[TravelButtonMod] OnSuccessfulTeleport exception: " + ex);
         }
     }
-
-    private static List<City> DefaultCities()
-    {
-        return new List<City>
-        {
-            new City {
-                name = "Cierzo",
-                targetGameObjectName = "",
-                description = "The cierzo is a strong, dry and usually cold wind that blows from the North or Northwest through the regions of Aragon, La Rioja and Navarra in the Ebro valley in Spain."
-            },
-            new City {
-                name = "Levant",
-                targetGameObjectName = "",
-                description = "The levant is an easterly wind that blows in the western Mediterranean Sea and southern France, an example of mountain-gap wind."
-            },
-            new City {
-                name = "Monsoon",
-                targetGameObjectName = "",
-                description = "A seasonal reversing wind accompanied by corresponding changes in precipitation."
-            },
-            new City {
-                name = "Berg",
-                targetGameObjectName = "",
-                description = "Berg wind is the South African name for a katabatic wind: a hot dry wind blowing down the Great Escarpment from the high central plateau to the coast."
-            },
-            new City {
-                name = "Harmattan",
-                targetGameObjectName = "",
-                description = "A dry and dusty northeasterly trade wind, which blows from the Sahara Desert over West Africa into the Gulf of Guinea."
-            },
-            new City {
-                name = "Sirocco",
-                targetGameObjectName = "",
-                description = "Sirocco is a Mediterranean wind that comes from the Sahara and can reach hurricane speeds in North Africa and Southern Europe, especially during the summer season."
-            }
-        };
-    }
-
-    public static void LogInfo(string message) => LogStatic?.LogInfo(message);
-    public static void LogWarning(string message) => LogStatic?.LogWarning(message);
-    public static void LogError(string message) => LogStatic?.LogError(message);
-    public static void LogDebug(string message) => LogStatic?.LogDebug(message);
 }

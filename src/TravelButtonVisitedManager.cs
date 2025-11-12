@@ -216,7 +216,7 @@ public static class TravelButtonVisitedManager
                             if (string.Equals(city.name, cityName, StringComparison.OrdinalIgnoreCase))
                             {
                                 city.visited = true;
-                                city.isCityEnabled = true;
+                                city.enabled = true;
                                 if ((city.coords == null || city.coords.Length < 3) && info.coords != null && info.coords.Length >= 3)
                                 {
                                     city.coords = new float[] { info.coords[0], info.coords[1], info.coords[2] };
@@ -295,7 +295,7 @@ public static class TravelButtonVisitedManager
                 if (visited.TryGetValue(city.name, out var info))
                 {
                     city.visited = true;
-                    city.isCityEnabled = true; // ensure visited cities show up
+                    city.enabled = true;
                     if ((city.coords == null || city.coords.Length < 3) && info.coords != null && info.coords.Length >= 3)
                     {
                         city.coords = new float[] { info.coords[0], info.coords[1], info.coords[2] };

@@ -1,9 +1,8 @@
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Xml;
 using UnityEngine;
+using Newtonsoft.Json;
 
 // Tracks visited cities and persists to visited.json inside the mod folder.
 // This is intentionally simple: stored as an array of city name strings.
@@ -66,7 +65,7 @@ public static class VisitedTracker
             var dir = Path.GetDirectoryName(SavePath);
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
             var list = new List<string>(visited);
-            File.WriteAllText(SavePath, JsonConvert.SerializeObject(list, Formatting.Indented));
+            File.WriteAllText(SavePath, JsonConvert.SerializeObject(list, Newtonsoft.Json.Formatting.Indented));
             Debug.Log("[TravelButton] VisitedTracker: saved visited list.");
         }
         catch (Exception ex)

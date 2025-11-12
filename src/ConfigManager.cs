@@ -1,9 +1,8 @@
-using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Xml;
 using UnityEngine;
+using Newtonsoft.Json;
 
 // ConfigManager: load/save travel_config.json (per-city config).
 // This version is intentionally simple and robust: it creates default config if missing,
@@ -34,7 +33,7 @@ public static class ConfigManager
             if (!File.Exists(DefaultConfigPath))
             {
                 Config = TravelConfig.Default();
-                File.WriteAllText(DefaultConfigPath, JsonConvert.SerializeObject(Config, Formatting.Indented));
+                File.WriteAllText(DefaultConfigPath, JsonConvert.SerializeObject(Config, Newtonsoft.Json.Formatting.Indented));
                 Debug.Log("[TravelButton] ConfigManager: created default config at " + DefaultConfigPath);
                 return;
             }
@@ -78,7 +77,7 @@ public static class ConfigManager
         {
             var dir = Path.GetDirectoryName(DefaultConfigPath);
             if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            var json = JsonConvert.SerializeObject(Config ?? TravelConfig.Default(), Formatting.Indented);
+            var json = JsonConvert.SerializeObject(Config ?? TravelConfig.Default(), Newtonsoft.Json.Formatting.Indented);
             File.WriteAllText(DefaultConfigPath, json);
             Debug.Log("[TravelButton] ConfigManager: config saved to " + DefaultConfigPath);
         }
