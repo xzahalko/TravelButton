@@ -1,50 +1,13 @@
-[
-  {
-    "name": "Cierzo",
-    "desc": "Cierzo - example description",
-    "coords": [100.0, 1.5, -20.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
-  },
-  {
-    "name": "Levant",
-    "desc": "Levant - example description",
-    "coords": [200.0, 2.0, 50.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
-  },
-  {
-    "name": "Monsoon",
-    "desc": "Monsoon - example description",
-    "coords": [300.0, 1.0, -150.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
-  },
-  {
-    "name": "Berg",
-    "desc": "Berg - example description",
-    "coords": [400.0, 0.0, -10.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
-  },
-  {
-    "name": "Harmattan",
-    "desc": "Harmattan - example description",
-    "coords": [500.0, 3.0, 80.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
-  },
-  {
-    "name": "Sirocco",
-    "desc": "Sirocco - example description",
-    "coords": [600.0, 1.2, -300.0],
-    "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+{
+  "enabled": true,
+  "currencyItem": "Silver",
+  "globalTeleportPrice": 100,
+  "cities": {
+    "Cierzo":      { "enabled": false, "price": null, "coords": null, "note": "coords required" },
+    "Levant":      { "enabled": false, "price": null, "coords": null, "note": "coords required" },
+    "Monsoon":     { "enabled": false, "price": null, "coords": null, "note": "coords required" },
+    "Berg":        { "enabled": false, "price": null, "coords": null, "note": "coords required" },
+    "Harmattan":   { "enabled": false, "price": null, "coords": null, "note": "coords required" },
+    "Sirocco":     { "enabled": false, "price": null, "coords": null, "note": "coords required" }
   }
-]
+}
