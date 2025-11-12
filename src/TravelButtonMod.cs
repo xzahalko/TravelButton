@@ -1,19 +1,15 @@
 using BepInEx;
 using BepInEx.Configuration;
-using BepInEx.Logging;
 using HarmonyLib;
 using System;
-using System.IO;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 
-/// <summary>
-/// Plugin GUID should be unique.
-/// </summary>
-[BepInPlugin("com.xzahalko.travelbutton", "TravelButtonMod", "0.1.0")]
+// add the plugin metadata so BepInEx will load this class
+[BepInPlugin("com.xzahalko.travelbutton", "TravelButton", "0.1.0")]
 public class TravelButtonMod : BaseUnityPlugin
 {
-
     public static BepInEx.Logging.ManualLogSource LogStatic;
     private Harmony harmony;
 
@@ -46,7 +42,7 @@ public class TravelButtonMod : BaseUnityPlugin
         }
     }
 
-    // Make CityContainer public so TravelButtonVisitedManager can use it
+    // Make CityContainer public so TravelButtonVisitedManager can use it if desired
     [Serializable]
     public class CityContainer
     {
@@ -54,6 +50,7 @@ public class TravelButtonMod : BaseUnityPlugin
     }
 
     public static List<City> Cities = new List<City>();
+
     private static string CitiesFilePath => Path.Combine(Paths.PluginPath, "TravelButton", "TravelButton_Cities.json");
 
     // dynamic per-city config entries
@@ -69,8 +66,6 @@ public class TravelButtonMod : BaseUnityPlugin
         cfgOverlayText = this.Config.Bind("General", "OverlayText", "TravelButtonMod active", "Text shown in overlay");
 
         cfgEnableTeleport = this.Config.Bind("General", "EnableTeleport", true, "If false, travel will not deduct money or teleport the player (UI-only mode)");
-
-        // NEW: travel cost config
         cfgTravelCost = this.Config.Bind("General", "TravelCost", 200, "Cost (in silver coins) to pay for teleporting via the travel UI");
 
         try
@@ -92,7 +87,7 @@ public class TravelButtonMod : BaseUnityPlugin
             }
             else
             {
-                this.Logger.LogInfo("TravelButtonUI not found � creating GameObject and attaching TravelButtonUI.");
+                this.Logger.LogInfo("TravelButtonUI not found - creating GameObject and attaching TravelButtonUI.");
                 var go = new GameObject("TravelButtonUI");
                 go.AddComponent<TravelButtonUI>();
                 UnityEngine.Object.DontDestroyOnLoad(go);
@@ -108,16 +103,16 @@ public class TravelButtonMod : BaseUnityPlugin
         try
         {
             LoadCities();
-            // Make sure we have at least the defaults in memory; if empty, populate defaults (do not blindly overwrite user file if present but empty)
             if (Cities == null || Cities.Count == 0)
             {
                 WriteDefaultCitiesFile();
                 LoadCities(); // reload after writing defaults
             }
 
-            // Load visited flags from JSON and merge into Cities
-            // public initialize helper
+            // Load visited flags from JSON
             TravelButtonVisitedManager.Initialize();
+
+            // Merge visited flags & coords into Cities so visited cities appear in dialog
             TravelButtonVisitedManager.MergeVisitedFlagsIntoCities();
 
             // Create per-city config toggles (persistent)
@@ -154,73 +149,72 @@ public class TravelButtonMod : BaseUnityPlugin
         }
     }
 
-    private void OnEnable()
-    {
-        this.Logger.LogInfo("TravelButtonMod Enabled");
-    }
-
-    private void OnDisable()
-    {
-        this.Logger.LogInfo("TravelButtonMod Disabled");
-        try
-        {
-            harmony?.UnpatchSelf();
-        }
-        catch (Exception ex)
-        {
-            this.Logger.LogError("Error unpatching: " + ex);
-        }
-    }
-
-    private void Update()
-    {
-        if (cfgEnableOverlay.Value && Input.GetKeyDown(cfgToggleKey.Value))
-        {
-            showOverlay = !showOverlay;
-            this.Logger.LogInfo($"Overlay toggled: {showOverlay}");
-        }
-    }
-
-    private void OnGUI()
-    {
-        if (!cfgEnableOverlay.Value || !showOverlay) return;
-
-        GUI.backgroundColor = Color.black;
-        GUI.contentColor = Color.white;
-        var style = new GUIStyle(GUI.skin.box);
-        style.fontSize = 14;
-        style.alignment = TextAnchor.UpperLeft;
-        style.padding = new RectOffset(8, 8, 6, 6);
-        style.normal.textColor = Color.white;
-
-        GUILayout.BeginArea(new Rect(12, 12, 360, 120));
-        GUILayout.BeginVertical("box");
-        GUILayout.Label(cfgOverlayText.Value, style);
-        GUILayout.Label($"Time: {DateTime.Now:T}", style);
-        GUILayout.Label($"Plugin: {this.Info.Metadata.Name} v{this.Info.Metadata.Version}", style);
-        GUILayout.EndVertical();
-        GUILayout.EndArea();
-    }
-
-    private void WriteDebugFile(string name, string content)
+    // Create per-city config entries so each city can be toggled on/off
+    private void CreateCityConfigEntries()
     {
         try
         {
-            var baseDir = Paths.PluginPath;
-            var path = Path.Combine(baseDir, "TravelButtonMod");
-            Directory.CreateDirectory(path);
-            File.WriteAllText(Path.Combine(path, name), content);
+            cityConfigEntries.Clear();
+            foreach (var city in Cities)
+            {
+                var safeName = city.name.Replace(' ', '_');
+                var cfg = this.Config.Bind("Cities", safeName + ".Enabled", city.isCityEnabled,
+                    $"Enable city: {city.name} (set false to hide this destination in the UI)");
+                cityConfigEntries[city.name] = cfg;
+            }
         }
         catch (Exception ex)
         {
-            this.Logger.LogError("WriteDebugFile failed: " + ex);
+            LogStatic?.LogError("CreateCityConfigEntries failed: " + ex);
         }
     }
 
-    public static void LogInfo(string message) => LogStatic?.LogInfo(message);
-    public static void LogWarning(string message) => LogStatic?.LogWarning(message);
-    public static void LogError(string message) => LogStatic?.LogError(message);
-    public static void LogDebug(string message) => LogStatic?.LogDebug(message);
+    // Public helper used by UI code
+    public static bool IsCityEnabled(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return true;
+
+        // If city was visited (persisted or in-memory), always enable it
+        try
+        {
+            if (TravelButtonVisitedManager.IsCityVisited(cityName)) return true;
+
+            // also check in-memory flag in Cities list (in case MarkVisited updated in-memory object but file hasn't been reloaded yet)
+            var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (citiesField != null)
+            {
+                var cities = citiesField.GetValue(null) as IList<City>;
+                if (cities != null)
+                {
+                    foreach (var c in cities)
+                    {
+                        if (c != null && string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (c.visited) return true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        catch { /* ignore and fall back to config */ }
+
+        // If we have an explicit config entry, respect it for unvisited cities
+        if (cityConfigEntries.TryGetValue(cityName, out var cfg))
+        {
+            try
+            {
+                return cfg.Value;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        // fallback true if we don't have config entry
+        return true;
+    }
 
     // Robust loader: accepts both wrapped { "cities": [...] } and bare JSON arrays.
     public static void LoadCities()
@@ -270,7 +264,6 @@ public class TravelButtonMod : BaseUnityPlugin
             }
             else
             {
-                // nothing useful parsed -> populate defaults in memory (don't overwrite an intentionally empty user file)
                 LogStatic?.LogWarning("LoadCities: no cities parsed from JSON, populating defaults in memory.");
                 Cities = DefaultCities();
             }
@@ -340,33 +333,8 @@ public class TravelButtonMod : BaseUnityPlugin
         };
     }
 
-    // Create per-city config entries so each city can be toggled on/off
-    private void CreateCityConfigEntries()
-    {
-        try
-        {
-            cityConfigEntries.Clear();
-            foreach (var city in Cities)
-            {
-                // key-safe name: replace spaces with underscores
-                var safeName = city.name.Replace(' ', '_');
-                var cfg = this.Config.Bind("Cities", safeName + ".Enabled", true,
-                    $"Enable city: {city.name} (set false to hide this destination in the UI)");
-                cityConfigEntries[city.name] = cfg;
-            }
-        }
-        catch (Exception ex)
-        {
-            LogStatic?.LogError("CreateCityConfigEntries failed: " + ex);
-        }
-    }
-
-    // Public helper used by UI code
-    public static bool IsCityEnabled(string cityName)
-    {
-        if (string.IsNullOrEmpty(cityName)) return true;
-        if (cityConfigEntries.TryGetValue(cityName, out var cfg)) return cfg.Value;
-        // fallback true if we don't have config entry
-        return true;
-    }
+    public static void LogInfo(string message) => LogStatic?.LogInfo(message);
+    public static void LogWarning(string message) => LogStatic?.LogWarning(message);
+    public static void LogError(string message) => LogStatic?.LogError(message);
+    public static void LogDebug(string message) => LogStatic?.LogDebug(message);
 }

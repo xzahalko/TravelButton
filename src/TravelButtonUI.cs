@@ -36,6 +36,9 @@ public class TravelButtonUI : MonoBehaviour
     // Coroutine that refreshes city button interactability while dialog is open
     private Coroutine refreshButtonsCoroutine;
 
+    // Fallback visibility monitor coroutine when inventoryVisibilityTarget is not found
+    private Coroutine visibilityMonitorCoroutine;
+
     void Start()
     {
         TravelButtonMod.LogInfo("TravelButtonUI.Start called.");
@@ -106,6 +109,13 @@ public class TravelButtonUI : MonoBehaviour
         try
         {
             if (buttonObject == null) return;
+
+            // Stop any existing visibility monitor (we'll start a new one if needed)
+            if (visibilityMonitorCoroutine != null)
+            {
+                try { StopCoroutine(visibilityMonitorCoroutine); } catch { }
+                visibilityMonitorCoroutine = null;
+            }
 
             // Find a template button under the container to copy visuals/layout from
             Button templateButton = null;
@@ -188,19 +198,42 @@ public class TravelButtonUI : MonoBehaviour
             // Find the real visibility target of the inventory UI so we can show/hide the button with the window
             TryFindInventoryVisibilityTarget(container);
 
-            // Sync initial visibility
+            // If TryFindInventoryVisibilityTarget found something, sync to that target;
+            // otherwise fall back to monitoring the container active state (less precise but more robust across mods).
             if (inventoryVisibilityTarget != null)
             {
-                bool visible = inventoryVisibilityTarget.activeInHierarchy;
-                var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
-                if (cg != null) visible = cg.alpha > 0.01f && cg.interactable;
-                buttonObject.SetActive(visible);
+                // Sync initial visibility using the found target
+                try
+                {
+                    bool visible = inventoryVisibilityTarget.activeInHierarchy;
+                    var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
+                    if (cg != null) visible = cg.alpha > 0.01f && cg.interactable;
+                    buttonObject.SetActive(visible);
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogWarning("ReparentButtonToInventory: failed to sync visibility from found inventoryVisibilityTarget: " + ex);
+                    buttonObject.SetActive(true);
+                }
             }
             else
             {
-                // if we couldn't detect a visibility target, leave the button hidden by default (safer)
-                buttonObject.SetActive(false);
-                TravelButtonMod.LogInfo("ReparentButtonToInventory: no explicit visibility target found; button hidden until inventory shows.");
+                // Fallback: use container.activeInHierarchy as a visibility heuristic and monitor it
+                try
+                {
+                    bool visible = container.gameObject.activeInHierarchy;
+                    buttonObject.SetActive(visible);
+                    TravelButtonMod.LogInfo($"ReparentButtonToInventory: no explicit visibility target found; using container '{container.name}' active state as fallback (visible={visible}).");
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonMod.LogWarning("ReparentButtonToInventory: fallback visibility check failed: " + ex);
+                    // show button by default to aid debugging if fallback failed
+                    buttonObject.SetActive(true);
+                }
+
+                // Start a monitor that toggles the button when the container's active state or CanvasGroup changes.
+                visibilityMonitorCoroutine = StartCoroutine(MonitorInventoryContainerVisibility(container));
             }
 
             TravelButtonMod.LogInfo("ReparentButtonToInventory: button reparented and visibility synced with inventory.");
@@ -208,6 +241,39 @@ public class TravelButtonUI : MonoBehaviour
         catch (Exception ex)
         {
             TravelButtonMod.LogError("ReparentButtonToInventory: " + ex);
+        }
+    }
+
+    // Monitor container active state periodically and update button visibility when no explicit visibility target was detected.
+    private IEnumerator MonitorInventoryContainerVisibility(Transform container)
+    {
+        if (container == null || buttonObject == null) yield break;
+
+        while (true)
+        {
+            try
+            {
+                bool visible = container.gameObject.activeInHierarchy;
+                // If container has a CanvasGroup child that seems to control visibility, prefer that
+                var cg = container.GetComponentInChildren<CanvasGroup>(true);
+                if (cg != null)
+                {
+                    visible = cg.alpha > 0.01f && cg.interactable && cg.gameObject.activeInHierarchy;
+                }
+
+                if (buttonObject.activeSelf != visible)
+                {
+                    buttonObject.SetActive(visible);
+                    TravelButtonMod.LogDebug($"MonitorInventoryContainerVisibility: set TravelButton active={visible} (container='{container.name}').");
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogWarning("MonitorInventoryContainerVisibility exception: " + ex);
+            }
+
+            // low frequency: check twice per second
+            yield return new WaitForSeconds(0.5f);
         }
     }
 

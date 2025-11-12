@@ -136,7 +136,12 @@ public static class TravelButtonVisitedManager
                     string dir = Path.GetDirectoryName(asmPath);
                     if (!string.IsNullOrEmpty(dir))
                     {
-                        var plugDir = Path.Combine(dir, "TravelButton");
+                        // Avoid creating a nested TravelButton/TravelButton directory if the assembly already sits in a TravelButton folder.
+                        string folderName = Path.GetFileName(dir) ?? "";
+                        string plugDir = folderName.Equals("TravelButton", StringComparison.OrdinalIgnoreCase)
+                            ? dir
+                            : Path.Combine(dir, "TravelButton");
+
                         if (!Directory.Exists(plugDir)) Directory.CreateDirectory(plugDir);
                         return Path.Combine(plugDir, "TravelButton_Visited.json");
                     }
@@ -170,6 +175,7 @@ public static class TravelButtonVisitedManager
     }
 
     // Mark a city visited; optional position will be stored into visited metadata.
+    // Also updates the in-memory TravelButtonMod.Cities entry so UI and other code see the changed state immediately.
     public static void MarkVisited(string cityName, Vector3? position = null)
     {
         if (string.IsNullOrEmpty(cityName)) return;
@@ -193,6 +199,38 @@ public static class TravelButtonVisitedManager
                 var v = position.Value;
                 info.coords = new float[] { v.x, v.y, v.z };
                 TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Stored coords for {cityName} = ({v.x:F2},{v.y:F2},{v.z:F2})");
+            }
+
+            // Update in-memory TravelButtonMod.Cities if available so UI/teleport code sees the visit immediately
+            try
+            {
+                var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+                if (citiesField != null)
+                {
+                    var cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
+                    if (cities != null)
+                    {
+                        foreach (var city in cities)
+                        {
+                            if (city == null) continue;
+                            if (string.Equals(city.name, cityName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                city.visited = true;
+                                city.isCityEnabled = true;
+                                if ((city.coords == null || city.coords.Length < 3) && info.coords != null && info.coords.Length >= 3)
+                                {
+                                    city.coords = new float[] { info.coords[0], info.coords[1], info.coords[2] };
+                                    TravelButtonMod.LogInfo($"TravelButtonVisitedManager: Applied saved coords to in-memory city '{city.name}'");
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogWarning("TravelButtonVisitedManager: failed to update in-memory Cities entry: " + ex);
             }
 
             Save();

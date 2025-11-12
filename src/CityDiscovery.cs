@@ -76,6 +76,8 @@ public class CityDiscovery : MonoBehaviour
                 return;
             }
 
+            string sceneName = SceneManager.GetActiveScene().name ?? "";
+
             foreach (var city in cities)
             {
                 try
@@ -83,7 +85,20 @@ public class CityDiscovery : MonoBehaviour
                     if (string.IsNullOrEmpty(city.name)) continue;
                     if (TravelButtonVisitedManager.IsCityVisited(city.name)) continue;
 
+                    // Try to get a known world position for the city (GameObject, explicit coords or name-match)
                     Vector3? candidate = GetCityPosition(city);
+
+                    // If we don't have candidate coords but the active scene name contains the city name,
+                    // treat the player's current position as the city's discovered position.
+                    if (candidate == null)
+                    {
+                        if (!string.IsNullOrEmpty(sceneName) && sceneName.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            TravelButtonMod.LogInfo($"CityDiscovery: Scene '{sceneName}' matches city '{city.name}' - using player position as candidate.");
+                            candidate = ppos;
+                        }
+                    }
+
                     if (candidate == null)
                     {
                         TravelButtonMod.LogInfo($"CityDiscovery: No candidate position for city '{city.name}' (skipping).");
@@ -95,7 +110,7 @@ public class CityDiscovery : MonoBehaviour
 
                     if (dist <= DiscoverRadius)
                     {
-                        // store the discovered position with visited metadata
+                        // pass the discovered world position so it can be saved
                         TravelButtonVisitedManager.MarkVisited(city.name, candidate.Value);
                         TravelButtonMod.LogInfo($"CityDiscovery: Auto-discovered city '{city.name}' at distance {dist:F1}.");
                     }
@@ -138,6 +153,13 @@ public class CityDiscovery : MonoBehaviour
             try
             {
                 var pos = GetCityPosition(city);
+                if (pos == null)
+                {
+                    // If no explicit pos, try matching scene name -> consider player pos
+                    var sceneName = SceneManager.GetActiveScene().name ?? "";
+                    if (!string.IsNullOrEmpty(sceneName) && sceneName.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        pos = ppos;
+                }
                 if (pos == null) continue;
                 float d = Vector3.Distance(ppos, pos.Value);
                 if (d < bestDist)
@@ -221,16 +243,18 @@ public class CityDiscovery : MonoBehaviour
 
     private Transform FindPlayerTransform()
     {
-        // (same robust player-finding logic as original; omitted here for brevity but kept in file in real code)
-        // For clarity in this snippet, we'll keep the important checks from the original implementation.
-
+        // 1) Tag
         try
         {
             var tagged = GameObject.FindWithTag("Player");
-            if (tagged != null) return tagged.transform;
+            if (tagged != null)
+            {
+                return tagged.transform;
+            }
         }
         catch { }
 
+        // 2) Common runtime types
         string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player", "PlayerController", "LocalPlayer", "Player" };
         foreach (var tname in playerTypeCandidates)
         {
@@ -243,19 +267,27 @@ public class CityDiscovery : MonoBehaviour
                     if (objs != null && objs.Length > 0)
                     {
                         var comp = objs[0] as Component;
-                        if (comp != null) return comp.transform;
+                        if (comp != null)
+                        {
+                            return comp.transform;
+                        }
                     }
                 }
             }
             catch { }
         }
 
+        // 3) Fallback: camera's follow target or main camera transform
         try
         {
-            if (Camera.main != null) return Camera.main.transform;
+            if (Camera.main != null)
+            {
+                return Camera.main.transform;
+            }
         }
         catch { }
 
+        // 4) Brute-force heuristic: first transform with 'player' in name
         try
         {
             var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
@@ -263,7 +295,9 @@ public class CityDiscovery : MonoBehaviour
             {
                 if (tr == null) continue;
                 if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
                     return tr;
+                }
             }
         }
         catch { }
@@ -276,18 +310,42 @@ public class CityDiscovery : MonoBehaviour
         if (city == null) return null;
         try
         {
+            // 1) explicit target GameObject name
             if (!string.IsNullOrEmpty(city.targetGameObjectName))
             {
                 var go = GameObject.Find(city.targetGameObjectName);
                 if (go != null) return go.transform.position;
             }
+
+            // 2) explicit coords from config / visited metadata
             if (city.coords != null && city.coords.Length >= 3)
             {
                 return new Vector3(city.coords[0], city.coords[1], city.coords[2]);
             }
+
+            // 3) heuristic: find any scene object with the city name in it (useful when scene or objects include the region name)
+            try
+            {
+                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var tr in allTransforms)
+                {
+                    if (tr == null) continue;
+                    if (tr.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return tr.position;
+                    }
+                }
+            }
+            catch { }
+
+            // not found
+            return null;
         }
-        catch { }
-        return null;
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("GetCityPosition exception: " + ex);
+            return null;
+        }
     }
 
     private void LogPlayerPosition()
