@@ -35,10 +35,11 @@ public class TravelButtonMod : BaseUnityPlugin
         public float[] coords; // optional: { x, y, z }
         public string description; // human-readable description shown in dialog
         public bool visited; // whether player has visited this city
-        public bool isCityEnabled = true;
+        public bool isCityEnabled = false; // Changed default to false per requirements
+        public int price = -1; // Per-city price override; -1 means use global default
         public override string ToString()
         {
-            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited})";
+            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited} price={price})";
         }
     }
 
@@ -55,6 +56,7 @@ public class TravelButtonMod : BaseUnityPlugin
 
     // dynamic per-city config entries
     private static Dictionary<string, ConfigEntry<bool>> cityConfigEntries = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
+    private static Dictionary<string, ConfigEntry<int>> cityPriceConfigEntries = new Dictionary<string, ConfigEntry<int>>(StringComparer.OrdinalIgnoreCase);
 
     private void Awake()
     {
@@ -149,18 +151,27 @@ public class TravelButtonMod : BaseUnityPlugin
         }
     }
 
-    // Create per-city config entries so each city can be toggled on/off
+    // Create per-city config entries so each city can be toggled on/off and have custom prices
     private void CreateCityConfigEntries()
     {
         try
         {
             cityConfigEntries.Clear();
+            cityPriceConfigEntries.Clear();
             foreach (var city in Cities)
             {
                 var safeName = city.name.Replace(' ', '_');
+                
+                // Enable/disable config
                 var cfg = this.Config.Bind("Cities", safeName + ".Enabled", city.isCityEnabled,
                     $"Enable city: {city.name} (set false to hide this destination in the UI)");
                 cityConfigEntries[city.name] = cfg;
+                
+                // Price config (per-city override)
+                var defaultPrice = city.price > 0 ? city.price : cfgTravelCost.Value;
+                var priceCfg = this.Config.Bind("Cities", safeName + ".Price", defaultPrice,
+                    $"Travel cost for {city.name} in silver coins (overrides global TravelCost)");
+                cityPriceConfigEntries[city.name] = priceCfg;
             }
         }
         catch (Exception ex)
@@ -214,6 +225,25 @@ public class TravelButtonMod : BaseUnityPlugin
 
         // fallback true if we don't have config entry
         return true;
+    }
+
+    // Get the price for a specific city (uses per-city config if available, otherwise global default)
+    public static int GetCityPrice(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return cfgTravelCost.Value;
+
+        // Check per-city price config
+        if (cityPriceConfigEntries.TryGetValue(cityName, out var priceCfg))
+        {
+            try
+            {
+                return priceCfg.Value;
+            }
+            catch { }
+        }
+
+        // Fallback to global default
+        return cfgTravelCost.Value;
     }
 
     // Robust loader: accepts both wrapped { "cities": [...] } and bare JSON arrays.

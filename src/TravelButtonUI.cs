@@ -5,7 +5,6 @@ using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
-using System.Reflection;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -25,6 +24,7 @@ public class TravelButtonUI : MonoBehaviour
     // Dialog UI root (created at runtime)
     private GameObject dialogRoot;
     private GameObject dialogCanvas; // dedicated canvas for dialogs
+    private Text errorMessageText; // Error message display
 
     // Inventory parenting tracking
     private Transform inventoryContainer;
@@ -483,6 +483,8 @@ public class TravelButtonUI : MonoBehaviour
                 if (canvas != null) canvas.sortingOrder = 2000;
                 dialogRoot.transform.SetAsLastSibling();
                 TravelButtonMod.LogInfo("OpenTravelDialog: re-activated existing dialogRoot.");
+                // Clear any previous error message
+                HideErrorMessage();
                 // prevent click-through for a frame when reactivating
                 StartCoroutine(TemporarilyDisableDialogRaycasts());
                 // start refreshing buttons while open
@@ -532,7 +534,7 @@ public class TravelButtonUI : MonoBehaviour
             titleRt.sizeDelta = new Vector2(0, 32);
             var titleText = titleGO.AddComponent<Text>();
             titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (cost {TravelButtonMod.cfgTravelCost.Value} silver)";
+            titleText.text = "Select destination";
             titleText.alignment = TextAnchor.MiddleCenter;
             titleText.fontSize = 18;
             titleText.color = Color.white;
@@ -601,7 +603,6 @@ public class TravelButtonUI : MonoBehaviour
                 // read player currency now to set initial interactable state
                 long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = playerMoney >= 0;
-                int cost = TravelButtonMod.cfgTravelCost.Value;
 
                 foreach (var city in TravelButtonMod.Cities)
                 {
@@ -610,6 +611,9 @@ public class TravelButtonUI : MonoBehaviour
                     if (!enabledByConfig) continue; // skip disabled cities
 
                     anyCity = true;
+                    
+                    // Get per-city price
+                    int cityPrice = TravelButtonMod.GetCityPrice(city.name);
 
                     var bgo = new GameObject("CityButton_" + city.name);
                     bgo.transform.SetParent(content.transform, false);
@@ -635,14 +639,14 @@ public class TravelButtonUI : MonoBehaviour
                     cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
                     bbtn.colors = cb;
 
-                    // Label left
+                    // Label left (city name)
                     var lgo = new GameObject("Label");
                     lgo.transform.SetParent(bgo.transform, false);
                     var lrt = lgo.AddComponent<RectTransform>();
                     lrt.anchorMin = new Vector2(0f, 0f);
-                    lrt.anchorMax = new Vector2(1f, 1f);
+                    lrt.anchorMax = new Vector2(0.7f, 1f);
                     lrt.offsetMin = new Vector2(8, 0);
-                    lrt.offsetMax = new Vector2(-8, 0);
+                    lrt.offsetMax = new Vector2(-4, 0);
                     var ltxt = lgo.AddComponent<Text>();
                     ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
                     ltxt.text = city.name;
@@ -651,10 +655,26 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
+                    // Price label right
+                    var pgo = new GameObject("Price");
+                    pgo.transform.SetParent(bgo.transform, false);
+                    var prt = pgo.AddComponent<RectTransform>();
+                    prt.anchorMin = new Vector2(0.7f, 0f);
+                    prt.anchorMax = new Vector2(1f, 1f);
+                    prt.offsetMin = new Vector2(4, 0);
+                    prt.offsetMax = new Vector2(-8, 0);
+                    var ptxt = pgo.AddComponent<Text>();
+                    ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                    ptxt.text = $"{cityPrice} silver";
+                    ptxt.color = new Color(0.85f, 0.75f, 0.55f, 1.0f);
+                    ptxt.alignment = TextAnchor.MiddleRight;
+                    ptxt.fontSize = 12;
+                    ptxt.raycastTarget = false;
+
                     // If we have currency info, disable button if player lacks funds
                     if (haveMoneyInfo)
                     {
-                        if (playerMoney < cost)
+                        if (playerMoney < cityPrice)
                         {
                             bbtn.interactable = false;
                             // dim the image to indicate disabled
@@ -667,7 +687,7 @@ public class TravelButtonUI : MonoBehaviour
                         TravelButtonMod.LogWarning("OpenTravelDialog: could not determine player money; leaving city buttons enabled.");
                     }
 
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable})");
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, price={cityPrice})");
 
                     var capturedCity = city;
                     // NEW: immediate-pay-and-teleport when city button clicked (instead of separate confirmation)
@@ -710,6 +730,24 @@ public class TravelButtonUI : MonoBehaviour
 
             // start refreshing buttons while open
             refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+
+            // Error message display (between scroll area and close button)
+            var errorMsgGO = new GameObject("ErrorMessage");
+            errorMsgGO.transform.SetParent(dialogRoot.transform, false);
+            var errorRt = errorMsgGO.AddComponent<RectTransform>();
+            errorRt.anchorMin = new Vector2(0f, 0f);
+            errorRt.anchorMax = new Vector2(1f, 0f);
+            errorRt.pivot = new Vector2(0.5f, 0f);
+            errorRt.anchoredPosition = new Vector2(0, 52);
+            errorRt.sizeDelta = new Vector2(-20, 30);
+            errorMessageText = errorMsgGO.AddComponent<Text>();
+            errorMessageText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            errorMessageText.text = "";
+            errorMessageText.alignment = TextAnchor.MiddleCenter;
+            errorMessageText.fontSize = 14;
+            errorMessageText.color = new Color(1f, 0.3f, 0.3f, 1f); // Red color for errors
+            errorMessageText.raycastTarget = false;
+            errorMsgGO.SetActive(false); // Initially hidden
 
             // Close button (bottom center) - ensure clickable
             var closeGO = new GameObject("Close");
@@ -985,12 +1023,17 @@ public class TravelButtonUI : MonoBehaviour
     {
         try
         {
-            int cost = TravelButtonMod.cfgTravelCost.Value;
+            // Clear any previous error message
+            HideErrorMessage();
+            
+            // Get per-city price
+            int cost = TravelButtonMod.GetCityPrice(city.name);
 
             // First: find a valid target position. If none, abort (do not deduct).
             if (!TryGetTargetPosition(city, out Vector3 targetPos))
             {
                 TravelButtonMod.LogError($"TryPayAndTeleport: no valid target for {city.name}. Aborting without charging.");
+                ShowErrorMessage("Destination coordinates not available");
                 return;
             }
 
@@ -1007,6 +1050,7 @@ public class TravelButtonUI : MonoBehaviour
             if (!paid)
             {
                 TravelButtonMod.LogWarning($"TryPayAndTeleport: not enough funds or deduction failed for cost {cost} - aborting.");
+                ShowErrorMessage("not enough resources to travel");
                 return;
             }
 
@@ -1023,6 +1067,7 @@ public class TravelButtonUI : MonoBehaviour
                 else
                     TravelButtonMod.LogWarning($"TryPayAndTeleport: refund of {cost} silver FAILED after failed teleport. Manual correction may be required.");
 
+                ShowErrorMessage("Teleport failed");
                 return;
             }
             else
@@ -1034,6 +1079,7 @@ public class TravelButtonUI : MonoBehaviour
         catch (Exception ex)
         {
             TravelButtonMod.LogError("TryPayAndTeleport exception: " + ex);
+            ShowErrorMessage("Travel error occurred");
         }
     }
 
@@ -1047,11 +1093,43 @@ public class TravelButtonUI : MonoBehaviour
                 StopCoroutine(refreshButtonsCoroutine);
                 refreshButtonsCoroutine = null;
             }
+            HideErrorMessage();
         }
         catch (Exception ex)
         {
             TravelButtonMod.LogWarning("CloseDialogAndStopRefresh failed: " + ex);
         }
+    }
+
+    // Show an error message in the dialog
+    private void ShowErrorMessage(string message)
+    {
+        try
+        {
+            if (errorMessageText != null)
+            {
+                errorMessageText.text = message;
+                errorMessageText.gameObject.SetActive(true);
+                TravelButtonMod.LogInfo($"ShowErrorMessage: '{message}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("ShowErrorMessage failed: " + ex);
+        }
+    }
+
+    // Hide the error message
+    private void HideErrorMessage()
+    {
+        try
+        {
+            if (errorMessageText != null && errorMessageText.gameObject.activeSelf)
+            {
+                errorMessageText.gameObject.SetActive(false);
+            }
+        }
+        catch { }
     }
 
     // Refresh city buttons while dialog is open: re-evaluates player's currency and enables/disables buttons.
@@ -1064,7 +1142,6 @@ public class TravelButtonUI : MonoBehaviour
                 // fetch current player money
                 long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = currentMoney >= 0;
-                int cost = TravelButtonMod.cfgTravelCost.Value;
 
                 var content = dialog.transform.Find("ScrollArea/Viewport/Content");
                 if (content != null)
@@ -1082,9 +1159,10 @@ public class TravelButtonUI : MonoBehaviour
                         {
                             string cityName = objName.Substring("CityButton_".Length);
                             bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
+                            int cityPrice = TravelButtonMod.GetCityPrice(cityName);
                             bool shouldBeInteractable = enabledByConfig;
                             if (haveMoneyInfo)
-                                shouldBeInteractable = shouldBeInteractable && (currentMoney >= cost);
+                                shouldBeInteractable = shouldBeInteractable && (currentMoney >= cityPrice);
                             // apply interactable state and tint
                             if (btn.interactable != shouldBeInteractable)
                             {
