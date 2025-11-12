@@ -1,50 +1,56 @@
 [
   {
     "name": "Cierzo",
-    "desc": "Cierzo - example description",
-    "coords": [100.0, 1.5, -20.0],
+    "desc": "A starting town in Chersonese region. The cierzo is a strong, dry and usually cold wind that blows from the North or Northwest.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   },
   {
     "name": "Levant",
-    "desc": "Levant - example description",
-    "coords": [200.0, 2.0, 50.0],
+    "desc": "A major city in the Abrassar desert region. The levant is an easterly wind that blows in the western Mediterranean Sea and southern France.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   },
   {
     "name": "Monsoon",
-    "desc": "Monsoon - example description",
-    "coords": [300.0, 1.0, -150.0],
+    "desc": "A coastal city in the Hallowed Marsh region. A seasonal reversing wind accompanied by corresponding changes in precipitation.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   },
   {
     "name": "Berg",
-    "desc": "Berg - example description",
-    "coords": [400.0, 0.0, -10.0],
+    "desc": "A mountain city in the Enmerkar Forest region. Berg wind is a hot dry wind blowing down the Great Escarpment from the high central plateau to the coast.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   },
   {
     "name": "Harmattan",
-    "desc": "Harmattan - example description",
-    "coords": [500.0, 3.0, 80.0],
+    "desc": "A city in the Antique Plateau region. A dry and dusty northeasterly trade wind, which blows from the Sahara Desert over West Africa.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   },
   {
     "name": "Sirocco",
-    "desc": "Sirocco - example description",
-    "coords": [600.0, 1.2, -300.0],
+    "desc": "A desert outpost. Sirocco is a Mediterranean wind that comes from the Sahara and can reach hurricane speeds in North Africa and Southern Europe.",
+    "coords": null,
     "targetGameObjectName": "",
-    "isCityEnabled": true,
-    "visited": false
+    "isCityEnabled": false,
+    "visited": false,
+    "price": null
   }
 ]

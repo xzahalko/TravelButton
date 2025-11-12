@@ -21,8 +21,11 @@ public class TravelButtonMod : BaseUnityPlugin
     // New config: enable actual teleport/payment
     public static ConfigEntry<bool> cfgEnableTeleport;
 
-    // New config: travel cost in silver
+    // New config: global travel cost in silver (can be overridden per-city)
     public static ConfigEntry<int> cfgTravelCost;
+
+    // New config: currency item name (default: "Silver")
+    public static ConfigEntry<string> cfgCurrencyItem;
 
     // runtime
     private bool showOverlay = false;
@@ -32,13 +35,15 @@ public class TravelButtonMod : BaseUnityPlugin
     {
         public string name;
         public string targetGameObjectName; // optional: GameObject name to find in scene
-        public float[] coords; // optional: { x, y, z }
+        public float[] coords; // optional: { x, y, z } - leave empty/null if unknown
         public string description; // human-readable description shown in dialog
         public bool visited; // whether player has visited this city
-        public bool isCityEnabled = true;
+        public bool isCityEnabled = false; // default: false (disabled until visited or config-enabled)
+        public int? price; // optional: per-city price override (null = use global price)
+        
         public override string ToString()
         {
-            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited})";
+            return $"{name} (obj='{targetGameObjectName ?? ""}' coords={(coords != null ? string.Join(",", coords) : "")} visited={visited} enabled={isCityEnabled} price={price?.ToString() ?? "global"})";
         }
     }
 
@@ -67,6 +72,7 @@ public class TravelButtonMod : BaseUnityPlugin
 
         cfgEnableTeleport = this.Config.Bind("General", "EnableTeleport", true, "If false, travel will not deduct money or teleport the player (UI-only mode)");
         cfgTravelCost = this.Config.Bind("General", "TravelCost", 200, "Cost (in silver coins) to pay for teleporting via the travel UI");
+        cfgCurrencyItem = this.Config.Bind("General", "CurrencyItem", "Silver", "Name of the currency item used for travel payments");
 
         try
         {
@@ -170,9 +176,12 @@ public class TravelButtonMod : BaseUnityPlugin
     }
 
     // Public helper used by UI code
+    // A city is clickable if:
+    // 1. Player has visited it (persisted or in-memory), OR
+    // 2. City is explicitly enabled in config (allows admin to enable cities without visiting)
     public static bool IsCityEnabled(string cityName)
     {
-        if (string.IsNullOrEmpty(cityName)) return true;
+        if (string.IsNullOrEmpty(cityName)) return false;
 
         // If city was visited (persisted or in-memory), always enable it
         try
@@ -208,12 +217,12 @@ public class TravelButtonMod : BaseUnityPlugin
             }
             catch
             {
-                return true;
+                return false; // default to disabled if config read fails
             }
         }
 
-        // fallback true if we don't have config entry
-        return true;
+        // fallback: disabled if no config entry (safe default as requested)
+        return false;
     }
 
     // Robust loader: accepts both wrapped { "cities": [...] } and bare JSON arrays.
@@ -303,32 +312,50 @@ public class TravelButtonMod : BaseUnityPlugin
             new City {
                 name = "Cierzo",
                 targetGameObjectName = "",
-                description = "The cierzo is a strong, dry and usually cold wind that blows from the North or Northwest through the regions of Aragon, La Rioja and Navarra in the Ebro valley in Spain."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A starting town in Chersonese region. The cierzo is a strong, dry and usually cold wind that blows from the North or Northwest.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             },
             new City {
                 name = "Levant",
                 targetGameObjectName = "",
-                description = "The levant is an easterly wind that blows in the western Mediterranean Sea and southern France, an example of mountain-gap wind."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A major city in the Abrassar desert region. The levant is an easterly wind that blows in the western Mediterranean Sea and southern France.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             },
             new City {
                 name = "Monsoon",
                 targetGameObjectName = "",
-                description = "A seasonal reversing wind accompanied by corresponding changes in precipitation."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A coastal city in the Hallowed Marsh region. A seasonal reversing wind accompanied by corresponding changes in precipitation.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             },
             new City {
                 name = "Berg",
                 targetGameObjectName = "",
-                description = "Berg wind is the South African name for a katabatic wind: a hot dry wind blowing down the Great Escarpment from the high central plateau to the coast."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A mountain city in the Enmerkar Forest region. Berg wind is a hot dry wind blowing down the Great Escarpment from the high central plateau to the coast.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             },
             new City {
                 name = "Harmattan",
                 targetGameObjectName = "",
-                description = "A dry and dusty northeasterly trade wind, which blows from the Sahara Desert over West Africa into the Gulf of Guinea."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A city in the Antique Plateau region. A dry and dusty northeasterly trade wind, which blows from the Sahara Desert over West Africa.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             },
             new City {
                 name = "Sirocco",
                 targetGameObjectName = "",
-                description = "Sirocco is a Mediterranean wind that comes from the Sahara and can reach hurricane speeds in North Africa and Southern Europe, especially during the summer season."
+                coords = null, // Coordinates to be discovered by player or set by user
+                description = "A desert outpost. Sirocco is a Mediterranean wind that comes from the Sahara and can reach hurricane speeds in North Africa and Southern Europe.",
+                isCityEnabled = false, // Default: disabled until visited or enabled in config
+                price = null // Use global price
             }
         };
     }
