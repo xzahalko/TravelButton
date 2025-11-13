@@ -9,19 +9,8 @@ using UnityEngine;
 /// </summary>
 public class TeleportHelpersBehaviour : MonoBehaviour
 {
-    private void TraceTH(string message)
-    {
-        try
-        {
-            string p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_component_trace.txt");
-            File.AppendAllText(p, $"[{DateTime.UtcNow:O}] TeleportHelpersBehaviour: {message}\n");
-        }
-        catch { }
-    }
-
     private void Awake()
     {
-        TraceTH("Awake reached");
         try { DontDestroyOnLoad(this.gameObject); } catch { }
     }
 
@@ -31,8 +20,6 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     /// </summary>
     public IEnumerator EnsureSceneAndTeleport(object cityLike, Vector3 coordsHint, bool haveCoordsHint, Action<bool> callback)
     {
-        TraceTH($"EnsureSceneAndTeleport start (cityLikeType={(cityLike == null ? "null" : cityLike.GetType().Name)})");
-
         if (cityLike == null)
         {
             TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: cityLike is null.");
@@ -79,7 +66,6 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         catch (Exception ex)
         {
             TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: reflection read failed: " + ex);
-            TraceTH("Reflection read failed: " + ex.Message);
         }
 
         Vector3 targetPos = Vector3.zero;
@@ -111,12 +97,10 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                 targetPos = foundGO.transform.position;
                 found = true;
                 TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}'");
-                TraceTH($"Found target '{targetName}' at {targetPos}");
             }
             else
             {
                 TravelButtonPlugin.LogWarning($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' - will try coords fallback.");
-                TraceTH($"target '{targetName}' not found after wait");
             }
         }
 
@@ -126,14 +110,12 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             targetPos = coordsHint;
             found = true;
             TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: using coordsHint for '{cityName}' = {targetPos}");
-            TraceTH("Using coordsHint");
         }
         else if (!found && coordsArray != null && coordsArray.Length >= 3)
         {
             targetPos = new Vector3(coordsArray[0], coordsArray[1], coordsArray[2]);
             found = true;
             TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: using explicit coords for '{cityName}' = {targetPos}");
-            TraceTH("Using explicit coords");
         }
 
         // Fallback: search transforms
@@ -150,7 +132,6 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                         targetPos = tr.position;
                         found = true;
                         TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
-                        TraceTH($"Fallback matched transform '{tr.name}'");
                         break;
                     }
                 }
@@ -158,14 +139,12 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             catch (Exception ex)
             {
                 TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: transform search failed: " + ex);
-                TraceTH("Transform search failed: " + ex.Message);
             }
         }
 
         if (!found)
         {
             TravelButtonPlugin.LogError($"EnsureSceneAndTeleport: no target position could be determined for '{cityName}'. Aborting.");
-            TraceTH("No target position determined - aborting");
             callback?.Invoke(false);
             yield break;
         }
@@ -190,18 +169,15 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             if (relocated)
             {
                 TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
-                TraceTH("Teleport succeeded");
             }
             else
             {
                 TravelButtonPlugin.LogWarning($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
-                TraceTH("Teleport failed (AttemptTeleportToPositionSafe returned false)");
             }
         }
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
-            TraceTH("Teleport exception: " + ex.Message);
             relocated = false;
         }
 

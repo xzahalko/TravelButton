@@ -44,13 +44,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
         try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); }
-        catch { /* swallow to avoid throwing during init */ }
+        catch { /* swallow to avoid throwing during startup */ }
     }
 
     public static void LogInfo(string message)
     {
         var src = LogSource;
-        if (src == null) return;               // avoid object-reference errors when not initialized
+        if (src == null) return;
         try { src.LogInfo(Prefix + message); } catch { /* swallow */ }
     }
 
@@ -77,6 +77,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+        this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
+        TravelButtonPlugin.LogInfo("TravelButtonPlugin test (should appear in LogOutput.log)");
+
         // sanity checks to confirm BepInEx receives logs:
         TravelButtonPlugin.LogInfo("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
