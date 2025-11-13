@@ -10,7 +10,8 @@ using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.SceneManagement;
-using uNature.Core.Terrains;
+using System;
+using BepInEx.Logging;
 
 //
 // TravelButtonMod.cs
@@ -36,47 +37,66 @@ public class TravelButtonPlugin : BaseUnityPlugin
     // Optional prefix to make entries easy to find in BepInEx logs
     // Set by the plugin during Awake: e.g. TravelButtonPlugin.Initialize(this.Logger);
     public static ManualLogSource LogSource { get; private set; }
-
     private const string Prefix = "[TravelButton] ";
 
     public static void Initialize(ManualLogSource manualLogSource)
     {
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
-        try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); }
-        catch { /* swallow to avoid throwing during startup */ }
+        try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); } catch { /* swallow */ }
     }
 
+    // static wrappers - always delegate safely to TravelButtonPlugin
     public static void LogInfo(string message)
     {
-        var src = LogSource;
-        if (src == null) return;
-        try { src.LogInfo(Prefix + message); } catch { /* swallow */ }
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogInfo(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
     }
 
     public static void LogWarning(string message)
     {
-        var src = LogSource;
-        if (src == null) return;
-        try { src.LogWarning(Prefix + message); } catch { /* swallow */ }
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogWarning(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
     }
 
     public static void LogError(string message)
     {
-        var src = LogSource;
-        if (src == null) return;
-        try { src.LogError(Prefix + message); } catch { /* swallow */ }
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogError(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
     }
 
     public static void LogDebug(string message)
     {
-        var src = LogSource;
-        if (src == null) return;
-        try { src.LogDebug(Prefix + message); } catch { /* swallow */ }
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogDebug(Prefix + (message ?? ""));
+        }
+        catch
+        { }
     }
 
     private void Awake()
     {
+        try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
+        }
+
         this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
         TravelButtonPlugin.LogInfo("TravelButtonPlugin test (should appear in LogOutput.log)");
 

@@ -14,5 +14,4 @@ public static class OutwardLogRedirect
     public static void AppendLine(string line) => TravelButtonPlugin.LogInfo(line);
     public static void Append(string text) => TravelButtonPlugin.LogInfo(text);
     public static void WriteAllText(string text) => TravelButtonPlugin.LogInfo(text);
-
 }
