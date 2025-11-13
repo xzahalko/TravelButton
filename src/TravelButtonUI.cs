@@ -12,7 +12,7 @@
 //   but it will log why a coordsHint is used so you can fix config/anchors.
 //
 // Use these logs to check travel_config.json coordinates and city.targetGameObjectName values,
-// and to correlate TravelButtonMod.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
+// and to correlate TravelButtonPlugin.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -60,6 +60,8 @@ public class TravelButtonUI : MonoBehaviour
 
     // Prevent multiple teleport attempts at the same time
     private bool isTeleporting = false;
+    
+    private float dialogOpenedTime = 0f;
 
     void Start()
     {
@@ -487,166 +489,35 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    void OpenTravelDialog()
+    private void OpenTravelDialog()
     {
         TravelButtonPlugin.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
 
-        // Insert this into TravelButtonUI.OpenTravelDialog() right after dialogRoot is assigned.
-        // Defensive debug button that sets sceneName values in-memory (no file writes).
         try
         {
-            // Find a safe parent for the debug UI
-            Transform parentTransform = null;
-            if (dialogRoot != null)
-                parentTransform = dialogRoot.transform;
-            else
+            // Auto-assign scene names and log anchors (best-effort diagnostic)
+            try
             {
-                var canvas = UnityEngine.Object.FindObjectOfType<UnityEngine.Canvas>();
-                if (canvas != null) parentTransform = canvas.transform;
+                TravelButtonMod.AutoAssignSceneNamesFromLoadedScenes();
+//                TravelButtonMod.LogLoadedScenesAndRootObjects();
+//                TravelButtonMod.LogCityAnchorsFromLoadedScenes();
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("OpenTravelDialog: auto-scan for anchors failed: " + ex.Message);
             }
 
-            if (parentTransform == null)
-            {
-                TravelButtonPlugin.LogWarning("Debug: no suitable parent found for debug button. Skipping debug button creation.");
-            }
-            else
-            {
-                // Create container
-                var debugGo = new GameObject("TravelDebug_SetSceneNames", typeof(RectTransform));
-                debugGo.transform.SetParent(parentTransform, false);
-                var rt = debugGo.GetComponent<RectTransform>();
-                rt.anchorMin = new Vector2(1f, 1f);
-                rt.anchorMax = new Vector2(1f, 1f);
-                rt.pivot = new Vector2(1f, 1f);
-                rt.sizeDelta = new Vector2(180f, 28f);
-                rt.anchoredPosition = new Vector2(-12f, -12f);
-
-                // Add Image (background)
-                var image = debugGo.AddComponent<UnityEngine.UI.Image>();
-                image.color = new Color(0.15f, 0.4f, 0.85f, 0.95f);
-
-                // Add Button
-                var button = debugGo.AddComponent<UnityEngine.UI.Button>();
-                var colors = button.colors;
-                colors.normalColor = image.color;
-                button.colors = colors;
-
-                // Text child
-                var txtGo = new GameObject("Text", typeof(RectTransform));
-                txtGo.transform.SetParent(debugGo.transform, false);
-                var txtRt = txtGo.GetComponent<RectTransform>();
-                txtRt.anchorMin = Vector2.zero;
-                txtRt.anchorMax = Vector2.one;
-                txtRt.offsetMin = Vector2.zero;
-                txtRt.offsetMax = Vector2.zero;
-
-                var txt = txtGo.AddComponent<UnityEngine.UI.Text>();
-                txt.alignment = TextAnchor.MiddleCenter;
-                txt.color = Color.white;
-                txt.fontSize = 14;
-                // Safe font acquisition
-                try
-                {
-                    txt.font = UnityEngine.Resources.GetBuiltinResource<Font>("Arial.ttf");
-                }
-                catch
-                {
-                    txt.font = UnityEngine.Object.FindObjectOfType<UnityEngine.Canvas>()?.GetComponentInChildren<UnityEngine.UI.Text>()?.font;
-                }
-                txt.text = "Debug: Set SceneNames";
-
-                // Click handler (uses reflection, avoids dynamic)
-                button.onClick.AddListener(() =>
-                {
-                    try
-                    {
-                        TravelButtonPlugin.LogInfo("Debug: SetSceneNames button clicked - attempting to set sceneName values in-memory.");
-
-                        var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                        var citiesObj = citiesField?.GetValue(null);
-                        if (citiesObj == null)
-                        {
-                            TravelButtonPlugin.LogWarning("Debug: Cities field is null.");
-                            return;
-                        }
-
-                        if (!(citiesObj is System.Collections.IEnumerable enumerable))
-                        {
-                            TravelButtonPlugin.LogWarning("Debug: Cities field is not enumerable.");
-                            return;
-                        }
-
-                        int changed = 0;
-                        foreach (var item in enumerable)
-                        {
-                            if (item == null) continue;
-                            var t = item.GetType();
-                            var nameProp = t.GetProperty("name", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                            if (nameProp == null) continue;
-                            var nameVal = nameProp.GetValue(item) as string;
-                            if (string.IsNullOrEmpty(nameVal)) continue;
-
-                            var sceneProp = t.GetProperty("sceneName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                            if (sceneProp == null || !sceneProp.CanWrite) continue;
-
-                            string guess = null;
-                            if (string.Equals(nameVal, "Cierzo", StringComparison.OrdinalIgnoreCase)) guess = "CierzoNewTerrain";
-                            else if (string.Equals(nameVal, "Berg", StringComparison.OrdinalIgnoreCase)) guess = "BergNewTerrain";
-                            else if (string.Equals(nameVal, "Levant", StringComparison.OrdinalIgnoreCase)) guess = "LevantNewTerrain";
-                            else if (string.Equals(nameVal, "Monsoon", StringComparison.OrdinalIgnoreCase)) guess = "MonsoonNewTerrain";
-                            else if (string.Equals(nameVal, "Harmattan", StringComparison.OrdinalIgnoreCase)) guess = "HarmattanNewTerrain";
-                            else if (string.Equals(nameVal, "Sirocco", StringComparison.OrdinalIgnoreCase)) guess = "SiroccoNewTerrain";
-
-                            if (!string.IsNullOrEmpty(guess))
-                            {
-                                sceneProp.SetValue(item, guess);
-                                TravelButtonPlugin.LogInfo($"Debug: set {nameVal}.sceneName = '{guess}'");
-                                changed++;
-                            }
-                        }
-
-                        TravelButtonPlugin.LogInfo($"Debug: finished setting sceneNames in-memory (changed={changed}).");
-                    }
-                    catch (Exception ex)
-                    {
-                        TravelButtonPlugin.LogWarning("Debug SetSceneNames handler exception: " + ex);
-                    }
-                });
-            }
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("Failed to add debug SetSceneNames button: " + ex);
-        }
-
-        try
-        {
-            TravelButtonMod.AutoAssignSceneNamesFromLoadedScenes();
-
-            // Log all loaded scenes and root objects (useful to confirm scene names)
-            TravelButtonMod.LogLoadedScenesAndRootObjects();
-
-            // Scan currently loaded scenes for city anchors and print candidates (exact transform paths + positions)
-            TravelButtonMod.LogCityAnchorsFromLoadedScenes();
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("OpenTravelDialog: auto-scan for anchors failed: " + ex.Message);
-        }
-
-        try
-        {
             // Stop any previous refresh coroutine
             if (refreshButtonsCoroutine != null)
             {
-                StopCoroutine(refreshButtonsCoroutine);
+                try { StopCoroutine(refreshButtonsCoroutine); } catch { }
                 refreshButtonsCoroutine = null;
             }
 
+            // If dialog already exists, just re-activate and restart refresh
             if (dialogRoot != null)
             {
                 dialogRoot.SetActive(true);
-                // bring to top
                 var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : dialogRoot.GetComponentInParent<Canvas>();
                 if (canvas != null) canvas.sortingOrder = 2000;
                 dialogRoot.transform.SetAsLastSibling();
@@ -655,10 +526,12 @@ public class TravelButtonUI : MonoBehaviour
                 StartCoroutine(TemporarilyDisableDialogRaycasts());
                 // start refreshing buttons while open
                 refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                // record open time for grace-window logic in refresh
+                dialogOpenedTime = Time.time;
                 return;
             }
 
-            // Create (or reuse) a dedicated top-level Canvas for the dialog so it's never occluded
+            // Create (or reuse) top-level dialog canvas
             if (dialogCanvas == null)
             {
                 dialogCanvas = new GameObject("TravelDialogCanvas");
@@ -672,13 +545,14 @@ public class TravelButtonUI : MonoBehaviour
                 TravelButtonPlugin.LogInfo("OpenTravelDialog: created dedicated TravelDialogCanvas (top-most).");
             }
 
+            // Root
             dialogRoot = new GameObject("TravelDialog");
             dialogRoot.transform.SetParent(dialogCanvas.transform, false);
             dialogRoot.transform.SetAsLastSibling();
             dialogRoot.AddComponent<CanvasRenderer>();
             var rootRt = dialogRoot.AddComponent<RectTransform>();
 
-            // center the dialog explicitly (use anchored center)
+            // center the dialog explicitly
             rootRt.anchorMin = new Vector2(0.5f, 0.5f);
             rootRt.anchorMax = new Vector2(0.5f, 0.5f);
             rootRt.pivot = new Vector2(0.5f, 0.5f);
@@ -700,13 +574,12 @@ public class TravelButtonUI : MonoBehaviour
             titleRt.sizeDelta = new Vector2(0, 32);
             var titleText = titleGO.AddComponent<Text>();
             titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            // note: keep showing global cost in title but list per-city cost individually below
             titleText.text = $"Select destination (default cost {TravelButtonMod.cfgTravelCost.Value} silver)";
             titleText.alignment = TextAnchor.MiddleCenter;
             titleText.fontSize = 18;
             titleText.color = Color.white;
 
-            // Inline message area (for "not enough resources to travel" and similar)
+            // Inline message area
             var inlineMsgGO = new GameObject("InlineMessage");
             inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
             var inlineRt = inlineMsgGO.AddComponent<RectTransform>();
@@ -728,12 +601,11 @@ public class TravelButtonUI : MonoBehaviour
             var scrollRt = scrollGO.AddComponent<RectTransform>();
             scrollRt.anchorMin = new Vector2(0f, 0f);
             scrollRt.anchorMax = new Vector2(1f, 1f);
-            scrollRt.offsetMin = new Vector2(10, 60);  // leave room for title/top and close bottom
+            scrollRt.offsetMin = new Vector2(10, 60);
             scrollRt.offsetMax = new Vector2(-10, -70);
 
             var scrollRect = scrollGO.AddComponent<ScrollRect>();
             scrollGO.AddComponent<CanvasRenderer>();
-            // nicer defaults
             scrollRect.movementType = ScrollRect.MovementType.Clamped;
             scrollRect.inertia = true;
             scrollRect.scrollSensitivity = 20f;
@@ -746,7 +618,6 @@ public class TravelButtonUI : MonoBehaviour
             vpRt.offsetMin = Vector2.zero;
             vpRt.offsetMax = Vector2.zero;
             viewport.AddComponent<CanvasRenderer>();
-            // Use RectMask2D which is generally more reliable for dynamically created viewports
             var vImg = viewport.AddComponent<Image>();
             vImg.color = Color.clear;
             viewport.AddComponent<UnityEngine.UI.RectMask2D>();
@@ -774,22 +645,21 @@ public class TravelButtonUI : MonoBehaviour
             scrollRect.horizontal = false;
             scrollRect.vertical = true;
 
-            // --- Populate items (with logging) ---
+            // --- Populate items ---
             TravelButtonPlugin.LogInfo($"OpenTravelDialog: TravelButtonMod.Cities.Count = {(TravelButtonMod.Cities == null ? 0 : TravelButtonMod.Cities.Count)}");
             bool anyCity = false;
+
+            // read player money once per dialog opening
+            long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
+
             if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
             {
                 TravelButtonPlugin.LogWarning("OpenTravelDialog: No cities configured (TravelButtonMod.Cities empty).");
             }
             else
             {
-                // read player currency now to set initial interactable state
-                long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
-                bool haveMoneyInfo = playerMoney >= 0;
-
                 foreach (var city in TravelButtonMod.Cities)
                 {
-                    // Always show the city in the list (the user requested that all cities appear)
                     anyCity = true;
 
                     var bgo = new GameObject("CityButton_" + city.name);
@@ -798,7 +668,6 @@ public class TravelButtonUI : MonoBehaviour
                     var brt = bgo.AddComponent<RectTransform>();
                     brt.sizeDelta = new Vector2(0, 44);
 
-                    // Ensure button participates in layout by adding a LayoutElement
                     var ble = bgo.AddComponent<LayoutElement>();
                     ble.preferredHeight = 44f;
                     ble.minHeight = 30f;
@@ -832,7 +701,7 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
-                    // Determine per-city cost when present, otherwise fallback to global cost
+                    // determine per-city cost
                     int cost = TravelButtonMod.cfgTravelCost.Value;
                     try
                     {
@@ -845,7 +714,6 @@ public class TravelButtonUI : MonoBehaviour
                         }
                         else
                         {
-                            // try property
                             var priceProp = city.GetType().GetProperty("price");
                             if (priceProp != null)
                             {
@@ -857,7 +725,7 @@ public class TravelButtonUI : MonoBehaviour
                     }
                     catch { /* ignore reflection issues; fallback to global */ }
 
-                    // Price label right
+                    // price label right
                     var priceGO = new GameObject("Price");
                     priceGO.transform.SetParent(bgo.transform, false);
                     var ptxt = priceGO.AddComponent<Text>();
@@ -871,16 +739,14 @@ public class TravelButtonUI : MonoBehaviour
                     pRect.offsetMin = new Vector2(-10, 0);
                     pRect.offsetMax = new Vector2(-10, 0);
 
-                    // Determine whether this city is enabled by config or visited
+                    // config flag
                     bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
-                    bool visited = false;
-                    try
-                    {
-                        visited = VisitedTracker.HasVisited(city.name);
-                    }
-                    catch { /* if VisitedTracker not available ignore; default false */ }
 
-                    // Determine whether coordinates/target exist for this city (if not, mark unavailable)
+                    // visited check (robust)
+                    bool visited = false;
+                    try { visited = IsCityVisitedFallback(city); } catch { visited = false; }
+
+                    // coords available?
                     bool coordsAvailable = false;
                     try
                     {
@@ -890,18 +756,22 @@ public class TravelButtonUI : MonoBehaviour
                             coordsAvailable = targetGO != null;
                         }
                         if (!coordsAvailable && city.coords != null && city.coords.Length >= 3)
-                        {
                             coordsAvailable = true;
-                        }
                     }
-                    catch { /* ignore */ }
+                    catch { coordsAvailable = false; }
 
-                    // Determine player money at dialog open (best-effort)
-                    haveMoneyInfo = playerMoney >= 0;
-                    bool hasEnoughMoney = haveMoneyInfo && playerMoney >= cost;
+                    // player money for initial display (treat unknown as permissive)
+                    bool playerMoneyKnown = playerMoney >= 0;
+                    bool hasEnoughMoney = !playerMoneyKnown || (playerMoney >= cost);
 
-                    // New rule: enabled only when config allows it AND player has visited AND coords available AND player has enough money
-                    bool initialInteractable = enabledByConfig && visited && coordsAvailable && hasEnoughMoney;
+                    // scene-aware coords allowance
+                    bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
+                    var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                    bool sceneMatches = !targetSceneSpecified || string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
+                    bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
+
+                    // New rule for initial interactability
+                    bool initialInteractable = enabledByConfig && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
 
                     bbtn.interactable = initialInteractable;
                     if (!initialInteractable)
@@ -909,7 +779,7 @@ public class TravelButtonUI : MonoBehaviour
                         bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
                     }
 
-                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}, hasEnoughMoney={hasEnoughMoney})");
+                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, hasEnoughMoney={hasEnoughMoney}, playerMoney={playerMoney}, price={cost}, targetGameObjectName='{city.targetGameObjectName}', sceneName='{city.sceneName}')");
 
                     var capturedCity = city;
 
@@ -924,11 +794,12 @@ public class TravelButtonUI : MonoBehaviour
                                 return;
                             }
 
-                            // Re-evaluate the gating conditions, in case they changed since dialog open
                             bool cfgEnabled = TravelButtonMod.IsCityEnabled(capturedCity.name);
                             bool visitedNow = false;
-                            try { visitedNow = VisitedTracker.HasVisited(capturedCity.name); } catch { visitedNow = false; }
+                            try { visitedNow = IsCityVisitedFallback(capturedCity); } catch { visitedNow = false; }
                             long pm = GetPlayerCurrencyAmountOrMinusOne();
+
+                            TravelButtonPlugin.LogInfo($"City click: '{capturedCity.name}' cfgEnabled={cfgEnabled}, visitedNow={visitedNow}, playerMoney={pm}");
 
                             if (!cfgEnabled)
                             {
@@ -942,20 +813,19 @@ public class TravelButtonUI : MonoBehaviour
                                 return;
                             }
 
-                            // Money check
-                            if (pm >= 0 && pm < cost)
+                            // Money check (strict on click)
+                            if (pm < 0)
+                            {
+                                ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
+                                return;
+                            }
+                            if (pm < cost)
                             {
                                 ShowInlineDialogMessage("not enough resources to travel");
                                 return;
                             }
-                            if (pm < 0)
-                            {
-                                // Could not detect money reliably; be conservative and show message rather than attempt
-                                ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
-                                return;
-                            }
 
-                            // Disable all city buttons in the dialog to prevent duplicates while teleport is happening
+                            // disable all city buttons while teleporting
                             try
                             {
                                 var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
@@ -972,7 +842,6 @@ public class TravelButtonUI : MonoBehaviour
 
                             isTeleporting = true;
 
-                            // Start teleport-then-charge flow. The helper callback will clear isTeleporting.
                             TryTeleportThenCharge(capturedCity, cost);
                         }
                         catch (Exception ex)
@@ -983,10 +852,9 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            // If no enabled city was added, create visible debug placeholders so user can see something
             if (!anyCity)
             {
-                TravelButtonPlugin.LogWarning("OpenTravelDialog: no enabled cities were added to the dialog - adding debug placeholders for inspection.");
+                TravelButtonPlugin.LogWarning("OpenTravelDialog: no enabled cities were added to the dialog - adding debug placeholders.");
                 for (int i = 0; i < 3; i++)
                 {
                     var dbg = new GameObject("DBG_Placeholder_" + i);
@@ -1010,13 +878,12 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            // Defer final layout fix to a coroutine (wait a frame for Unity to calculate rects, then force rebuilds)
+            // Layout and refresh
             StartCoroutine(FinishDialogLayoutAndShow(scrollRect, viewport.GetComponent<RectTransform>(), contentRt));
-
-            // start refreshing buttons while open
             refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+            dialogOpenedTime = Time.time;
 
-            // Close button (bottom center) - ensure clickable
+            // Close button
             var closeGO = new GameObject("Close");
             closeGO.transform.SetParent(dialogRoot.transform, false);
             closeGO.AddComponent<CanvasRenderer>();
@@ -1052,7 +919,6 @@ public class TravelButtonUI : MonoBehaviour
                 try
                 {
                     if (dialogRoot != null) dialogRoot.SetActive(false);
-                    // stop refresh coroutine when dialog closed
                     if (refreshButtonsCoroutine != null)
                     {
                         StopCoroutine(refreshButtonsCoroutine);
@@ -1065,7 +931,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
             });
 
-            // Prevent immediate click-through: disable interactability for one frame
+            // Prevent immediate click-through
             StartCoroutine(TemporarilyDisableDialogRaycasts());
 
             TravelButtonPlugin.LogInfo("OpenTravelDialog: dialog created and centered (dialogRoot assigned).");
@@ -1583,6 +1449,84 @@ public class TravelButtonUI : MonoBehaviour
             TravelButtonPlugin.LogWarning("GuessSceneNameFromBuildSettings exception: " + ex);
         }
         return null;
+    }
+
+    // Helper: more robust visited detection with fallbacks.
+    // Returns true if any reasonable indicator suggests the player has visited the city.
+    private bool IsCityVisitedFallback(TravelButtonMod.City city)
+    {
+        try
+        {
+            if (city == null) return false;
+
+            // Primary: the official visited tracker by city name
+            try
+            {
+                if (VisitedTracker.HasVisited(city.name))
+                {
+                    TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.name) => true for '{city.name}'");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.name) threw: {ex}");
+            }
+
+            // Secondary: try sceneName (some systems mark visited by scene id)
+            if (!string.IsNullOrEmpty(city.sceneName))
+            {
+                try
+                {
+                    if (VisitedTracker.HasVisited(city.sceneName))
+                    {
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(sceneName) => true for '{city.sceneName}' (city='{city.name}')");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.sceneName) threw: {ex}");
+                }
+            }
+
+            // Tertiary: if a target GameObject is present it's likely the map/anchor is loaded (treat as visited for UI)
+            if (!string.IsNullOrEmpty(city.targetGameObjectName))
+            {
+                try
+                {
+                    var go = GameObject.Find(city.targetGameObjectName);
+                    if (go != null)
+                    {
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: target GameObject '{city.targetGameObjectName}' found -> treat '{city.name}' as visited.");
+                        return true;
+                    }
+                }
+                catch { /* ignore */ }
+            }
+
+            // Last resort heuristic: any transform with city.name substring (helps when anchor names differ)
+            try
+            {
+                var all = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var t in all)
+                {
+                    if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                    if (t.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: found scene transform '{t.name}' containing city name '{city.name}' -> treat as visited.");
+                        return true;
+                    }
+                }
+            }
+            catch { /* ignore */ }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("IsCityVisitedFallback exception: " + ex);
+        }
+
+        return false;
     }
 
     // Try to determine target position for a city without moving anything.
@@ -2184,9 +2128,17 @@ public class TravelButtonUI : MonoBehaviour
         {
             try
             {
-                // fetch current player money
+                // fetch current player money (best-effort)
                 long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = currentMoney >= 0;
+
+                // If dialog was just opened, give the game a small grace period to update inventory after a scene load.
+                bool enforceMoneyNow = true;
+                try
+                {
+                    enforceMoneyNow = (Time.time - dialogOpenedTime) > 0.15f;
+                }
+                catch { enforceMoneyNow = true; }
 
                 var content = dialog.transform.Find("ScrollArea/Viewport/Content");
                 if (content != null)
@@ -2200,87 +2152,109 @@ public class TravelButtonUI : MonoBehaviour
 
                         // extract city name from GameObject name "CityButton_<name>"
                         string objName = child.name;
-                        if (objName.StartsWith("CityButton_"))
+                        if (!objName.StartsWith("CityButton_")) continue;
+                        string cityName = objName.Substring("CityButton_".Length);
+
+                        // 1) config flag
+                        bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
+
+                        // 2) find the TravelButtonMod.City entry for this city (if any)
+                        TravelButtonMod.City foundCity = null;
+                        if (TravelButtonMod.Cities != null)
                         {
-                            string cityName = objName.Substring("CityButton_".Length);
+                            foreach (var c in TravelButtonMod.Cities)
+                            {
+                                if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    foundCity = c;
+                                    break;
+                                }
+                            }
+                        }
 
-                            // Evaluate gating conditions fresh
-                            bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
-                            bool visitedNow = false;
-                            try { visitedNow = VisitedTracker.HasVisited(cityName); } catch { visitedNow = false; }
-
-                            // determine cost (per-city or global) by reflection similar to creation
-                            int cost = TravelButtonMod.cfgTravelCost.Value;
+                        // 3) determine per-city cost (fallback to global)
+                        int cost = TravelButtonMod.cfgTravelCost.Value;
+                        if (foundCity != null)
+                        {
                             try
                             {
-                                TravelButtonMod.City foundCity = null;
-                                foreach (var c in TravelButtonMod.Cities)
+                                var priceField = foundCity.GetType().GetField("price");
+                                if (priceField != null)
                                 {
-                                    if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        foundCity = c;
-                                        break;
-                                    }
+                                    var pv = priceField.GetValue(foundCity);
+                                    if (pv is int) cost = (int)pv;
+                                    else if (pv is long) cost = (int)(long)pv;
                                 }
-                                if (foundCity != null)
+                                else
                                 {
-                                    var priceField = foundCity.GetType().GetField("price");
-                                    if (priceField != null)
+                                    var priceProp = foundCity.GetType().GetProperty("price");
+                                    if (priceProp != null)
                                     {
-                                        var pv = priceField.GetValue(foundCity);
+                                        var pv = priceProp.GetValue(foundCity);
                                         if (pv is int) cost = (int)pv;
                                         else if (pv is long) cost = (int)(long)pv;
                                     }
-                                    else
-                                    {
-                                        var priceProp = foundCity.GetType().GetProperty("price");
-                                        if (priceProp != null)
-                                        {
-                                            var pv = priceProp.GetValue(foundCity);
-                                            if (pv is int) cost = (int)pv;
-                                            else if (pv is long) cost = (int)(long)pv;
-                                        }
-                                    }
                                 }
                             }
-                            catch { /* ignore */ }
+                            catch { /* ignore reflection issues; fallback to global */ }
+                        }
 
-                            // quick check for coords or targetGameObject
-                            bool coordsAvailable = false;
+                        // 4) coords/anchor availability (safe checks)
+                        bool coordsAvailable = false;
+                        if (foundCity != null)
+                        {
                             try
                             {
-                                TravelButtonMod.City found = null;
-                                foreach (var c in TravelButtonMod.Cities)
+                                if (!string.IsNullOrEmpty(foundCity.targetGameObjectName))
                                 {
-                                    if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        found = c; break;
-                                    }
+                                    var go = GameObject.Find(foundCity.targetGameObjectName);
+                                    coordsAvailable = go != null;
                                 }
-                                if (found != null)
+                                if (!coordsAvailable && foundCity.coords != null && foundCity.coords.Length >= 3)
                                 {
-                                    if (!string.IsNullOrEmpty(found.targetGameObjectName))
-                                    {
-                                        var go = GameObject.Find(found.targetGameObjectName);
-                                        coordsAvailable = go != null;
-                                    }
-                                    if (!coordsAvailable && found.coords != null && found.coords.Length >= 3) coordsAvailable = true;
+                                    coordsAvailable = true;
                                 }
                             }
                             catch { coordsAvailable = false; }
+                        }
 
-                            // Money read
-                            haveMoneyInfo = currentMoney >= 0;
-                            bool hasEnoughMoney = haveMoneyInfo && (currentMoney >= cost);
+                        // 5) money checks
+                        // If we cannot read money, do not treat it as a hard "not enough" while dialog is fresh.
+                        bool hasEnoughMoney;
+                        if (!haveMoneyInfo)
+                        {
+                            // If we are enforcing money now (after the grace window), be conservative and require money;
+                            // otherwise allow while unknown (so transient -1 does not disable UI).
+                            hasEnoughMoney = !enforceMoneyNow || (currentMoney >= cost);
+                        }
+                        else
+                        {
+                            hasEnoughMoney = currentMoney >= cost;
+                        }
 
-                            // New rule: enabled only when config allows it AND visited AND coords available AND sufficient money
-                            bool shouldBeInteractable = enabledByConfig && visitedNow && coordsAvailable && hasEnoughMoney;
+                        // 6) visited check (use the robust fallback helper if available)
+                        bool visitedNow = false;
+                        if (foundCity != null)
+                        {
+                            try { visitedNow = IsCityVisitedFallback(foundCity); } catch { visitedNow = false; }
+                        }
 
-                            if (btn.interactable != shouldBeInteractable)
-                            {
-                                btn.interactable = shouldBeInteractable;
-                                img.color = shouldBeInteractable ? new Color(0.35f, 0.20f, 0.08f, 1f) : new Color(0.18f, 0.18f, 0.18f, 1f);
-                            }
+                        // 7) scene-aware coords logic: allow clicking when target scene differs from active scene
+                        bool targetSceneSpecified = foundCity != null && !string.IsNullOrEmpty(foundCity.sceneName);
+                        var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                        bool sceneMatches = !targetSceneSpecified || (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
+                        bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
+
+                        // final interactable decision
+                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
+
+                        // debug log to help trace why a button was enabled/disabled
+                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
+
+                        if (btn.interactable != shouldBeInteractableNow)
+                        {
+                            btn.interactable = shouldBeInteractableNow;
+                            img.color = shouldBeInteractableNow ? new Color(0.35f, 0.20f, 0.08f, 1f) : new Color(0.18f, 0.18f, 0.18f, 1f);
                         }
                     }
                 }
@@ -2577,26 +2551,114 @@ public class TravelButtonUI : MonoBehaviour
         foreach (var mb in allMonoBehaviours)
         {
             var t = mb.GetType();
+            string typeName = t.FullName ?? t.Name;
+            string mbName = (mb != null && mb.gameObject != null) ? mb.gameObject.name : "<no-gameobject>";
 
-            string[] methodNames = new string[] { "RemoveMoney", "SpendMoney", "RemoveSilver", "SpendSilver", "RemoveCurrency", "TakeMoney", "UseMoney" };
+            // Try common method names with int/long parameter
+            string[] methodNames = new string[] {
+            "RemoveMoney", "SpendMoney", "RemoveSilver", "SpendSilver", "RemoveCurrency",
+            "TakeMoney", "UseMoney", "TryRemoveSilver", "TrySpendSilver", "RemoveAmount"
+        };
+
             foreach (var mn in methodNames)
             {
-                var mi = t.GetMethod(mn, new Type[] { typeof(int) });
-                if (mi != null)
+                // int param
+                try
                 {
-                    try
+                    var miInt = t.GetMethod(mn, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase, null, new Type[] { typeof(int) }, null);
+                    if (miInt != null)
                     {
-                        var res = mi.Invoke(mb, new object[] { amount });
-                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: called {t.FullName}.{mn}({amount}) -> {res}");
-                        return true;
-                    }
-                    catch (Exception ex)
-                    {
-                        TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling {t.FullName}.{mn} threw: {ex}");
+                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found method {typeName}.{miInt.Name}(int) on object '{mbName}' ({t.FullName}) - invoking...");
+                        try
+                        {
+                            var res = miInt.Invoke(mb, new object[] { amount });
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: {typeName}.{miInt.Name}(int) -> ({(res == null ? "null" : res.ToString())}, type={res?.GetType().Name}) on '{mbName}'");
+                            // immediate read-back to detect changes
+                            long after = GetPlayerCurrencyAmountOrMinusOne();
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after call -> {after}");
+
+                            // If method returned bool success
+                            if (res is bool b && b) { TryInvokeRefreshMethods(mb); return true; }
+                            // If method returned int/long, treat >=0 as success (many APIs return remaining)
+                            if (res is int ri) { TryInvokeRefreshMethods(mb); return ri >= 0; }
+                            if (res is long rl) { TryInvokeRefreshMethods(mb); return rl >= 0; }
+                            // void return assumed success
+                            if (miInt.ReturnType == typeof(void)) { TryInvokeRefreshMethods(mb); return true; }
+                            // fallback: non-null result -> success
+                            if (res != null) { TryInvokeRefreshMethods(mb); return true; }
+                        }
+                        catch (TargetInvocationException tie)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling {typeName}.{miInt.Name}(int) on '{mbName}' threw: {tie.InnerException?.Message ?? tie.Message}");
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling {typeName}.{miInt.Name}(int) on '{mbName}' threw: {ex}");
+                        }
                     }
                 }
+                catch { /* ignore */ }
+
+                // long param
+                try
+                {
+                    var miLong = t.GetMethod(mn, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase, null, new Type[] { typeof(long) }, null);
+                    if (miLong != null)
+                    {
+                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found method {typeName}.{miLong.Name}(long) on '{mbName}' - invoking...");
+                        try
+                        {
+                            var res = miLong.Invoke(mb, new object[] { (long)amount });
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: {typeName}.{miLong.Name}(long) -> ({(res == null ? "null" : res.ToString())}, type={res?.GetType().Name}) on '{mbName}'");
+                            long after = GetPlayerCurrencyAmountOrMinusOne();
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after call -> {after}");
+
+                            if (res is bool b && b) { TryInvokeRefreshMethods(mb); return true; }
+                            if (res is int ri) { TryInvokeRefreshMethods(mb); return ri >= 0; }
+                            if (res is long rl) { TryInvokeRefreshMethods(mb); return rl >= 0; }
+                            if (miLong.ReturnType == typeof(void)) { TryInvokeRefreshMethods(mb); return true; }
+                            if (res != null) { TryInvokeRefreshMethods(mb); return true; }
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling {typeName}.{miLong.Name}(long) on '{mbName}' threw: {ex}");
+                        }
+                    }
+                }
+                catch { /* ignore */ }
             }
 
+            // Parameterless helper methods (RemoveOneSilver, etc.)
+            string[] noParamMethods = new string[] { "RemoveOneSilver", "SpendOneSilver", "ConsumeSilver" };
+            foreach (var mn in noParamMethods)
+            {
+                try
+                {
+                    var mi = t.GetMethod(mn, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase, null, Type.EmptyTypes, null);
+                    if (mi != null)
+                    {
+                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found method {typeName}.{mi.Name}() on '{mbName}' - invoking...");
+                        try
+                        {
+                            var res = mi.Invoke(mb, null);
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: {typeName}.{mi.Name}() -> ({(res == null ? "null" : res.ToString())}, type={res?.GetType().Name}) on '{mbName}'");
+                            long after = GetPlayerCurrencyAmountOrMinusOne();
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after call -> {after}");
+
+                            if (res is bool b && b) { TryInvokeRefreshMethods(mb); return true; }
+                            if (mi.ReturnType == typeof(void)) { TryInvokeRefreshMethods(mb); return true; }
+                            if (res != null) { TryInvokeRefreshMethods(mb); return true; }
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling {typeName}.{mi.Name}() on '{mbName}' threw: {ex}");
+                        }
+                    }
+                }
+                catch { /* ignore */ }
+            }
+
+            // Try numeric fields/properties named like silver/money
             foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var name = fi.Name.ToLower();
@@ -2604,40 +2666,49 @@ public class TravelButtonUI : MonoBehaviour
                 {
                     try
                     {
+                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: inspecting field {typeName}.{fi.Name} (type {fi.FieldType.Name}) on '{mbName}'");
                         if (fi.FieldType == typeof(int))
                         {
                             int cur = (int)fi.GetValue(mb);
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: current value = {cur}");
                             if (cur >= amount)
                             {
                                 fi.SetValue(mb, cur - amount);
-                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {typeName}.{fi.Name} (int). New value {cur - amount} on '{mbName}'.");
+                                long after = GetPlayerCurrencyAmountOrMinusOne();
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after field write -> {after}");
+                                TryInvokeRefreshMethods(mb);
                                 return true;
                             }
                             else
                             {
-                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {typeName}.{fi.Name} ({cur} < {amount}) on '{mbName}'.");
                                 return false;
                             }
                         }
                         else if (fi.FieldType == typeof(long))
                         {
                             long cur = (long)fi.GetValue(mb);
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: current value = {cur}");
                             if (cur >= amount)
                             {
                                 fi.SetValue(mb, cur - amount);
-                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {typeName}.{fi.Name} (long). New value {cur - amount} on '{mbName}'.");
+                                long after = GetPlayerCurrencyAmountOrMinusOne();
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after field write -> {after}");
+                                TryInvokeRefreshMethods(mb);
                                 return true;
                             }
                             else
                             {
-                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {typeName}.{fi.Name} ({cur} < {amount}) on '{mbName}'.");
                                 return false;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"AttemptDeductSilver: field access {t.FullName}.{fi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"AttemptDeductSilver: field access {typeName}.{fi.Name} on '{mbName}' threw: {ex}");
                     }
                 }
             }
@@ -2645,51 +2716,269 @@ public class TravelButtonUI : MonoBehaviour
             foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
             {
                 var name = pi.Name.ToLower();
-                if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
+                if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
                 {
                     try
                     {
-                        if (pi.PropertyType == typeof(int) && pi.CanRead && pi.CanWrite)
+                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: inspecting property {typeName}.{pi.Name} (type {pi.PropertyType.Name}) on '{mbName}'");
+                        if (pi.PropertyType == typeof(int))
                         {
                             int cur = (int)pi.GetValue(mb);
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: current value = {cur}");
                             if (cur >= amount)
                             {
                                 pi.SetValue(mb, cur - amount);
-                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {typeName}.{pi.Name} (int). New value {cur - amount} on '{mbName}'.");
+                                long after = GetPlayerCurrencyAmountOrMinusOne();
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after property write -> {after}");
+                                TryInvokeRefreshMethods(mb);
                                 return true;
                             }
                             else
                             {
-                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {typeName}.{pi.Name} ({cur} < {amount}) on '{mbName}'.");
                                 return false;
                             }
                         }
-                        else if (pi.PropertyType == typeof(long) && pi.CanRead && pi.CanWrite)
+                        else if (pi.PropertyType == typeof(long))
                         {
                             long cur = (long)pi.GetValue(mb);
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: current value = {cur}");
                             if (cur >= amount)
                             {
                                 pi.SetValue(mb, cur - amount);
-                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: deducted {amount} from {typeName}.{pi.Name} (long). New value {cur - amount} on '{mbName}'.");
+                                long after = GetPlayerCurrencyAmountOrMinusOne();
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after property write -> {after}");
+                                TryInvokeRefreshMethods(mb);
                                 return true;
                             }
                             else
                             {
-                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: not enough funds in {typeName}.{pi.Name} ({cur} < {amount}) on '{mbName}'.");
                                 return false;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"AttemptDeductSilver: property access {t.FullName}.{pi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"AttemptDeductSilver: property access {typeName}.{pi.Name} on '{mbName}' threw: {ex}");
                     }
                 }
             }
+
+            // Try to detect item-stack style currency in fields/arrays/lists
+            try
+            {
+                foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    var ftype = fi.FieldType;
+                    if (ftype.IsArray)
+                    {
+                        var elemType = ftype.GetElementType();
+                        var elemName = elemType != null ? elemType.Name.ToLower() : "";
+                        if (elemName.Contains("item") || elemName.Contains("stack") || elemName.Contains("inventory"))
+                        {
+                            var arr = fi.GetValue(mb) as Array;
+                            if (arr != null)
+                            {
+                                for (int idx = 0; idx < arr.Length; idx++)
+                                {
+                                    var elem = arr.GetValue(idx);
+                                    if (elem == null) continue;
+                                    var ename = elem.GetType().Name.ToLower();
+                                    if (ename.Contains("silver") || elem.ToString().ToLower().Contains("silver"))
+                                    {
+                                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found silver-like element in {typeName}.{fi.Name}[{idx}] on '{mbName}' - attempting to decrement/remove.");
+                                        // try common fields/properties on element (stackSize, quantity, amount)
+                                        var fq = elem.GetType().GetProperty("stackSize") ?? elem.GetType().GetProperty("quantity") ?? elem.GetType().GetProperty("amount") ?? elem.GetType().GetProperty("count");
+                                        if (fq != null && fq.CanRead && fq.CanWrite && (fq.PropertyType == typeof(int) || fq.PropertyType == typeof(long)))
+                                        {
+                                            try
+                                            {
+                                                long cur = fq.PropertyType == typeof(int) ? (int)fq.GetValue(elem) : (long)fq.GetValue(elem);
+                                                if (cur > 0)
+                                                {
+                                                    long newv = cur - 1;
+                                                    if (fq.PropertyType == typeof(int)) fq.SetValue(elem, (int)newv);
+                                                    else fq.SetValue(elem, newv);
+                                                    TravelButtonPlugin.LogInfo($"AttemptDeductSilver: decremented element stack property {fq.Name} from {cur} to {newv} at {typeName}.{fi.Name}[{idx}] on '{mbName}'.");
+                                                    long after = GetPlayerCurrencyAmountOrMinusOne();
+                                                    TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after stack decrement -> {after}");
+                                                    TryInvokeRefreshMethods(mb);
+                                                    return true;
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: failed to decrement stack property on element: {ex}");
+                                            }
+                                        }
+                                        // fallback: try to remove element from array/list (best-effort) - skip due to complexity
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else if (ftype.IsGenericType && ftype.GetGenericArguments().Length == 1)
+                    {
+                        var genName = ftype.GetGenericArguments()[0].Name.ToLower();
+                        if (genName.Contains("item") || genName.Contains("stack") || genName.Contains("inventory"))
+                        {
+                            var listObj = fi.GetValue(mb) as System.Collections.IEnumerable;
+                            if (listObj != null)
+                            {
+                                foreach (var elem in listObj)
+                                {
+                                    if (elem == null) continue;
+                                    var ename = elem.GetType().Name.ToLower();
+                                    if (ename.Contains("silver") || elem.ToString().ToLower().Contains("silver"))
+                                    {
+                                        TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found silver-like element in {typeName}.{fi.Name} list on '{mbName}' - attempting to decrement/remove.");
+                                        // attempt same property decrement as above
+                                        var fq = elem.GetType().GetProperty("stackSize") ?? elem.GetType().GetProperty("quantity") ?? elem.GetType().GetProperty("amount") ?? elem.GetType().GetProperty("count");
+                                        if (fq != null && fq.CanRead && fq.CanWrite && (fq.PropertyType == typeof(int) || fq.PropertyType == typeof(long)))
+                                        {
+                                            try
+                                            {
+                                                long cur = fq.PropertyType == typeof(int) ? (int)fq.GetValue(elem) : (long)fq.GetValue(elem);
+                                                if (cur > 0)
+                                                {
+                                                    long newv = cur - 1;
+                                                    if (fq.PropertyType == typeof(int)) fq.SetValue(elem, (int)newv);
+                                                    else fq.SetValue(elem, newv);
+                                                    TravelButtonPlugin.LogInfo($"AttemptDeductSilver: decremented element stack property {fq.Name} from {cur} to {newv} on '{mbName}'.");
+                                                    long after = GetPlayerCurrencyAmountOrMinusOne();
+                                                    TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after stack decrement -> {after}");
+                                                    TryInvokeRefreshMethods(mb);
+                                                    return true;
+                                                }
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: failed to decrement stack property on list element: {ex}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilver: item-stack scan on {typeName} threw: {ex}");
+            }
+        }
+
+        // Try static helper classes that might implement currency (as last resort)
+        string[] staticTypeNames = new string[] { "CentralGatherable", "PlayerCurrency", "CurrencyManager", "CentralCurrency" };
+        foreach (var tn in staticTypeNames)
+        {
+            try
+            {
+                var st = Type.GetType(tn + ", Assembly-CSharp");
+                if (st != null)
+                {
+                    string[] staticMethodNames = new string[] { "RemoveSilver", "RemoveMoney", "SpendSilver", "SpendMoney" };
+                    foreach (var mn in staticMethodNames)
+                    {
+                        try
+                        {
+                            var mi = st.GetMethod(mn, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.IgnoreCase, null, new Type[] { typeof(int) }, null);
+                            if (mi != null)
+                            {
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: found static {st.FullName}.{mi.Name}(int) - invoking...");
+                                var res = mi.Invoke(null, new object[] { amount });
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: static {st.FullName}.{mi.Name}(int) -> ({(res == null ? "null" : res.ToString())}, type={res?.GetType().Name})");
+                                long after = GetPlayerCurrencyAmountOrMinusOne();
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: GetPlayerCurrencyAmountOrMinusOne() after static call -> {after}");
+                                if (res is bool b && b) return true;
+                                if (res is int ri) return ri >= 0;
+                                if (res is long rl) return rl >= 0;
+                                if (mi.ReturnType == typeof(void)) return true;
+                                if (res != null) return true;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: calling static {st.FullName}.{mn} threw: {ex}");
+                        }
+                    }
+                }
+            }
+            catch { /* ignore */ }
         }
 
         TravelButtonPlugin.LogWarning("AttemptDeductSilver: could not find an inventory/money field or method automatically. Travel aborted.");
         return false;
+    }
+
+    // Helper: try to invoke likely UI/inventory refresh methods on the given MB and a small set of other objects.
+    private void TryInvokeRefreshMethods(MonoBehaviour sourceMb)
+    {
+        try
+        {
+            // Common candidate substrings for refresh/update methods
+            string[] refreshCandidates = new string[] { "Refresh", "Update", "Sync", "OnCurrency", "OnMoney", "NotifyCurrency", "InventoryUpdated", "Rebuild" };
+
+            // Try on the source object first
+            var t = sourceMb.GetType();
+            foreach (var mi in t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            {
+                string n = mi.Name.ToLower();
+                foreach (var cand in refreshCandidates)
+                {
+                    if (n.Contains(cand.ToLower()) && mi.GetParameters().Length == 0)
+                    {
+                        try
+                        {
+                            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: invoking refresh method {t.FullName}.{mi.Name}() on '{sourceMb.gameObject?.name}'");
+                            mi.Invoke(sourceMb, null);
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning($"AttemptDeductSilver: invoking {t.FullName}.{mi.Name}() threw: {ex}");
+                        }
+                    }
+                }
+            }
+
+            // Also try a few broad-scope MonoBehaviours for UI/inventory refresh
+            var allMB = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            int invoked = 0;
+            foreach (var mb in allMB)
+            {
+                var mt = mb.GetType();
+                foreach (var mi in mt.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    string n = mi.Name.ToLower();
+                    if (mi.GetParameters().Length != 0) continue;
+                    foreach (var cand in refreshCandidates)
+                    {
+                        if (n.Contains(cand.ToLower()))
+                        {
+                            try
+                            {
+                                mi.Invoke(mb, null);
+                                TravelButtonPlugin.LogInfo($"AttemptDeductSilver: invoked potential refresh {mt.FullName}.{mi.Name}() on '{mb.gameObject?.name}'");
+                                invoked++;
+                                if (invoked > 6) break; // don't spam too many calls
+                            }
+                            catch { /* ignore */ }
+                        }
+                    }
+                    if (invoked > 6) break;
+                }
+                if (invoked > 6) break;
+            }
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilver: attempted to invoke {invoked} potential refresh methods after deduction.");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("AttemptDeductSilver: TryInvokeRefreshMethods exception: " + ex);
+        }
     }
 
     private bool AttemptTeleportToCity(TravelButtonMod.City city)
