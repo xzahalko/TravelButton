@@ -39,6 +39,32 @@ public class TravelButtonUI : MonoBehaviour
     // Fallback visibility monitor coroutine when inventoryVisibilityTarget is not found
     private Coroutine visibilityMonitorCoroutine;
 
+    private bool _initialized = false;
+    void Awake()
+    {
+        try
+        {
+            if (_initialized) return;
+            _initialized = true;
+
+            // Do NOT run heavy native/UI code from static constructors. Use Awake/Start only.
+            // Example: find inventory canvas safely
+            var canvas = GameObject.Find("InventoryCanvas"); // replace with your actual logic
+            if (canvas == null)
+            {
+                Debug.LogWarning("[TravelButtonUI] Inventory canvas not found. Deferring UI setup.");
+                return;
+            }
+
+            // subscribe to inventory open/close safely, ensuring no duplicate subscriptions
+            // Example: Inventory.OnOpen -= OnInventoryOpened; Inventory.OnOpen += OnInventoryOpened;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[TravelButtonUI] Awake() exception: {ex}");
+        }
+    }
+
     // Insert this method inside the TravelButtonUI class (e.g. after the private fields).
     // It uses fully-qualified System.* calls so you don't need extra using directives.
     private void Trace(string message)
