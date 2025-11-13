@@ -24,6 +24,7 @@ using uNature.Core.Terrains;
 [BepInPlugin("com.xzahalko.travelbutton", "TravelButton", "1.0.0")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
+
     // BepInEx config entries (top-level)
     private ConfigEntry<bool> bex_enableMod;
     private ConfigEntry<int> bex_globalPrice;
@@ -35,6 +36,28 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+
+        try
+        {
+            TravelButtonMod.LogInfo("TravelButton: startup - loaded cities:");
+            if (TravelButtonMod.Cities == null) TravelButtonMod.LogInfo(" - Cities == null");
+            else
+            {
+                foreach (var c in TravelButtonMod.Cities)
+                {
+                    try
+                    {
+                        TravelButtonMod.LogInfo($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("Startup city log failed: " + ex);
+        }
+
         try
         {
             TravelButtonMod.Logger = this.Logger;
@@ -280,6 +303,242 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
 public static class TravelButtonMod
 {
+    public static bool TeleportInProgress = false;
+
+    public static void LogLoadedScenesAndRootObjects()
+    {
+        try
+        {
+            int sceneCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
+            TravelButtonMod.LogInfo($"LogLoadedScenesAndRootObjects: {sceneCount} loaded scene(s).");
+            for (int i = 0; i < sceneCount; i++)
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                if (!scene.IsValid()) continue;
+                TravelButtonMod.LogInfo($" Scene #{i}: name='{scene.name}', isLoaded={scene.isLoaded}, isDirty={scene.isDirty}");
+                var roots = scene.GetRootGameObjects();
+                foreach (var r in roots)
+                {
+                    if (r == null) continue;
+                    TravelButtonMod.LogInfo($"  root: '{r.name}' (children count approx: {r.transform.childCount})");
+                }
+            }
+        }
+        catch (Exception ex) { TravelButtonMod.LogWarning("LogLoadedScenesAndRootObjects exception: " + ex.Message); }
+    }
+
+    public static void LogCityAnchorsFromLoadedScenes()
+    {
+        try
+        {
+            if (Cities == null || Cities.Count == 0)
+            {
+                LogWarning("LogCityAnchorsFromLoadedScenes: no cities available.");
+                return;
+            }
+
+            LogInfo($"LogCityAnchorsFromLoadedScenes: scanning {UnityEngine.SceneManagement.SceneManager.sceneCount} loaded scene(s) for city anchors...");
+
+            // For each loaded scene, scan root objects and children once and build a lookup of names -> (scene, transform)
+            var lookup = new Dictionary<string, List<(string sceneName, Transform t)>>(StringComparer.OrdinalIgnoreCase);
+
+            int scCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
+            for (int si = 0; si < scCount; si++)
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(si);
+                if (!scene.IsValid() || !scene.isLoaded) continue;
+                var roots = scene.GetRootGameObjects();
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+                    var all = root.GetComponentsInChildren<Transform>(true);
+                    foreach (var tr in all)
+                    {
+                        if (tr == null) continue;
+                        string name = tr.name ?? "";
+                        if (!lookup.TryGetValue(name, out var list))
+                        {
+                            list = new List<(string, Transform)>();
+                            lookup[name] = list;
+                        }
+                        list.Add((scene.name, tr));
+                    }
+                }
+            }
+
+            // For each city, try to find explicit targetGameObjectName first, then name-substring matches.
+            foreach (var city in Cities)
+            {
+                try
+                {
+                    if (city == null) continue;
+                    string cname = city.name ?? "(null)";
+                    string target = city.targetGameObjectName ?? "";
+
+                    LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "null")}");
+
+                    bool foundAny = false;
+
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        if (lookup.TryGetValue(target, out var exacts) && exacts.Count > 0)
+                        {
+                            foreach (var (sceneName, tr) in exacts)
+                            {
+                                var pos = tr.position;
+                                LogInfo($"CityScan: FOUND exact '{target}' in scene '{sceneName}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{GetFullPath(tr)}'");
+                                foundAny = true;
+                            }
+                        }
+                        else
+                        {
+                            // try GameObject.Find (active objects)
+                            var go = GameObject.Find(target);
+                            if (go != null)
+                            {
+                                var s = go.scene.IsValid() ? go.scene.name : "(unknown)";
+                                var p = go.transform.position;
+                                LogInfo($"CityScan: FOUND active exact '{target}' in scene '{s}' at ({p.x:F3}, {p.y:F3}, {p.z:F3})");
+                                foundAny = true;
+                            }
+                        }
+                    }
+
+                    // Substring matches: look for transforms with names containing the city name (case-insensitive).
+                    var substrMatches = new List<(string scene, Transform tr)>();
+                    if (!string.IsNullOrEmpty(cname))
+                    {
+                        foreach (var kv in lookup)
+                        {
+                            if (kv.Key.IndexOf(cname, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                foreach (var pair in kv.Value)
+                                    substrMatches.Add((pair.sceneName, pair.t));
+                            }
+                        }
+
+                        // Also consider active scene objects not included in lookup (should be included, but double-check)
+                        var allActive = UnityEngine.Object.FindObjectsOfType<Transform>();
+                        foreach (var tr in allActive)
+                        {
+                            if (tr == null) continue;
+                            if (tr.name.IndexOf(cname, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                substrMatches.Add((tr.gameObject.scene.IsValid() ? tr.gameObject.scene.name : "(unknown)", tr));
+                            }
+                        }
+                    }
+
+                    // De-duplicate substrMatches by transform instance and log the most useful ones
+                    var reported = new HashSet<int>();
+                    int reportedCount = 0;
+                    foreach (var m in substrMatches)
+                    {
+                        if (m.tr == null) continue;
+                        int id = m.tr.GetInstanceID();
+                        if (reported.Contains(id)) continue;
+                        reported.Add(id);
+
+                        var pos = m.tr.position;
+                        string sceneN = m.scene ?? "(unknown)";
+                        string path = GetFullPath(m.tr);
+                        LogInfo($"CityScan: SUBSTRING match '{m.tr.name}' in scene '{sceneN}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{path}'");
+                        reportedCount++;
+                        if (reportedCount >= 20) break;
+                    }
+
+                    if (!foundAny && reportedCount == 0)
+                        LogInfo($"CityScan: no matches found in loaded scenes for city '{cname}'. Consider loading the map or using in-game travel to that map, then run this again.");
+                }
+                catch (Exception exCity)
+                {
+                    LogWarning("CityScan: error scanning city: " + exCity.Message);
+                }
+            }
+
+            LogInfo("LogCityAnchorsFromLoadedScenes: scan complete.");
+        }
+        catch (Exception ex)
+        {
+            LogWarning("LogCityAnchorsFromLoadedScenes exception: " + ex.Message);
+        }
+    }
+
+    public static void AutoAssignSceneNamesFromLoadedScenes()
+    {
+        try
+        {
+            TravelButtonMod.LogInfo("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
+            if (Cities == null || Cities.Count == 0)
+            {
+                TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
+                return;
+            }
+
+            int assigned = 0;
+            // iterate loaded scenes
+            int sceneCount = SceneManager.sceneCount;
+            for (int si = 0; si < sceneCount; si++)
+            {
+                var scene = SceneManager.GetSceneAt(si);
+                if (!scene.IsValid() || !scene.isLoaded) continue;
+
+                var roots = scene.GetRootGameObjects();
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+                    var allTransforms = root.GetComponentsInChildren<Transform>(true);
+                    foreach (var tr in allTransforms)
+                    {
+                        if (tr == null) continue;
+                        string gname = tr.name ?? "";
+                        // try match by exact targetGameObjectName first, then city name substring
+                        foreach (var city in Cities)
+                        {
+                            try
+                            {
+                                if (!string.IsNullOrEmpty(city.targetGameObjectName) &&
+                                    string.Equals(gname, city.targetGameObjectName, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
+                                    {
+                                        city.sceneName = scene.name;
+                                        TravelButtonMod.LogInfo($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        assigned++;
+                                    }
+                                }
+                                else if (gname.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
+                                    {
+                                        city.sceneName = scene.name;
+                                        TravelButtonMod.LogInfo($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        assigned++;
+                                    }
+                                }
+                            }
+                            catch { /* ignore per-city errors */ }
+                        }
+                    }
+                }
+            }
+
+            if (assigned > 0)
+            {
+                TravelButtonMod.LogInfo($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
+                try { PersistCitiesToConfig(); } catch { TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
+            }
+            else
+            {
+                TravelButtonMod.LogInfo("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
+        }
+    }
+
     // Exposed logger set by the plugin bootstrap. May be null early during domain load.
     public static ManualLogSource Logger = null;
 
