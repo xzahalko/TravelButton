@@ -4,8 +4,15 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
-// Simple modal dialog. For production you should reuse the game's modal/dialog system.
-// This dialog lists all cities from ConfigManager.Config and handles click/price checks.
+/// <summary>
+/// TravelDialog: lists configured cities and initiates teleport+post-charge flow.
+/// Behavior:
+///  - Shows all cities from ConfigManager.Config
+///  - City button is interactable only when (visited OR enabled in config) AND coords/target exist
+///  - On click: if detected player money is known and insufficient -> show "not enough resources to travel"
+///            otherwise start teleport coroutine (TeleportHelpersBehaviour) and AFTER successful teleport attempt to deduct currency
+///  - Close button at bottom
+/// </summary>
 public class TravelDialog : MonoBehaviour
 {
     private static TravelDialog instance;
@@ -31,7 +38,6 @@ public class TravelDialog : MonoBehaviour
 
     private void CreateUI()
     {
-        // fullscreen panel
         panel = new GameObject("Panel");
         panel.transform.SetParent(this.transform, false);
         var canvas = panel.AddComponent<Canvas>();
@@ -49,7 +55,7 @@ public class TravelDialog : MonoBehaviour
         bgRect.offsetMin = Vector2.zero;
         bgRect.offsetMax = Vector2.zero;
 
-        // dialog window centered
+        // centered window
         var windowGO = new GameObject("Window");
         windowGO.transform.SetParent(panel.transform, false);
         var windowImg = windowGO.AddComponent<Image>();
@@ -61,7 +67,7 @@ public class TravelDialog : MonoBehaviour
         wRect.pivot = new Vector2(0.5f, 0.5f);
         wRect.anchoredPosition = Vector2.zero;
 
-        // Scroll area for city list
+        // scroll area
         var scrollGO = new GameObject("Scroll");
         scrollGO.transform.SetParent(windowGO.transform, false);
         var scrollRect = scrollGO.AddComponent<RectTransform>();
@@ -108,16 +114,17 @@ public class TravelDialog : MonoBehaviour
 
     private void RefreshList()
     {
-        // Find content container
         var content = panel.GetComponentInChildren<ScrollRect>().content;
-        // clear existing children
+        // clear previous
         foreach (Transform t in content) Destroy(t.gameObject);
 
         var cfg = ConfigManager.Config;
+        // create one entry per configured city (dictionary preserves names)
         foreach (var kv in cfg.cities)
         {
             var cityName = kv.Key;
             var cityCfg = kv.Value;
+
             var itemGO = new GameObject("CityItem_" + cityName);
             itemGO.transform.SetParent(content, false);
             var itemRect = itemGO.AddComponent<RectTransform>();
@@ -164,36 +171,14 @@ public class TravelDialog : MonoBehaviour
                 targetGOAvailable = tg != null;
             }
 
-            // Set interactable only if: (visited OR allowedByConfig) AND (coords available OR targetGO available)
             bool interactable = (visited || allowedByConfig) && (coordsAvailable || targetGOAvailable);
-
             btn.interactable = interactable;
-            if (!interactable)
-            {
-                img.color = new Color(0.8f, 0.8f, 0.8f, 1f); // disabled look
-            }
+            if (!interactable) img.color = new Color(0.8f, 0.8f, 0.8f, 1f);
 
             btn.onClick.AddListener(() => OnCityClicked(cityName));
-
-            if (!coordsAvailable && !targetGOAvailable)
-            {
-                var warnGO = new GameObject("Warn");
-                warnGO.transform.SetParent(itemGO.transform, false);
-                var warnTxt = warnGO.AddComponent<Text>();
-                warnTxt.text = " (coords missing)";
-                warnTxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                warnTxt.color = Color.red;
-                warnTxt.alignment = TextAnchor.MiddleCenter;
-                var wr = warnGO.GetComponent<RectTransform>();
-                wr.anchorMin = new Vector2(0.4f, 0);
-                wr.anchorMax = new Vector2(0.6f, 1);
-                wr.offsetMin = Vector2.zero;
-                wr.offsetMax = Vector2.zero;
-            }
         }
 
-        // Close button at bottom
-        var window = panel.transform.Find("Window") ?? panel.transform.GetChild(0);
+        // Close button (bottom center)
         var closeBtnGO = new GameObject("CloseButton");
         closeBtnGO.transform.SetParent(panel.transform, false);
         var closeRt = closeBtnGO.AddComponent<RectTransform>();
@@ -217,17 +202,7 @@ public class TravelDialog : MonoBehaviour
         ctRect.anchorMax = Vector2.one;
         ctRect.offsetMin = Vector2.zero;
         ctRect.offsetMax = Vector2.zero;
-        closeBtn.onClick.AddListener(() =>
-        {
-            try
-            {
-                if (panel != null) panel.SetActive(false);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError("Close button click failed: " + ex);
-            }
-        });
+        closeBtn.onClick.AddListener(() => { if (panel != null) panel.SetActive(false); });
     }
 
     private void OnCityClicked(string cityName)
@@ -237,97 +212,192 @@ public class TravelDialog : MonoBehaviour
         var cityCfg = cfg.cities[cityName];
         int price = cityCfg.price ?? cfg.globalTeleportPrice;
 
-        // Check coords or targetGameObjectName
         if ((cityCfg.coords == null || cityCfg.coords.Length < 3) && string.IsNullOrEmpty(cityCfg.targetGameObjectName))
         {
-            Debug.LogWarning($"[TravelButton] City {cityName} has no coordinates or targetGameObject configured.");
             ShowMessage($"Location for {cityName} is not configured.");
             return;
         }
 
-        // If targetGameObjectName is provided but not found, warn
         if (!string.IsNullOrEmpty(cityCfg.targetGameObjectName))
         {
             var tg = GameObject.Find(cityCfg.targetGameObjectName);
             if (tg == null && (cityCfg.coords == null || cityCfg.coords.Length < 3))
             {
-                Debug.LogWarning($"[TravelButton] targetGameObjectName '{cityCfg.targetGameObjectName}' for city '{cityName}' not found and no coords provided.");
                 ShowMessage($"Location for {cityName} is not configured.");
                 return;
             }
         }
 
-        // Check player's inventory/currency using reflection-based helper
-        if (!PlayerHasCurrency(cfg.currencyItem, price))
+        // Check player's inventory/currency (best-effort). If known and insufficient -> message.
+        long pm = GetPlayerCurrencyAmountOrMinusOne();
+        if (pm >= 0 && pm < price)
         {
             ShowMessage("not enough resources to travel");
             return;
         }
 
-        // Attempt to remove currency (deduct from inventory)
-        if (!RemovePlayerCurrency(cfg.currencyItem, price))
+        // Build a small stub object that contains the fields the teleport helper expects.
+        var stub = new CityStub
         {
-            ShowMessage("not enough resources to travel");
-            return;
-        }
+            name = cityName,
+            coords = cityCfg.coords,
+            targetGameObjectName = cityCfg.targetGameObjectName
+        };
 
-        // Determine teleport position
-        Vector3 targetPos = Vector3.zero;
-        bool posFound = false;
-        if (!string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+        // Use TeleportHelpersBehaviour to perform the teleport coroutine (it accepts object and uses reflection)
+        TeleportHelpersBehaviour host = TeleportHelpersBehaviour.GetOrCreateHost();
+        Vector3 hint = (cityCfg.coords != null && cityCfg.coords.Length >= 3) ? new Vector3(cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2]) : Vector3.zero;
+
+        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, cityCfg.coords != null && cityCfg.coords.Length >= 3, success =>
         {
-            var tg = GameObject.Find(cityCfg.targetGameObjectName);
-            if (tg != null)
+            if (success)
             {
-                targetPos = tg.transform.position;
-                posFound = true;
+                // Mark visited
+                try { VisitedTracker.MarkVisited(cityName); } catch { }
+
+                // attempt to deduct using reflection heuristics and the configured currency item name
+                bool charged = AttemptDeductAfterTeleport(price, cfg.currencyItem);
+                if (!charged)
+                {
+                    ShowMessage($"Teleported to {cityName} (failed to charge {price} {cfg.currencyItem})");
+                }
+                else
+                {
+                    ShowMessage($"Teleported to {cityName}");
+                }
+            }
+            else
+            {
+                ShowMessage("Teleport failed");
+            }
+        }));
+    }
+
+    // Small city-like stub used only to pass data into EnsureSceneAndTeleport (which accepts object and uses reflection).
+    private class CityStub
+    {
+        public string name;
+        public float[] coords;
+        public string targetGameObjectName;
+    }
+
+    // Attempt to deduct currency after a successful teleport.
+    // Uses reflection heuristics; `currencyItemName` is taken from ConfigManager.Config.currencyItem.
+    private bool AttemptDeductAfterTeleport(int amount, string currencyItemName)
+    {
+        try
+        {
+            var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            foreach (var mb in allMonoBehaviours)
+            {
+                var t = mb.GetType();
+                // Try inventory-like methods (string, int) then (int)
+                string[] methodNames = new string[] {
+                    "RemoveItems", "RemoveItem", "ConsumeItem", "TryRemoveItem", "RemoveAmount", "RemoveItemAmount",
+                    "SpendItem", "TakeItem", "UseItem", "RemoveMoney", "SpendMoney", "RemoveSilver", "TakeSilver"
+                };
+                foreach (var mn in methodNames)
+                {
+                    var mi_sig_si = t.GetMethod(mn, new Type[] { typeof(string), typeof(int) });
+                    if (mi_sig_si != null)
+                    {
+                        try
+                        {
+                            var res = mi_sig_si.Invoke(mb, new object[] { currencyItemName, amount });
+                            if (res is bool b) return b;
+                            return true;
+                        }
+                        catch { /* ignore and continue */ }
+                    }
+
+                    var mi_sig_i = t.GetMethod(mn, new Type[] { typeof(int) });
+                    if (mi_sig_i != null)
+                    {
+                        try
+                        {
+                            mi_sig_i.Invoke(mb, new object[] { amount });
+                            return true;
+                        }
+                        catch { /* ignore */ }
+                    }
+                }
+
+                // Try numeric fields/properties named like money/silver
+                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    var name = fi.Name.ToLower();
+                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                    {
+                        try
+                        {
+                            if (fi.FieldType == typeof(int))
+                            {
+                                int cur = (int)fi.GetValue(mb);
+                                if (cur >= amount)
+                                {
+                                    fi.SetValue(mb, cur - amount);
+                                    return true;
+                                }
+                                else return false;
+                            }
+                            else if (fi.FieldType == typeof(long))
+                            {
+                                long cur = (long)fi.GetValue(mb);
+                                if (cur >= amount)
+                                {
+                                    fi.SetValue(mb, cur - amount);
+                                    return true;
+                                }
+                                else return false;
+                            }
+                        }
+                        catch { /* ignore */ }
+                    }
+                }
+
+                foreach (var pi in t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    var name = pi.Name.ToLower();
+                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                    {
+                        try
+                        {
+                            if (pi.PropertyType == typeof(int) && pi.CanRead && pi.CanWrite)
+                            {
+                                int cur = (int)pi.GetValue(mb);
+                                if (cur >= amount)
+                                {
+                                    pi.SetValue(mb, cur - amount, null);
+                                    return true;
+                                }
+                                else return false;
+                            }
+                            else if (pi.PropertyType == typeof(long) && pi.CanRead && pi.CanWrite)
+                            {
+                                long cur = (long)pi.GetValue(mb);
+                                if (cur >= amount)
+                                {
+                                    pi.SetValue(mb, cur - amount, null);
+                                    return true;
+                                }
+                                else return false;
+                            }
+                        }
+                        catch { /* ignore */ }
+                    }
+                }
             }
         }
-        if (!posFound && cityCfg.coords != null && cityCfg.coords.Length >= 3)
+        catch (Exception ex)
         {
-            targetPos = new Vector3(cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2]);
-            posFound = true;
+            TravelButtonMod.LogWarning("AttemptDeductAfterTeleport exception: " + ex);
         }
 
-        if (!posFound)
-        {
-            ShowMessage("Location not available");
-            return;
-        }
-
-        // Teleport
-        bool teleported = TeleportManager.TeleportPlayerTo(new float[] { targetPos.x, targetPos.y, targetPos.z });
-        if (teleported)
-        {
-            VisitedTracker.MarkVisited(cityName);
-            ShowMessage($"Teleported to {cityName}");
-            // close dialog after short delay to allow message to show
-            StartCoroutine(CloseAfterDelay(0.2f));
-        }
-        else
-        {
-            // Attempt refund if teleport failed
-            bool refunded = AttemptRefundCurrency(cfg.currencyItem, price);
-            if (!refunded)
-                Debug.LogWarning($"[TravelButton] Refund failed for {price} {cfg.currencyItem} after teleport failure.");
-            ShowMessage("Teleport failed");
-        }
+        // Nothing found / deducted
+        return false;
     }
 
-    private IEnumerator CloseAfterDelay(float delay)
-    {
-        yield return new WaitForSeconds(delay);
-        Close();
-    }
-
-    private void ShowMessage(string msg)
-    {
-        Debug.Log("[TravelButton] " + msg);
-        // TODO: integrate with game message UI; currently logs only.
-    }
-
-    // Reflection-based helpers to detect and remove currency from player's inventory.
-    // These avoid a hard dependency on a PlayerInventory type and instead attempt common method names.
+    // Best-effort currency amount detection used to show early "not enough resources"
     private long GetPlayerCurrencyAmountOrMinusOne()
     {
         try
@@ -336,8 +406,6 @@ public class TravelDialog : MonoBehaviour
             foreach (var mb in allMono)
             {
                 var t = mb.GetType();
-
-                // Try common property names first (read-only or read/write)
                 string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
                 foreach (var pn in propNames)
                 {
@@ -352,11 +420,10 @@ public class TravelDialog : MonoBehaviour
                             if (val is float) return (long)((float)val);
                             if (val is double) return (long)((double)val);
                         }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
 
-                // Try methods like GetMoney(), GetSilver()
                 string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
                 foreach (var mn in methodNames)
                 {
@@ -371,12 +438,11 @@ public class TravelDialog : MonoBehaviour
                             if (res is float) return (long)((float)res);
                             if (res is double) return (long)((double)res);
                         }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
 
-                // Fields
-                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase))
+                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
                 {
                     var name = fi.Name.ToLower();
                     if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
@@ -389,245 +455,23 @@ public class TravelDialog : MonoBehaviour
                             if (val is float) return (long)((float)val);
                             if (val is double) return (long)((double)val);
                         }
-                        catch (Exception) { }
-                    }
-                }
-
-                // Generic properties scan
-                foreach (var pi in t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase))
-                {
-                    var name = pi.Name.ToLower();
-                    if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency")) && pi.CanRead)
-                    {
-                        try
-                        {
-                            var val = pi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
-                        }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
             }
 
-            Debug.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
             return -1;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
             return -1;
         }
     }
 
-    // Check if the player has at least `amount` of the item named currencyItem.
-    // Uses several strategies:
-    //  - Try to detect a currency total via GetPlayerCurrencyAmountOrMinusOne()
-    //  - Try to find a PlayerInventory-like component by reflection and call "GetItemCount"/"GetItemAmount"/"GetCount" etc.
-    private bool PlayerHasCurrency(string currencyItem, int amount)
+    private void ShowMessage(string msg)
     {
-        // Fast path: if we can detect a numeric currency total, use it
-        long total = GetPlayerCurrencyAmountOrMinusOne();
-        if (total >= 0)
-            return total >= amount;
-
-        // Otherwise try reflection-based inventory query (if a PlayerInventory type exists)
-        try
-        {
-            var player = GameObject.FindWithTag("Player");
-            if (player == null) return false;
-
-            // try to find a component whose type name contains 'PlayerInventory' or 'Inventory'
-            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMono)
-            {
-                var t = mb.GetType();
-                var tname = t.Name.ToLower();
-                if (tname.Contains("inventory") || tname.Contains("playerinventory") || tname.Contains("bag") || tname.Contains("itemcontainer"))
-                {
-                    // try common method names
-                    string[] methodNames = new string[] { "GetItemCount", "GetItemAmount", "GetCount", "GetQuantity", "GetItemsCount", "GetStackCount" };
-                    foreach (var mn in methodNames)
-                    {
-                        var mi = t.GetMethod(mn, new Type[] { typeof(string) });
-                        if (mi != null)
-                        {
-                            try
-                            {
-                                var res = mi.Invoke(mb, new object[] { currencyItem });
-                                if (res is int i) return i >= amount;
-                                if (res is long l) return l >= amount;
-                            }
-                            catch { /* ignore and try other methods */ }
-                        }
-                    }
-
-                    // try fields/properties that may represent a dictionary of items - omitted for brevity
-                }
-            }
-        }
-        catch { /* ignore reflection failures */ }
-
-        // Last resort: unknown inventory system -> return false (can't verify)
-        return false;
-    }
-
-    // Remove currency items, attempt multiple common method names via reflection.
-    // Returns true if removal succeeded.
-    private bool RemovePlayerCurrency(string currencyItem, int amount)
-    {
-        // Try to call common removal methods on likely inventory components
-        try
-        {
-            var player = GameObject.FindWithTag("Player");
-            if (player == null) return false;
-
-            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMono)
-            {
-                var t = mb.GetType();
-                var tname = t.Name.ToLower();
-                if (tname.Contains("inventory") || tname.Contains("playerinventory") || tname.Contains("bag") || tname.Contains("itemcontainer"))
-                {
-                    string[] methodNames = new string[] {
-                        "RemoveItems", "RemoveItem", "ConsumeItem", "TryRemoveItem", "RemoveAmount", "RemoveItemAmount",
-                        "SpendItem", "TakeItem", "UseItem"
-                    };
-                    foreach (var mn in methodNames)
-                    {
-                        // try signature (string, int)
-                        var mi = t.GetMethod(mn, new Type[] { typeof(string), typeof(int) });
-                        if (mi != null)
-                        {
-                            try
-                            {
-                                var res = mi.Invoke(mb, new object[] { currencyItem, amount });
-                                if (res is bool b) return b;
-                                return true;
-                            }
-                            catch { /* try next */ }
-                        }
-
-                        // try signature (string)
-                        mi = t.GetMethod(mn, new Type[] { typeof(string) });
-                        if (mi != null)
-                        {
-                            try
-                            {
-                                var res = mi.Invoke(mb, new object[] { currencyItem });
-                                return true;
-                            }
-                            catch { /* try next */ }
-                        }
-                    }
-                }
-            }
-        }
-        catch { /* ignore reflection failures */ }
-
-        // If we couldn't find an inventory API to remove items, fail
-        return false;
-    }
-
-    // Attempt refund by trying known add/grant methods or manipulating detected numeric fields/properties.
-    private bool AttemptRefundCurrency(string currencyItem, int amount)
-    {
-        try
-        {
-            var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMonoBehaviours)
-            {
-                var t = mb.GetType();
-
-                // Try methods that add money
-                string[] addMethodNames = new string[] { "AddMoney", "GrantMoney", "GiveMoney", "AddSilver", "GiveSilver", "GrantSilver", "AddCoins" };
-                foreach (var mn in addMethodNames)
-                {
-                    var mi = t.GetMethod(mn, new Type[] { typeof(int) });
-                    if (mi != null)
-                    {
-                        try
-                        {
-                            mi.Invoke(mb, new object[] { amount });
-                            Debug.Log($"AttemptRefundCurrency: called {t.FullName}.{mn}({amount})");
-                            return true;
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogWarning($"AttemptRefundCurrency: calling {t.FullName}.{mn} threw: {ex}");
-                        }
-                    }
-                }
-
-                // Try to increment fields/properties that look like currency
-                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
-                {
-                    var name = fi.Name.ToLower();
-                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
-                    {
-                        try
-                        {
-                            if (fi.FieldType == typeof(int))
-                            {
-                                int cur = (int)fi.GetValue(mb);
-                                fi.SetValue(mb, cur + amount);
-                                Debug.Log($"AttemptRefundCurrency: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
-                                return true;
-                            }
-                            else if (fi.FieldType == typeof(long))
-                            {
-                                long cur = (long)fi.GetValue(mb);
-                                fi.SetValue(mb, cur + amount);
-                                Debug.Log($"AttemptRefundCurrency: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
-                                return true;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogWarning($"AttemptRefundCurrency: field access {t.FullName}.{fi.Name} threw: {ex}");
-                        }
-                    }
-                }
-
-                foreach (var pi in t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
-                {
-                    var name = pi.Name.ToLower();
-                    if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
-                    {
-                        try
-                        {
-                            if (pi.PropertyType == typeof(int))
-                            {
-                                int cur = (int)pi.GetValue(mb);
-                                pi.SetValue(mb, cur + amount);
-                                Debug.Log($"AttemptRefundCurrency: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
-                                return true;
-                            }
-                            else if (pi.PropertyType == typeof(long))
-                            {
-                                long cur = (long)pi.GetValue(mb);
-                                pi.SetValue(mb, cur + amount);
-                                Debug.Log($"AttemptRefundCurrency: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
-                                return true;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogWarning($"AttemptRefundCurrency: property access {t.FullName}.{pi.Name} threw: {ex}");
-                        }
-                    }
-                }
-            }
-
-            Debug.LogWarning("AttemptRefundCurrency: could not find a place to refund the currency automatically.");
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError("AttemptRefundCurrency exception: " + ex);
-            return false;
-        }
+        Debug.Log("[TravelButton] " + msg);
     }
 }

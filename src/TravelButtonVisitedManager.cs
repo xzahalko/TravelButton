@@ -5,7 +5,6 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-
 //
 // TravelButtonVisitedManager
 // - Loads/saves visited city names (and optional coordinates) to TravelButton_Visited.json
