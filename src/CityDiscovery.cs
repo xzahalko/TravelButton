@@ -272,7 +272,7 @@ public class CityDiscovery : MonoBehaviour
         {
             try
             {
-                var t = Type.GetType(tname + ", Assembly-CSharp");
+                var t = ReflectionUtils.SafeGetType(tname + ", Assembly-CSharp");
                 if (t != null)
                 {
                     var objs = UnityEngine.Object.FindObjectsOfType(t);

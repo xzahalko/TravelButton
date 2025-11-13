@@ -33,56 +33,56 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private Dictionary<string, ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ConfigEntry<int>> bex_cityPrice = new Dictionary<string, ConfigEntry<int>>(StringComparer.OrdinalIgnoreCase);
 
-    public static BepInEx.Logging.ManualLogSource LogStatic = null;
+    // Set by plugin during Awake: e.g. TravelButtonPlugin.Initialize(Logger);
+    public static ManualLogSource LogSource { get; private set; }
 
-    // When true enables developer-only debug helpers (avoid naming it 'Debug' to prevent collision)
-    // ---- Logging helpers ----
-    // Use LogStatic when available, otherwise fallback to UnityEngine.Debug to avoid recursion/stack-overflow.
+    // Fallback file path (only used when BepInEx logger isn't available).
+    private static readonly string FallbackLogFile = Path.Combine(Application.persistentDataPath ?? ".", "outward_log.txt");
+
+    private const string Prefix = "[TravelButton] ";
+
+    public static void Initialize(ManualLogSource manualLogSource)
+    {
+        if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
+        LogSource = manualLogSource;
+        LogInfo("TravelButtonPlugin initialized with BepInEx ManualLogSource.");
+    }
+
     public static void LogInfo(string message)
     {
-        try
+        if (LogSource != null)
         {
-            if (LogStatic != null) { LogStatic.LogInfo(message); return; }
+            try { LogSource.LogInfo(Prefix + message); return; }
+            catch { /* fall through to fallback */ }
         }
-        catch { /* swallow to avoid logging causing crash */ }
-
-        try { UnityEngine.Debug.Log($"[TravelButton][INFO] {message}"); } catch { }
     }
 
     public static void LogWarning(string message)
     {
-        try
+        if (LogSource != null)
         {
-            if (LogStatic != null) { LogStatic.LogWarning(message); return; }
+            try { LogSource.LogWarning(Prefix + message); return; }
+            catch { /* fall through to fallback */ }
         }
-        catch { /* swallow */ }
-
-        try { UnityEngine.Debug.LogWarning($"[TravelButton][WARN] {message}"); } catch { }
     }
 
     public static void LogError(string message)
     {
-        try
+        if (LogSource != null)
         {
-            if (LogStatic != null) { LogStatic.LogError(message); return; }
+            try { LogSource.LogError(Prefix + message); return; }
+            catch { /* fall through to fallback */ }
         }
-        catch { /* swallow */ }
-
-        try { UnityEngine.Debug.LogError($"[TravelButton][ERROR] {message}"); } catch { }
     }
 
     public static void LogDebug(string message)
     {
-        try
+        if (LogSource != null)
         {
-            if (LogStatic != null) { LogStatic.LogDebug(message); return; }
+            try { LogSource.LogDebug(Prefix + message); return; }
+            catch { /* fall through to fallback */ }
         }
-        catch { /* swallow */ }
-
-        try { UnityEngine.Debug.Log($"[TravelButton][DEBUG] {message}"); } catch { }
     }
-
-
 
     private void Awake()
     {

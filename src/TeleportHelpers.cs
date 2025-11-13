@@ -32,7 +32,7 @@ public static class TeleportHelpers
             {
                 try
                 {
-                    var t = Type.GetType(tn + ", Assembly-CSharp") ?? Type.GetType(tn);
+                    var t = ReflectionUtils.SafeGetType(tn + ", Assembly-CSharp") ?? ReflectionUtils.SafeGetType(tn);
                     if (t == null) continue;
                     var objs = UnityEngine.Object.FindObjectsOfType(t);
                     if (objs != null && objs.Length > 0)

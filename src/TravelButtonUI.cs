@@ -1309,7 +1309,7 @@ public class TravelButtonUI : MonoBehaviour
                 string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player" };
                 foreach (var tname in playerTypeCandidates)
                 {
-                    var t = Type.GetType(tname + ", Assembly-CSharp");
+                    var t = ReflectionUtils.SafeGetType(tname + ", Assembly-CSharp");
                     if (t != null)
                     {
                         var objs = UnityEngine.Object.FindObjectsOfType(t);
@@ -1479,7 +1479,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 try
                 {
-                    var t = Type.GetType(tn + ", Assembly-CSharp") ?? Type.GetType(tn);
+                    var t = ReflectionUtils.SafeGetType(tn + ", Assembly-CSharp") ?? ReflectionUtils.SafeGetType(tn);
                     if (t == null) continue;
                     var objs = UnityEngine.Object.FindObjectsOfType(t);
                     if (objs != null && objs.Length > 0)
@@ -1733,7 +1733,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 // Try to get the Terrain type from the Unity Terrain module
                 // Full name including assembly: "UnityEngine.Terrain, UnityEngine.TerrainModule"
-                var terrainType = Type.GetType("UnityEngine.Terrain, UnityEngine.TerrainModule");
+                var terrainType = ReflectionUtils.SafeGetType("UnityEngine.Terrain, UnityEngine.TerrainModule");
                 if (terrainType != null)
                 {
                     // Get static property activeTerrain
@@ -1997,7 +1997,7 @@ public class TravelButtonUI : MonoBehaviour
         var canvas = UnityEngine.Object.FindObjectOfType<Canvas>();
         if (canvas != null) return canvas;
 
-        Type canvasType = Type.GetType("UnityEngine.Canvas, UnityEngine.UIModule");
+        Type canvasType = ReflectionUtils.SafeGetType("UnityEngine.Canvas, UnityEngine.UIModule");
         if (canvasType != null)
         {
             var objs = UnityEngine.Object.FindObjectsOfType(canvasType);
@@ -2387,7 +2387,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 try
                 {
-                    var t = Type.GetType(tname + ", Assembly-CSharp");
+                    var t = ReflectionUtils.SafeGetType(tname + ", Assembly-CSharp");
                     if (t != null)
                     {
                         var objs = UnityEngine.Object.FindObjectsOfType(t);
@@ -2439,7 +2439,7 @@ public class TravelButtonUI : MonoBehaviour
                 // Try NavMeshAgent warp first if present (use reflection to avoid compile-time dependency on UnityEngine.AIModule)
                 try
                 {
-                    var navAgentType = Type.GetType("UnityEngine.AI.NavMeshAgent, UnityEngine.AIModule");
+                    var navAgentType = ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshAgent, UnityEngine.AIModule");
                     if (navAgentType != null)
                     {
                         var agentComp = plyTransform.GetComponent(navAgentType);
