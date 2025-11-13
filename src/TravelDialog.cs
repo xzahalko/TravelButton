@@ -4,11 +4,15 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
-// TravelDialog: kept consistent with TravelButtonUI behavior.
-// - Shows all configured cities.
-// - City is interactable when (visited || config enabled) AND coords/target exist.
-// - On click: if detected player money < price -> show "not enough resources to travel".
-// - Otherwise: request teleport (via TeleportHelpersBehaviour) and perform post-teleport charge.
+/// <summary>
+/// TravelDialog: lists configured cities and initiates teleport+post-charge flow.
+/// Behavior:
+///  - Shows all cities from ConfigManager.Config
+///  - City button is interactable only when (visited OR enabled in config) AND coords/target exist
+///  - On click: if detected player money is known and insufficient -> show "not enough resources to travel"
+///            otherwise start teleport coroutine (TeleportHelpersBehaviour) and AFTER successful teleport attempt to deduct currency
+///  - Close button at bottom
+/// </summary>
 public class TravelDialog : MonoBehaviour
 {
     private static TravelDialog instance;
@@ -111,13 +115,16 @@ public class TravelDialog : MonoBehaviour
     private void RefreshList()
     {
         var content = panel.GetComponentInChildren<ScrollRect>().content;
+        // clear previous
         foreach (Transform t in content) Destroy(t.gameObject);
 
         var cfg = ConfigManager.Config;
+        // create one entry per configured city (dictionary preserves names)
         foreach (var kv in cfg.cities)
         {
             var cityName = kv.Key;
             var cityCfg = kv.Value;
+
             var itemGO = new GameObject("CityItem_" + cityName);
             itemGO.transform.SetParent(content, false);
             var itemRect = itemGO.AddComponent<RectTransform>();
@@ -171,7 +178,7 @@ public class TravelDialog : MonoBehaviour
             btn.onClick.AddListener(() => OnCityClicked(cityName));
         }
 
-        // Close
+        // Close button (bottom center)
         var closeBtnGO = new GameObject("CloseButton");
         closeBtnGO.transform.SetParent(panel.transform, false);
         var closeRt = closeBtnGO.AddComponent<RectTransform>();
@@ -229,109 +236,26 @@ public class TravelDialog : MonoBehaviour
             return;
         }
 
-        // Start teleport flow (post-charge)
-        // Use TeleportHelpersBehaviour host
+        // Build a small stub object that contains the fields the teleport helper expects.
+        var stub = new CityStub
+        {
+            name = cityName,
+            coords = cityCfg.coords,
+            targetGameObjectName = cityCfg.targetGameObjectName
+        };
+
+        // Use TeleportHelpersBehaviour to perform the teleport coroutine (it accepts object and uses reflection)
         TeleportHelpersBehaviour host = TeleportHelpersBehaviour.GetOrCreateHost();
-
-        // Create a real TravelButtonMod.City instance to pass to the Teleport helper,
-        // so we match the expected parameter type. Populate minimal fields required.
-        TravelButtonMod.City cityObj = null;
-        try
-        {
-            // Use the constructor that accepts the city name
-            cityObj = new TravelButtonMod.City(cityName);
-        }
-        catch
-        {
-            // Fallback to Activator in case the constructor is not public
-            try
-            {
-                cityObj = (TravelButtonMod.City)Activator.CreateInstance(typeof(TravelButtonMod.City), new object[] { cityName });
-            }
-            catch
-            {
-                cityObj = null;
-            }
-        }
-
-        // If we successfully created a City instance, populate coords/target via fields or properties (reflection-safe)
-        if (cityObj != null)
-        {
-            try
-            {
-                var t = cityObj.GetType();
-
-                var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (coordsField != null)
-                {
-                    coordsField.SetValue(cityObj, cityCfg.coords);
-                }
-                else
-                {
-                    var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    if (coordsProp != null && coordsProp.CanWrite)
-                        coordsProp.SetValue(cityObj, cityCfg.coords, null);
-                }
-
-                var tgField = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (tgField != null)
-                {
-                    tgField.SetValue(cityObj, cityCfg.targetGameObjectName);
-                }
-                else
-                {
-                    var tgProp = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    if (tgProp != null && tgProp.CanWrite)
-                        tgProp.SetValue(cityObj, cityCfg.targetGameObjectName, null);
-                }
-            }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogWarning("Failed to populate TravelButtonMod.City fields via reflection: " + ex);
-            }
-        }
-        else
-        {
-            TravelButtonMod.LogWarning("Could not construct TravelButtonMod.City for teleport helper; teleport helper may still attempt fallbacks.");
-        }
-
-        try
-        {
-            // only set fields we need (name, coords, targetGameObjectName)
-            var t = cityObj.GetType();
-            var nameField = t.GetField("name");
-            if (nameField != null) nameField.SetValue(cityObj, cityName);
-            var coordsField = t.GetField("coords");
-            if (coordsField != null) coordsField.SetValue(cityObj, cityCfg.coords);
-            var tgField = t.GetField("targetGameObjectName");
-            if (tgField != null) tgField.SetValue(cityObj, cityCfg.targetGameObjectName);
-            // price/desc/etc are optional for the teleport helper; leave them as defaults
-        }
-        catch
-        {
-            // If direct field access fails, try properties (best-effort) - not critical
-            try
-            {
-                var tp = cityObj.GetType();
-                var nameProp = tp.GetProperty("name");
-                if (nameProp != null && nameProp.CanWrite) nameProp.SetValue(cityObj, cityName, null);
-                var coordsProp = tp.GetProperty("coords");
-                if (coordsProp != null && coordsProp.CanWrite) coordsProp.SetValue(cityObj, cityCfg.coords, null);
-                var tgProp = tp.GetProperty("targetGameObjectName");
-                if (tgProp != null && tgProp.CanWrite) tgProp.SetValue(cityObj, cityCfg.targetGameObjectName, null);
-            }
-            catch { /* ignore; helper will still attempt fallbacks */ }
-        }
-
         Vector3 hint = (cityCfg.coords != null && cityCfg.coords.Length >= 3) ? new Vector3(cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2]) : Vector3.zero;
-        host.StartCoroutine(host.EnsureSceneAndTeleport(cityObj, hint, cityCfg.coords != null && cityCfg.coords.Length >= 3, success =>
+
+        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, cityCfg.coords != null && cityCfg.coords.Length >= 3, success =>
         {
             if (success)
             {
                 // Mark visited
                 try { VisitedTracker.MarkVisited(cityName); } catch { }
 
-                // attempt to deduct using reflection heuristics
+                // attempt to deduct using reflection heuristics and the configured currency item name
                 bool charged = AttemptDeductAfterTeleport(price, cfg.currencyItem);
                 if (!charged)
                 {
@@ -349,8 +273,16 @@ public class TravelDialog : MonoBehaviour
         }));
     }
 
+    // Small city-like stub used only to pass data into EnsureSceneAndTeleport (which accepts object and uses reflection).
+    private class CityStub
+    {
+        public string name;
+        public float[] coords;
+        public string targetGameObjectName;
+    }
+
     // Attempt to deduct currency after a successful teleport.
-    // Uses reflection heuristics; `currencyItemName` currently passed as a string (cfg.currencyItem).
+    // Uses reflection heuristics; `currencyItemName` is taken from ConfigManager.Config.currencyItem.
     private bool AttemptDeductAfterTeleport(int amount, string currencyItemName)
     {
         try
@@ -359,7 +291,7 @@ public class TravelDialog : MonoBehaviour
             foreach (var mb in allMonoBehaviours)
             {
                 var t = mb.GetType();
-                // First try inventory-like methods (string, int) or (int)
+                // Try inventory-like methods (string, int) then (int)
                 string[] methodNames = new string[] {
                     "RemoveItems", "RemoveItem", "ConsumeItem", "TryRemoveItem", "RemoveAmount", "RemoveItemAmount",
                     "SpendItem", "TakeItem", "UseItem", "RemoveMoney", "SpendMoney", "RemoveSilver", "TakeSilver"
@@ -465,6 +397,7 @@ public class TravelDialog : MonoBehaviour
         return false;
     }
 
+    // Best-effort currency amount detection used to show early "not enough resources"
     private long GetPlayerCurrencyAmountOrMinusOne()
     {
         try
@@ -527,12 +460,12 @@ public class TravelDialog : MonoBehaviour
                 }
             }
 
-            Debug.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
             return -1;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
             return -1;
         }
     }

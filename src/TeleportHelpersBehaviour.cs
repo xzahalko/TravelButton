@@ -1,26 +1,38 @@
 using System;
 using System.Collections;
+using System.IO;
 using UnityEngine;
 
 /// <summary>
 /// Lightweight helper MonoBehaviour that runs teleport-related coroutines for the UI.
-/// TravelButtonUI and TravelDialog use EnsureSceneAndTeleport to perform anchor lookup / grounding and call TeleportHelpers.AttemptTeleportToPositionSafe.
+/// Includes conservative tracing to Desktop so we can see which teleport code runs before a crash.
 /// </summary>
 public class TeleportHelpersBehaviour : MonoBehaviour
 {
+    private void TraceTH(string message)
+    {
+        try
+        {
+            string p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_component_trace.txt");
+            File.AppendAllText(p, $"[{DateTime.UtcNow:O}] TeleportHelpersBehaviour: {message}\n");
+        }
+        catch { }
+    }
+
     private void Awake()
     {
-        DontDestroyOnLoad(this.gameObject);
+        TraceTH("Awake reached");
+        try { DontDestroyOnLoad(this.gameObject); } catch { }
     }
 
     /// <summary>
-    /// EnsureSceneAndTeleport:
-    /// - Finds target position by targetGameObjectName (waiting briefly), or uses explicit coords.
-    /// - Tries TeleportHelpers.GetGroundedPosition/EnsureClearance and calls TeleportHelpers.AttemptTeleportToPositionSafe.
-    /// - Invokes callback(success).
+    /// Reflection-friendly coroutine that resolves a position and then attempts to teleport.
+    /// Designed to avoid yields inside catch/finally blocks and to log progress to desktop.
     /// </summary>
     public IEnumerator EnsureSceneAndTeleport(object cityLike, Vector3 coordsHint, bool haveCoordsHint, Action<bool> callback)
     {
+        TraceTH($"EnsureSceneAndTeleport start (cityLikeType={(cityLike == null ? "null" : cityLike.GetType().Name)})");
+
         if (cityLike == null)
         {
             TravelButtonMod.LogWarning("EnsureSceneAndTeleport: cityLike is null.");
@@ -32,48 +44,55 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         string targetName = null;
         float[] coordsArray = null;
 
+        // Reflection to extract fields/properties (no yields here)
         try
         {
             var t = cityLike.GetType();
-            var nameProp = t.GetField("name") ?? (System.Reflection.FieldInfo)null;
-            if (nameProp == null)
-            {
-                var namePropInfo = t.GetProperty("name");
-                if (namePropInfo != null) cityName = namePropInfo.GetValue(cityLike) as string;
-            }
+
+            var nameField = t.GetField("name", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (nameField != null)
+                cityName = nameField.GetValue(cityLike) as string;
             else
             {
-                cityName = nameProp.GetValue(cityLike) as string;
+                var nameProp = t.GetProperty("name", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (nameProp != null) cityName = nameProp.GetValue(cityLike) as string;
             }
 
-            var tgField = t.GetField("targetGameObjectName");
-            if (tgField != null) targetName = tgField.GetValue(cityLike) as string;
+            var tgField = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (tgField != null)
+                targetName = tgField.GetValue(cityLike) as string;
             else
             {
-                var tgProp = t.GetProperty("targetGameObjectName");
+                var tgProp = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (tgProp != null) targetName = tgProp.GetValue(cityLike) as string;
             }
 
-            var coordsField = t.GetField("coords");
-            if (coordsField != null) coordsArray = coordsField.GetValue(cityLike) as float[];
+            var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (coordsField != null)
+                coordsArray = coordsField.GetValue(cityLike) as float[];
             else
             {
-                var coordsProp = t.GetProperty("coords");
+                var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (coordsProp != null) coordsArray = coordsProp.GetValue(cityLike) as float[];
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogWarning("EnsureSceneAndTeleport: reflection read failed: " + ex);
+            TraceTH("Reflection read failed: " + ex.Message);
+        }
 
         Vector3 targetPos = Vector3.zero;
         bool found = false;
 
-        // If a named target exists, wait shortly for it to appear
+        // Wait for a named target if provided
         if (!string.IsNullOrEmpty(targetName))
         {
             const float timeout = 5.0f;
             const float poll = 0.1f;
             float waited = 0f;
             GameObject foundGO = null;
+
             while (waited < timeout)
             {
                 try
@@ -81,7 +100,8 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     foundGO = GameObject.Find(targetName);
                     if (foundGO != null) break;
                 }
-                catch { }
+                catch { /* ignore */ }
+
                 waited += poll;
                 yield return new WaitForSeconds(poll);
             }
@@ -91,29 +111,34 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                 targetPos = foundGO.transform.position;
                 found = true;
                 TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}'");
+                TraceTH($"Found target '{targetName}' at {targetPos}");
             }
             else
             {
                 TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' - will try coords fallback.");
+                TraceTH($"target '{targetName}' not found after wait");
             }
         }
 
+        // Use coords hint or reflected coords
         if (!found && haveCoordsHint)
         {
             targetPos = coordsHint;
             found = true;
             TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: using coordsHint for '{cityName}' = {targetPos}");
+            TraceTH("Using coordsHint");
         }
         else if (!found && coordsArray != null && coordsArray.Length >= 3)
         {
             targetPos = new Vector3(coordsArray[0], coordsArray[1], coordsArray[2]);
             found = true;
             TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: using explicit coords for '{cityName}' = {targetPos}");
+            TraceTH("Using explicit coords");
         }
 
+        // Fallback: search transforms
         if (!found)
         {
-            // fallback: search transforms
             try
             {
                 var all = UnityEngine.Object.FindObjectsOfType<Transform>();
@@ -125,26 +150,35 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                         targetPos = tr.position;
                         found = true;
                         TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
+                        TraceTH($"Fallback matched transform '{tr.name}'");
                         break;
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                TravelButtonMod.LogWarning("EnsureSceneAndTeleport: transform search failed: " + ex);
+                TraceTH("Transform search failed: " + ex.Message);
+            }
         }
 
         if (!found)
         {
             TravelButtonMod.LogError($"EnsureSceneAndTeleport: no target position could be determined for '{cityName}'. Aborting.");
+            TraceTH("No target position determined - aborting");
             callback?.Invoke(false);
             yield break;
         }
 
-        // Ground/clear the position
+        // Ground/clear the position (no yields)
         try
         {
             targetPos = TeleportHelpers.GetGroundedPosition(targetPos);
         }
-        catch { targetPos = TeleportHelpers.EnsureClearance(targetPos); }
+        catch
+        {
+            try { targetPos = TeleportHelpers.EnsureClearance(targetPos); } catch { }
+        }
 
         // yield one frame and attempt teleport
         yield return null;
@@ -153,12 +187,21 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         try
         {
             relocated = TeleportHelpers.AttemptTeleportToPositionSafe(targetPos);
-            if (relocated) TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
-            else TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
+            if (relocated)
+            {
+                TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
+                TraceTH("Teleport succeeded");
+            }
+            else
+            {
+                TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
+                TraceTH("Teleport failed (AttemptTeleportToPositionSafe returned false)");
+            }
         }
         catch (Exception ex)
         {
             TravelButtonMod.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
+            TraceTH("Teleport exception: " + ex.Message);
             relocated = false;
         }
 

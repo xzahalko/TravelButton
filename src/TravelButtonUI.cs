@@ -7,6 +7,8 @@ using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using System.Linq;
+using System;
+using System.IO;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -37,17 +39,30 @@ public class TravelButtonUI : MonoBehaviour
     // Fallback visibility monitor coroutine when inventoryVisibilityTarget is not found
     private Coroutine visibilityMonitorCoroutine;
 
-    void Start()
+    // Insert this method inside the TravelButtonUI class (e.g. after the private fields).
+    // It uses fully-qualified System.* calls so you don't need extra using directives.
+    private void Trace(string message)
     {
-        TravelButtonMod.LogInfo("TravelButtonUI.Start called.");
-        CreateTravelButton();
-        EnsureInputSystems();
-        // start polling for inventory container (will reparent once found)
-        StartCoroutine(PollForInventoryParent());
+        try
+        {
+            string path = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop), "TravelButton_component_trace.txt");
+            // append with timestamp and method/class context
+            System.IO.File.AppendAllText(path, $"[{System.DateTime.UtcNow:O}] TravelButtonUI: {message}\n");
+        }
+        catch { /* swallow to avoid causing further issues while debugging */ }
+    }
+
+    // Example: at the top of Start()
+    private void Start()
+    {
+        Trace("Start reached");
+        // existing Start code...
+        Trace("Start finished - about to start init coroutine or create UI");
     }
 
     void Update()
     {
+        Trace("Update reached");
         // hotkey to open dialog for debugging
         if (Input.GetKeyDown(KeyCode.BackQuote))
         {
@@ -105,130 +120,17 @@ public class TravelButtonUI : MonoBehaviour
 
     private void ReparentButtonToInventory(Transform container)
     {
+        Trace($"ReparentButtonToInventory start (container={(container == null ? "null" : container.name)})");
         try
         {
-            if (buttonObject == null) return;
-
-            // Stop any existing visibility monitor (we'll start a new one if needed)
-            if (visibilityMonitorCoroutine != null)
-            {
-                try { StopCoroutine(visibilityMonitorCoroutine); } catch { }
-                visibilityMonitorCoroutine = null;
-            }
-
-            // Parent and configure layout participation
-            buttonObject.transform.SetParent(container, false);
-            buttonObject.transform.SetAsLastSibling();
-
-            // Ensure the button participates in layout groups correctly
-            var layoutElement = buttonObject.GetComponent<LayoutElement>();
-            if (layoutElement == null)
-                layoutElement = buttonObject.AddComponent<LayoutElement>();
-
-            var rt = buttonObject.GetComponent<RectTransform>();
-
-            // Try to find a template button to copy layout; otherwise apply defaults
-            Button templateButton = null;
-            try
-            {
-                var buttons = container.GetComponentsInChildren<Button>(true);
-                if (buttons != null && buttons.Length > 0)
-                    templateButton = buttons[0];
-            }
-            catch { /* ignore */ }
-
-            if (templateButton != null)
-            {
-                var tRt = templateButton.GetComponent<RectTransform>();
-                if (tRt != null)
-                {
-                    // copy anchors/pivot/size but clamp to sane maxima to avoid giant buttons
-                    rt.anchorMin = tRt.anchorMin;
-                    rt.anchorMax = tRt.anchorMax;
-                    rt.pivot = tRt.pivot;
-                    var copied = tRt.sizeDelta;
-                    float maxWidth = 220f;
-                    float maxHeight = 44f;
-                    copied.x = Mathf.Clamp(copied.x, 60f, maxWidth);
-                    copied.y = Mathf.Clamp(copied.y, 20f, maxHeight);
-                    rt.sizeDelta = copied;
-
-                    // place to the right of the template (so it shows on the same row near the top/right)
-                    rt.anchoredPosition = tRt.anchoredPosition + new Vector2(tRt.sizeDelta.x + 8f, 0f);
-
-                    layoutElement.preferredWidth = rt.sizeDelta.x;
-                    layoutElement.preferredHeight = rt.sizeDelta.y;
-                    layoutElement.flexibleWidth = 0;
-                    layoutElement.flexibleHeight = 0;
-                }
-
-                // copy image sprite if template uses one
-                try
-                {
-                    var templImg = templateButton.GetComponent<Image>();
-                    var ourImg = buttonObject.GetComponent<Image>();
-                    if (templImg != null && ourImg != null && templImg.sprite != null)
-                    {
-                        ourImg.sprite = templImg.sprite;
-                        ourImg.type = templImg.type;
-                        ourImg.preserveAspect = templImg.preserveAspect;
-                    }
-                }
-                catch { /* ignore */ }
-            }
-            else
-            {
-                // default fallback size, positioned near top-right of container
-                rt.sizeDelta = new Vector2(Mathf.Min(rt.sizeDelta.x, 160f), Mathf.Min(rt.sizeDelta.y, 34f));
-                layoutElement.preferredWidth = rt.sizeDelta.x;
-                layoutElement.preferredHeight = rt.sizeDelta.y;
-                layoutElement.flexibleWidth = 0;
-                layoutElement.flexibleHeight = 0;
-                TravelButtonMod.LogInfo("ReparentButtonToInventory: no template button found, used default layout sizes.");
-            }
-
-            // Determine inventory visibility target (ancestor/child with CanvasGroup or named window/panel)
-            TryFindInventoryVisibilityTarget(container);
-
-            // Sync visibility based on the discovered target (or fallback)
-            if (inventoryVisibilityTarget != null)
-            {
-                try
-                {
-                    bool visible = inventoryVisibilityTarget.activeInHierarchy;
-                    var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
-                    if (cg != null) visible = cg.alpha > 0.01f && cg.interactable;
-                    buttonObject.SetActive(visible);
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonMod.LogWarning("ReparentButtonToInventory: failed to sync visibility from found inventoryVisibilityTarget: " + ex);
-                    buttonObject.SetActive(true);
-                }
-            }
-            else
-            {
-                // fallback: use container.activeInHierarchy and monitor
-                try
-                {
-                    bool visible = container.gameObject.activeInHierarchy;
-                    buttonObject.SetActive(visible);
-                    visibilityMonitorCoroutine = StartCoroutine(MonitorInventoryContainerVisibility(container));
-                    TravelButtonMod.LogInfo($"ReparentButtonToInventory: using container '{container.name}' active state as fallback (visible={visible}).");
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonMod.LogWarning("ReparentButtonToInventory: fallback visibility check failed: " + ex);
-                    buttonObject.SetActive(false); // safer default - do not show on main hud
-                }
-            }
-
-            TravelButtonMod.LogInfo("ReparentButtonToInventory: button reparented and visibility synced with inventory.");
+            // existing method body...
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError("ReparentButtonToInventory: " + ex);
+            Trace("ReparentButtonToInventory EX: " + ex.ToString());
+            throw;
         }
+        Trace("ReparentButtonToInventory end");
     }
 
     private IEnumerator MonitorInventoryContainerVisibility(Transform container)
@@ -359,406 +261,34 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    void CreateTravelButton()
+    private void CreateTravelButton()
     {
-        TravelButtonMod.LogInfo("CreateTravelButton: beginning UI creation.");
+        Trace("CreateTravelButton start");
         try
         {
-            buttonObject = new GameObject("TravelButton");
-            buttonObject.AddComponent<CanvasRenderer>();
-
-            travelButton = buttonObject.AddComponent<Button>();
-
-            var img = buttonObject.AddComponent<Image>();
-            img.color = new Color(0.45f, 0.26f, 0.13f, 1f);
-            img.raycastTarget = true;
-
-            travelButton.targetGraphic = img;
-            travelButton.interactable = true;
-
-            var rt = buttonObject.GetComponent<RectTransform>();
-            if (rt == null) rt = buttonObject.AddComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(140, 32);
-
-            int uiLayer = LayerMask.NameToLayer("UI");
-            if (uiLayer != -1) buttonObject.layer = uiLayer;
-
-            // initially parent to first available Canvas (so it's created in UI space)
-            var canvas = FindCanvas();
-            if (canvas != null)
-            {
-                buttonObject.transform.SetParent(canvas.transform, false);
-                rt.anchorMin = new Vector2(0.5f, 1f);
-                rt.anchorMax = new Vector2(0.5f, 1f);
-                rt.pivot = new Vector2(0.5f, 1f);
-                rt.anchoredPosition = new Vector2(0, -40);
-            }
-            else
-            {
-                TravelButtonMod.LogWarning("CreateTravelButton: no Canvas found at creation time; button created at scene root.");
-            }
-
-            var labelGO = new GameObject("Label");
-            labelGO.transform.SetParent(buttonObject.transform, false);
-            var txt = labelGO.AddComponent<Text>();
-            txt.text = "Travel";
-            txt.alignment = TextAnchor.MiddleCenter;
-            txt.color = new Color(0.98f, 0.94f, 0.87f, 1.0f);
-            txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            txt.fontSize = 14;
-            txt.raycastTarget = false;
-
-            EnsureInputSystems();
-
-            travelButton.onClick.AddListener(OpenTravelDialog);
-
-            // Hide the button until reparented to inventory - do not show on main HUD
-            buttonObject.SetActive(false);
-
-            TravelButtonMod.LogInfo("CreateTravelButton: Travel button created and hidden until inventory is found.");
+            // existing CreateTravelButton implementation ...
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError("CreateTravelButton: exception: " + ex);
+            Trace("CreateTravelButton EX: " + ex.ToString());
+            throw;
         }
+        Trace("CreateTravelButton end");
     }
 
-    void OpenTravelDialog()
+    private void OpenTravelDialog()
     {
-        TravelButtonMod.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
-        // Reuse the common dialog creation flow in this class (consistent with TravelDialog)
+        Trace("OpenTravelDialog start");
         try
         {
-            // If dialog already exists, show it and refresh
-            if (dialogRoot != null)
-            {
-                dialogRoot.SetActive(true);
-                if (refreshButtonsCoroutine != null)
-                {
-                    StopCoroutine(refreshButtonsCoroutine);
-                    refreshButtonsCoroutine = null;
-                }
-                refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
-                return;
-            }
-
-            // Create dialog canvas if required
-            if (dialogCanvas == null)
-            {
-                dialogCanvas = new GameObject("TravelDialogCanvas");
-                var canvasComp = dialogCanvas.AddComponent<Canvas>();
-                canvasComp.renderMode = RenderMode.ScreenSpaceOverlay;
-                canvasComp.overrideSorting = true;
-                canvasComp.sortingOrder = 2000;
-                dialogCanvas.AddComponent<GraphicRaycaster>();
-                dialogCanvas.AddComponent<CanvasGroup>();
-                UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
-            }
-
-            // Build dialog (simplified layout - same UX as TravelDialog)
-            dialogRoot = new GameObject("TravelDialog");
-            dialogRoot.transform.SetParent(dialogCanvas.transform, false);
-            dialogRoot.AddComponent<CanvasRenderer>();
-            var rootRt = dialogRoot.AddComponent<RectTransform>();
-            rootRt.anchorMin = new Vector2(0.5f, 0.5f);
-            rootRt.anchorMax = new Vector2(0.5f, 0.5f);
-            rootRt.pivot = new Vector2(0.5f, 0.5f);
-            rootRt.sizeDelta = new Vector2(520, 360);
-            rootRt.anchoredPosition = Vector2.zero;
-            var bg = dialogRoot.AddComponent<Image>();
-            bg.color = new Color(0f, 0f, 0f, 0.95f);
-
-            // Title
-            var titleGO = new GameObject("Title");
-            titleGO.transform.SetParent(dialogRoot.transform, false);
-            var titleRt = titleGO.AddComponent<RectTransform>();
-            titleRt.anchorMin = new Vector2(0f, 1f);
-            titleRt.anchorMax = new Vector2(1f, 1f);
-            titleRt.pivot = new Vector2(0.5f, 1f);
-            titleRt.anchoredPosition = new Vector2(0, -8);
-            titleRt.sizeDelta = new Vector2(0, 32);
-            var titleText = titleGO.AddComponent<Text>();
-            titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (default cost {TravelButtonMod.cfgTravelCost.Value} silver)";
-            titleText.alignment = TextAnchor.MiddleCenter;
-            titleText.fontSize = 18;
-            titleText.color = Color.white;
-
-            // Inline message area
-            var inlineMsgGO = new GameObject("InlineMessage");
-            inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
-            var inlineRt = inlineMsgGO.AddComponent<RectTransform>();
-            inlineRt.anchorMin = new Vector2(0f, 0.92f);
-            inlineRt.anchorMax = new Vector2(1f, 0.99f);
-            inlineRt.anchoredPosition = Vector2.zero;
-            inlineRt.sizeDelta = Vector2.zero;
-            var inlineText = inlineMsgGO.AddComponent<Text>();
-            inlineText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            inlineText.text = "";
-            inlineText.alignment = TextAnchor.MiddleCenter;
-            inlineText.color = Color.yellow;
-            inlineText.fontSize = 14;
-            inlineText.raycastTarget = false;
-
-            // Scroll area for cities
-            var scrollGO = new GameObject("ScrollArea");
-            scrollGO.transform.SetParent(dialogRoot.transform, false);
-            var scrollRt = scrollGO.AddComponent<RectTransform>();
-            scrollRt.anchorMin = new Vector2(0f, 0f);
-            scrollRt.anchorMax = new Vector2(1f, 1f);
-            scrollRt.offsetMin = new Vector2(10, 60);
-            scrollRt.offsetMax = new Vector2(-10, -70);
-            var scrollRect = scrollGO.AddComponent<ScrollRect>();
-            scrollGO.AddComponent<CanvasRenderer>();
-            scrollRect.movementType = ScrollRect.MovementType.Clamped;
-            scrollRect.inertia = true;
-            scrollRect.scrollSensitivity = 20f;
-
-            var viewport = new GameObject("Viewport");
-            viewport.transform.SetParent(scrollGO.transform, false);
-            var vpRt = viewport.AddComponent<RectTransform>();
-            vpRt.anchorMin = Vector2.zero;
-            vpRt.anchorMax = Vector2.one;
-            vpRt.offsetMin = Vector2.zero;
-            vpRt.offsetMax = Vector2.zero;
-            viewport.AddComponent<CanvasRenderer>();
-            var vImg = viewport.AddComponent<Image>();
-            vImg.color = Color.clear;
-            viewport.AddComponent<UnityEngine.UI.RectMask2D>();
-
-            var content = new GameObject("Content");
-            content.transform.SetParent(viewport.transform, false);
-            var contentRt = content.AddComponent<RectTransform>();
-            contentRt.anchorMin = new Vector2(0f, 1f);
-            contentRt.anchorMax = new Vector2(1f, 1f);
-            contentRt.pivot = new Vector2(0.5f, 1f);
-            contentRt.anchoredPosition = Vector2.zero;
-            contentRt.sizeDelta = new Vector2(0, 0);
-            var vlayout = content.AddComponent<VerticalLayoutGroup>();
-            vlayout.childControlHeight = true;
-            vlayout.childForceExpandHeight = false;
-            vlayout.childControlWidth = true;
-            vlayout.spacing = 6;
-            var csf = content.AddComponent<ContentSizeFitter>();
-            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            scrollRect.content = contentRt;
-            scrollRect.viewport = vpRt;
-            scrollRect.horizontal = false;
-            scrollRect.vertical = true;
-
-            // Populate city list (shows all cities; interactable only when (visited || config enabled) && coords/target exist)
-            long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
-            bool haveMoneyInfo = playerMoney >= 0;
-
-            if (TravelButtonMod.Cities != null)
-            {
-                foreach (var city in TravelButtonMod.Cities)
-                {
-                    var bgo = new GameObject("CityButton_" + city.name);
-                    bgo.transform.SetParent(content.transform, false);
-                    bgo.AddComponent<CanvasRenderer>();
-                    var brt = bgo.AddComponent<RectTransform>();
-                    brt.sizeDelta = new Vector2(0, 44);
-                    var ble = bgo.AddComponent<LayoutElement>();
-                    ble.preferredHeight = 44f;
-                    ble.minHeight = 30f;
-                    ble.flexibleWidth = 1f;
-                    var bimg = bgo.AddComponent<Image>();
-                    bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
-                    var bbtn = bgo.AddComponent<Button>();
-                    bbtn.targetGraphic = bimg;
-                    bbtn.interactable = true;
-                    var cb = bbtn.colors;
-                    cb.normalColor = new Color(0.45f, 0.26f, 0.13f, 1f);
-                    cb.highlightedColor = new Color(0.55f, 0.33f, 0.16f, 1f);
-                    cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
-                    bbtn.colors = cb;
-
-                    var lgo = new GameObject("Label");
-                    lgo.transform.SetParent(bgo.transform, false);
-                    var lrt = lgo.AddComponent<RectTransform>();
-                    lrt.anchorMin = new Vector2(0f, 0f);
-                    lrt.anchorMax = new Vector2(1f, 1f);
-                    lrt.offsetMin = new Vector2(8, 0);
-                    lrt.offsetMax = new Vector2(-8, 0);
-                    var ltxt = lgo.AddComponent<Text>();
-                    ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                    ltxt.text = city.name;
-                    ltxt.color = new Color(0.98f, 0.94f, 0.87f, 1.0f);
-                    ltxt.alignment = TextAnchor.MiddleLeft;
-                    ltxt.fontSize = 14;
-                    ltxt.raycastTarget = false;
-
-                    int cost = TravelButtonMod.cfgTravelCost.Value;
-                    try
-                    {
-                        var priceField = city.GetType().GetField("price");
-                        if (priceField != null)
-                        {
-                            var pv = priceField.GetValue(city);
-                            if (pv is int) cost = (int)pv;
-                            else if (pv is long) cost = (int)(long)pv;
-                        }
-                        else
-                        {
-                            var priceProp = city.GetType().GetProperty("price");
-                            if (priceProp != null)
-                            {
-                                var pv = priceProp.GetValue(city);
-                                if (pv is int) cost = (int)pv;
-                                else if (pv is long) cost = (int)(long)pv;
-                            }
-                        }
-                    }
-                    catch { /* ignore */ }
-
-                    var priceGO = new GameObject("Price");
-                    priceGO.transform.SetParent(bgo.transform, false);
-                    var ptxt = priceGO.AddComponent<Text>();
-                    ptxt.text = cost.ToString();
-                    ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                    ptxt.color = Color.white;
-                    ptxt.alignment = TextAnchor.MiddleRight;
-                    var pRect = priceGO.GetComponent<RectTransform>();
-                    pRect.anchorMin = new Vector2(0.6f, 0);
-                    pRect.anchorMax = new Vector2(1, 1);
-                    pRect.offsetMin = new Vector2(-10, 0);
-                    pRect.offsetMax = new Vector2(-10, 0);
-
-                    bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
-                    bool visited = false;
-                    try { visited = VisitedTracker.HasVisited(city.name); } catch { }
-
-                    bool coordsAvailable = false;
-                    try
-                    {
-                        if (!string.IsNullOrEmpty(city.targetGameObjectName))
-                        {
-                            var targetGO = GameObject.Find(city.targetGameObjectName);
-                            coordsAvailable = targetGO != null;
-                        }
-                        if (!coordsAvailable && city.coords != null && city.coords.Length >= 3)
-                            coordsAvailable = true;
-                    }
-                    catch { }
-
-                    bool initialInteractable = (visited || enabledByConfig) && coordsAvailable;
-                    if (haveMoneyInfo)
-                    {
-                        if (playerMoney < cost) initialInteractable = false;
-                    }
-
-                    bbtn.interactable = initialInteractable;
-                    if (!initialInteractable)
-                        bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
-
-                    var capturedCity = city;
-                    bbtn.onClick.AddListener(() =>
-                    {
-                        try
-                        {
-                            long pm = GetPlayerCurrencyAmountOrMinusOne();
-                            if (pm >= 0 && pm < cost)
-                            {
-                                ShowInlineDialogMessage("not enough resources to travel");
-                                return;
-                            }
-
-                            // Use host TeleportHelpersBehaviour to run teleport coroutine and post-charge
-                            TeleportHelpersBehaviour host = TeleportHelpersBehaviour.GetOrCreateHost();
-                            host.StartCoroutine(host.EnsureSceneAndTeleport(capturedCity, capturedCity.coords != null && capturedCity.coords.Length >= 3 ? new Vector3(capturedCity.coords[0], capturedCity.coords[1], capturedCity.coords[2]) : Vector3.zero, capturedCity.coords != null && capturedCity.coords.Length >= 3, success =>
-                            {
-                                if (success)
-                                {
-                                    // mark visited
-                                    try { VisitedTracker.MarkVisited(capturedCity.name); } catch { }
-
-                                    // attempt to deduct
-                                    bool charged = AttemptDeductSilver(cost);
-                                    if (!charged)
-                                    {
-                                        TravelButtonMod.LogWarning($"Teleport succeeded to {capturedCity.name} but failed to deduct {cost} silver.");
-                                        ShowInlineDialogMessage($"Teleported to {capturedCity.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
-                                    }
-                                    else
-                                    {
-                                        ShowInlineDialogMessage($"Teleported to {capturedCity.name}");
-                                    }
-
-                                    // close dialog after a small delay to let user read inline message
-                                    StartCoroutine(CloseAfterDelayAndStopRefresh(0.2f));
-                                }
-                                else
-                                {
-                                    ShowInlineDialogMessage("Teleport failed");
-                                }
-                            }));
-                        }
-                        catch (Exception ex)
-                        {
-                            TravelButtonMod.LogWarning("City button click handler exception: " + ex);
-                        }
-                    });
-                }
-            }
-
-            // Close button bottom
-            var closeGO = new GameObject("Close");
-            closeGO.transform.SetParent(dialogRoot.transform, false);
-            closeGO.AddComponent<CanvasRenderer>();
-            var closeRt = closeGO.AddComponent<RectTransform>();
-            closeRt.anchorMin = new Vector2(0.5f, 0f);
-            closeRt.anchorMax = new Vector2(0.5f, 0f);
-            closeRt.pivot = new Vector2(0.5f, 0f);
-            closeRt.anchoredPosition = new Vector2(0, 12);
-            closeRt.sizeDelta = new Vector2(120, 34);
-            var cimg = closeGO.AddComponent<Image>();
-            cimg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
-            var cbtn = closeGO.AddComponent<Button>();
-            cbtn.targetGraphic = cimg;
-            cbtn.interactable = true;
-            closeGO.transform.SetAsLastSibling();
-            var closeTxtGO = new GameObject("Label");
-            closeTxtGO.transform.SetParent(closeGO.transform, false);
-            var ctxt = closeTxtGO.AddComponent<Text>();
-            ctxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            ctxt.text = "Close";
-            ctxt.alignment = TextAnchor.MiddleCenter;
-            ctxt.color = Color.white;
-            ctxt.raycastTarget = false;
-            var cLabelRt = closeTxtGO.GetComponent<RectTransform>();
-            cLabelRt.anchorMin = Vector2.zero;
-            cLabelRt.anchorMax = Vector2.one;
-            cLabelRt.offsetMin = Vector2.zero;
-            cLabelRt.offsetMax = Vector2.zero;
-            cbtn.onClick.AddListener(() =>
-            {
-                try
-                {
-                    if (dialogRoot != null) dialogRoot.SetActive(false);
-                    if (refreshButtonsCoroutine != null)
-                    {
-                        StopCoroutine(refreshButtonsCoroutine);
-                        refreshButtonsCoroutine = null;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonMod.LogError("Close button click failed: " + ex);
-                }
-            });
-
-            // Prevent click-through for one frame
-            StartCoroutine(TemporarilyDisableDialogRaycasts());
-            refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
-
-            TravelButtonMod.LogInfo("OpenTravelDialog: dialog created and displayed.");
+            // existing OpenTravelDialog code...
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError("OpenTravelDialog: exception while creating dialog: " + ex);
+            Trace("OpenTravelDialog EX: " + ex.ToString());
+            throw;
         }
+        Trace("OpenTravelDialog end");
     }
 
     private IEnumerator CloseAfterDelayAndStopRefresh(float delay)

@@ -17,13 +17,25 @@ public class CityDiscovery : MonoBehaviour
     private const float PollInterval = 1.0f;
     private const float DiscoverRadius = 6.0f;
 
-    void Awake()
+    private void TraceCD(string message)
     {
+        try
+        {
+            string p = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop), "TravelButton_component_trace.txt");
+            System.IO.File.AppendAllText(p, $"[{System.DateTime.UtcNow:O}] CityDiscovery: {message}\n");
+        }
+        catch { }
+    }
+
+    private void Awake()
+    {
+        TraceCD("Awake reached");
         DontDestroyOnLoad(this.gameObject);
     }
 
     void Start()
     {
+        TraceCD("Start reached");
         TravelButtonMod.LogInfo("CityDiscovery.Start: initializing city discovery system.");
         // Diagnostic: try to print potential built-in visited fields
         try { TravelButtonVisitedManager.LogPlayerCandidateVisitedFields(); } catch { }
