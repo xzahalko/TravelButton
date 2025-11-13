@@ -1,4 +1,4 @@
-using BepInEx;
+﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using System;
@@ -20,7 +20,6 @@ using uNature.Core.Terrains;
 // - Provides City model used by TravelButtonUI and helpers to map/persist configuration.
 // - Adds diagnostics helpers DumpTravelButtonState and ForceShowTravelButton for runtime inspection.
 //
-
 [BepInPlugin("com.xzahalko.travelbutton", "TravelButton", "1.0.0")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
@@ -60,7 +59,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
-            TravelButtonMod.Logger = this.Logger;
+            TravelButtonMod.Logger = base.Logger;
             TravelButtonMod.LogInfo("TravelButtonPlugin.Awake: plugin initializing.");
 
             // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
@@ -146,6 +145,38 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         // Finally ensure UI exists so the player can interact
         EnsureTravelButtonUI();
+    }
+
+    // Exposed logger set by the plugin bootstrap. May be null early during domain load.
+    public static ManualLogSource Logger = null;
+
+    // When true enables developer-only debug helpers in the UI (hidden by default).
+    // NOTE: renamed from `Debug` to `DebugMode` to avoid colliding with UnityEngine.Debug type.
+    public static bool DebugMode = false;
+
+    // ---- Logging helpers ----
+    public static void LogInfo(string message)
+    {
+        if (Logger != null) Logger.LogInfo(message);
+        else UnityEngine.Debug.Log($"[TravelButton][INFO] {message}");
+    }
+
+    public static void LogWarning(string message)
+    {
+        if (Logger != null) Logger.LogWarning(message);
+        else UnityEngine.Debug.LogWarning($"[TravelButton][WARN] {message}");
+    }
+
+    public static void LogError(string message)
+    {
+        if (Logger != null) Logger.LogError(message);
+        else UnityEngine.Debug.LogError($"[TravelButton][ERROR] {message}");
+    }
+
+    public static void LogDebug(string message)
+    {
+        if (Logger != null) Logger.LogDebug(message);
+        else UnityEngine.Debug.Log($"[TravelButton][DEBUG] {message}");
     }
 
     private void EnsureTravelButtonUI()
@@ -375,7 +406,7 @@ public static class TravelButtonMod
                     string cname = city.name ?? "(null)";
                     string target = city.targetGameObjectName ?? "";
 
-                    LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "null")}");
+                    LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}");
 
                     bool foundAny = false;
 
@@ -542,29 +573,32 @@ public static class TravelButtonMod
     // Exposed logger set by the plugin bootstrap. May be null early during domain load.
     public static ManualLogSource Logger = null;
 
+    // When true enables developer-only debug helpers in the UI (hidden by default).
+    public static bool Debug = false;
+
     // ---- Logging helpers ----
     public static void LogInfo(string message)
     {
         if (Logger != null) Logger.LogInfo(message);
-        else Debug.Log($"[TravelButton][INFO] {message}");
+        else LogInfo($"[TravelButton][INFO] {message}");
     }
 
     public static void LogWarning(string message)
     {
         if (Logger != null) Logger.LogWarning(message);
-        else Debug.LogWarning($"[TravelButton][WARN] {message}");
+        else LogWarning($"[TravelButton][WARN] {message}");
     }
 
     public static void LogError(string message)
     {
         if (Logger != null) Logger.LogError(message);
-        else Debug.LogError($"[TravelButton][ERROR] {message}");
+        else LogError($"[TravelButton][ERROR] {message}");
     }
 
     public static void LogDebug(string message)
     {
         if (Logger != null) Logger.LogDebug(message);
-        else Debug.Log($"[TravelButton][DEBUG] {message}");
+        else LogDebug($"[TravelButton][DEBUG] {message}");
     }
 
     // Simple configurable wrappers to keep compatibility with existing code
@@ -607,7 +641,7 @@ public static class TravelButtonMod
         }
 
         // Compatibility properties expected by older code:
-        // property 'visited' (lowercase) � maps to VisitedTracker if available
+        // property 'visited' (lowercase) → maps to VisitedTracker if available
         public bool visited
         {
             get
