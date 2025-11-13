@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Reflection;
 using uNature.Core.Terrains;
 using UnityEngine;
 using UnityEngine.AI;
@@ -892,31 +891,30 @@ public class TravelButtonUI : MonoBehaviour
                         bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
                     }
 
-                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable})");
+                    TravelButtonMod.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coords present={(city.coords != null && city.coords.Length >= 3)})");
 
                     var capturedCity = city;
-                    // NEW: immediate-pay-and-teleport when city button clicked (instead of separate confirmation)
+
+                    // NEW BEHAVIOR: check funds first, then teleport, then charge (post-teleport charge)
                     bbtn.onClick.AddListener(() =>
                     {
-                        // Before attempting deduction, show exact "not enough resources to travel" when insufficient funds
-                        long pm = GetPlayerCurrencyAmountOrMinusOne();
-                        if (pm >= 0 && pm < cost)
+                        try
                         {
-                            ShowInlineDialogMessage("not enough resources to travel");
-                            return;
-                        }
+                            // Check player's visible currency amount (best-effort). If known and insufficient => show message.
+                            long pm = GetPlayerCurrencyAmountOrMinusOne();
+                            if (pm >= 0 && pm < cost)
+                            {
+                                ShowInlineDialogMessage("not enough resources to travel");
+                                return;
+                            }
 
-                        // If we couldn't detect money upfront, still attempt deduction and show message on failure
-                        bool paid = AttemptDeductSilver(cost);
-                        if (!paid)
+                            // Start teleport-then-charge flow
+                            TryTeleportThenCharge(capturedCity, cost);
+                        }
+                        catch (Exception ex)
                         {
-                            ShowInlineDialogMessage("not enough resources to travel");
-                            return;
+                            TravelButtonMod.LogWarning("City button click handler exception: " + ex);
                         }
-
-                        // Now attempt to teleport; If teleport fails, AttemptRefundSilver will be attempted inside TryPayAndTeleport path in other code.
-                        // But here we can reuse existing TryPayAndTeleport which does deduct+teleport+refund logic.
-                        TryPayAndTeleport(capturedCity);
                     });
                 }
             }
@@ -1012,6 +1010,96 @@ public class TravelButtonUI : MonoBehaviour
         catch (Exception ex)
         {
             TravelButtonMod.LogError("OpenTravelDialog: exception while creating dialog: " + ex);
+        }
+    }
+
+    // New: Teleport first, THEN attempt to charge player currency.
+    // This mirrors the TravelDialog behavior: do not deduct before teleport.
+    private void TryTeleportThenCharge(TravelButtonMod.City city, int cost)
+    {
+        if (city == null)
+        {
+            TravelButtonMod.LogWarning("TryTeleportThenCharge: city is null.");
+            return;
+        }
+
+        try
+        {
+            TravelButtonMod.LogInfo($"TryTeleportThenCharge: attempting teleport to {city.name} (post-charge flow).");
+
+            // Prepare coords hint (use explicit coords fallback if present)
+            Vector3 coordsHint = Vector3.zero;
+            bool haveCoordsHint = false;
+            if (city != null && city.coords != null && city.coords.Length >= 3)
+            {
+                coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                haveCoordsHint = true;
+            }
+
+            // Find or create a TeleportHelpersBehaviour to run the coroutine
+            TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
+            if (helper == null)
+            {
+                var go = new GameObject("TeleportHelpersHost");
+                UnityEngine.Object.DontDestroyOnLoad(go);
+                helper = go.AddComponent<TeleportHelpersBehaviour>();
+            }
+
+            // Start teleport coroutine which handles scene loading / anchor wait / grounding and safe teleport
+            helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, success =>
+            {
+                if (success)
+                {
+                    TravelButtonMod.LogInfo($"TryTeleportThenCharge: teleport to '{city.name}' completed successfully.");
+
+                    // Mark visited in the visited tracker if available
+                    try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
+
+                    // Attempt to deduct currency post-teleport
+                    try
+                    {
+                        bool charged = AttemptDeductSilver(cost);
+                        if (!charged)
+                        {
+                            TravelButtonMod.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                        }
+                        else
+                        {
+                            ShowInlineDialogMessage($"Teleported to {city.name}");
+                        }
+                    }
+                    catch (Exception exCharge)
+                    {
+                        TravelButtonMod.LogWarning("TryTeleportThenCharge: charge attempt threw: " + exCharge);
+                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                    }
+
+                    // Persist visited/cities to config if desired
+                    try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+
+                    // Close the dialog (optional UX choice)
+                    try
+                    {
+                        if (dialogRoot != null) dialogRoot.SetActive(false);
+                        if (refreshButtonsCoroutine != null)
+                        {
+                            StopCoroutine(refreshButtonsCoroutine);
+                            refreshButtonsCoroutine = null;
+                        }
+                    }
+                    catch { }
+                }
+                else
+                {
+                    TravelButtonMod.LogWarning($"TryTeleportThenCharge: teleport to '{city.name}' failed.");
+                    ShowInlineDialogMessage("Teleport failed");
+                }
+            }));
+        }
+        catch (Exception ex)
+        {
+            TravelButtonMod.LogError("TryTeleportThenCharge exception: " + ex);
         }
     }
 
@@ -1339,9 +1427,9 @@ public class TravelButtonUI : MonoBehaviour
                 TravelButtonMod.LogWarning("AttemptTeleportToPositionSafe: player root not found.");
                 return false;
             }
-            
+
             var playerGO = TeleportHelpers.ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
-            
+
             TravelButtonMod.LogInfo($"AttemptTeleportToPositionSafe: chosen player object = '{playerGO.name}' (root id={playerGO.GetInstanceID()})");
 
             var before = playerGO.transform.position;
@@ -1548,193 +1636,13 @@ public class TravelButtonUI : MonoBehaviour
 
     private void TryPayAndTeleport(TravelButtonMod.City city)
     {
-        if (city == null)
-        {
-            TravelButtonMod.LogWarning("TryPayAndTeleport: city is null.");
-            return;
-        }
-
-        try
-        {
-            TravelButtonMod.LogInfo($"TryPayAndTeleport: attempting to pay & teleport to {city.name}");
-
-            // Determine cost (per-city overrides global)
-            int cost = city.price ?? TravelButtonMod.cfgTravelCost.Value;
-
-            // Attempt to deduct; this uses your existing helper which logs details (keeps original behavior)
-            TravelButtonMod.LogInfo($"AttemptDeductSilver: trying to deduct {cost} silver.");
-            bool paid = false;
-            try
-            {
-                // If you already have AttemptDeductSilver as a method in this class, this will call it.
-                // Otherwise adjust to call the correct static/helper method that removes currency.
-                paid = AttemptDeductSilver(cost);
-            }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogWarning("TryPayAndTeleport: AttemptDeductSilver threw: " + ex.Message);
-                paid = false;
-            }
-
-            if (!paid)
-            {
-                TravelButtonMod.LogWarning($"TryPayAndTeleport: payment of {cost} silver failed for city {city.name}.");
-                return;
-            }
-
-            // Find or create a TeleportHelpersBehaviour to run the coroutine
-            TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
-            if (helper == null)
-            {
-                var go = new GameObject("TeleportHelpersHost");
-                UnityEngine.Object.DontDestroyOnLoad(go);
-                helper = go.AddComponent<TeleportHelpersBehaviour>();
-            }
-
-            // Start teleport coroutine which handles scene loading / anchor wait / grounding and safe teleport
-            // Prepare coords hint (use explicit coords fallback if present)
-            Vector3 coordsHint = Vector3.zero;
-            bool haveCoordsHint = false;
-            if (city != null && city.coords != null && city.coords.Length >= 3)
-            {
-                coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-                haveCoordsHint = true;
-            }
-
-            // Start the new EnsureSceneAndTeleport coroutine (signature:
-            // IEnumerator EnsureSceneAndTeleport(TravelButtonMod.City city, Vector3 resolvedPosFromConfigOrAnchorHint, bool haveAnchorHint, Action<bool> onComplete))
-            helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, success =>
-            {
-                if (success)
-                {
-                    TravelButtonMod.LogInfo($"TryPayAndTeleport: teleport to '{city.name}' completed successfully.");
-                    // Mark visited in the visited tracker if available
-                    try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
-
-                    // Optionally persist visited state immediately
-                    try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
-
-                    // Close the dialog (optional UX choice)
-                    try
-                    {
-                        if (dialogRoot != null) dialogRoot.SetActive(false);
-                        // stop refresh coroutine when dialog closed
-                        if (refreshButtonsCoroutine != null)
-                        {
-                            StopCoroutine(refreshButtonsCoroutine);
-                            refreshButtonsCoroutine = null;
-                        }
-                    }
-                    catch { }
-                }
-                else
-                {
-                    TravelButtonMod.LogWarning($"TryPayAndTeleport: teleport to '{city.name}' failed or used fallback coords.");
-                }
-            }));
-        }
-        catch (Exception ex)
-        {
-            TravelButtonMod.LogError("TryPayAndTeleport exception: " + ex);
-        }
+        // Kept for compatibility with older callers; but the new flow uses TryTeleportThenCharge.
+        TryTeleportThenCharge(city, city.price ?? TravelButtonMod.cfgTravelCost.Value);
     }
 
- /*   // Attempt to deduct cost and teleport immediately. If cfgEnableTeleport is false, teleport only (UI-only)
-    private void TryPayAndTeleport(TravelButtonMod.City city)
-    {
-        try
-        {
-            // Determine per-city cost or fallback to global
-            int cost = TravelButtonMod.cfgTravelCost.Value;
-            try
-            {
-                var priceField = city.GetType().GetField("price");
-                if (priceField != null)
-                {
-                    var pv = priceField.GetValue(city);
-                    if (pv is int) cost = (int)pv;
-                    else if (pv is long) cost = (int)(long)pv;
-                }
-                else
-                {
-                    var priceProp = city.GetType().GetProperty("price");
-                    if (priceProp != null)
-                    {
-                        var pv = priceProp.GetValue(city);
-                        if (pv is int) cost = (int)pv;
-                        else if (pv is long) cost = (int)(long)pv;
-                    }
-                }
-            }
-            catch { *//* ignore reflection fail -> use global cost *//* }
-
-            // First: find a valid target position. If none, abort (do not deduct).
-            if (!TryGetTargetPosition(city, out Vector3 targetPos))
-            {
-                TravelButtonMod.LogError($"TryPayAndTeleport: no valid target for {city.name}. Aborting without charging.");
-                ShowInlineDialogMessage($"Location for {city.name} is not configured.");
-                return;
-            }
-
-            if (!TravelButtonMod.cfgEnableTeleport.Value)
-            {
-                TravelButtonMod.LogInfo($"TryPayAndTeleport: teleport disabled by config - performing UI-only teleport to {city.name}");
-
-                bool t = AttemptTeleportToPositionSafe(targetPos);
-                if (t) CloseDialogAndStopRefresh();
-                return;
-            }
-
-            // Check money before attempting a deduction (show exact message on insufficient funds)
-            long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
-            if (playerMoney >= 0 && playerMoney < cost)
-            {
-                ShowInlineDialogMessage("not enough resources to travel");
-                TravelButtonMod.LogWarning($"TryPayAndTeleport: not enough funds (playerMoney={playerMoney} < cost={cost}). Aborting.");
-                return;
-            }
-
-            // Deduct; AttemptDeductSilver logs actions and returns false if insufficient or not found
-            bool paid = AttemptDeductSilver(cost);
-            if (!paid)
-            {
-                ShowInlineDialogMessage("not enough resources to travel");
-                TravelButtonMod.LogWarning($"TryPayAndTeleport: deduction failed or funds insufficient for cost {cost} - aborting.");
-                return;
-            }
-
-            // Teleport
-            bool teleported = AttemptTeleportToPositionSafe(targetPos);
-            if (!teleported)
-            {
-                TravelButtonMod.LogError("TryPayAndTeleport: teleport failed after deduction; attempting refund.");
-
-                // Best-effort refund
-                bool refunded = AttemptRefundSilver(cost);
-                if (refunded)
-                    TravelButtonMod.LogInfo($"TryPayAndTeleport: refund of {cost} silver succeeded after failed teleport.");
-                else
-                    TravelButtonMod.LogWarning($"TryPayAndTeleport: refund of {cost} silver FAILED after failed teleport. Manual correction may be required.");
-
-                ShowInlineDialogMessage("Teleport failed");
-                return;
-            }
-            else
-            {
-                TravelButtonMod.LogInfo($"TryPayAndTeleport: successfully teleported to {city.name}");
-                try
-                {
-                    VisitedTracker.MarkVisited(city.name);
-                }
-                catch { *//* ignore if tracker unavailable *//* }
-                CloseDialogAndStopRefresh();
-            }
-        }
-        catch (Exception ex)
-        {
-            TravelButtonMod.LogError("TryPayAndTeleport exception: " + ex);
-        }
-    }*/
+    /*   // Older implementation preserved as comment for reference...
+        ... (omitted) ...
+    */
 
     private void CloseDialogAndStopRefresh()
     {
@@ -2006,7 +1914,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
 
                 // Fields
-                foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase))
+                foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     var name = fi.Name.ToLower();
                     if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
@@ -2024,7 +1932,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
 
                 // Properties (generic scan)
-                foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.IgnoreCase))
+                foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     var name = pi.Name.ToLower();
                     if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency")) && pi.CanRead)
@@ -2042,7 +1950,6 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            // Not found
             TravelButtonMod.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
             return -1;
         }
@@ -2572,401 +2479,5 @@ public class TravelButtonUI : MonoBehaviour
         {
             TravelButtonMod.LogInfo("ClickLogger: OnPointerExit on " + gameObject.name);
         }
-    }
-}
-public class TeleportHelpersBehaviour : MonoBehaviour
-{
-    // call: StartCoroutine(TeleportHelpersBehaviour.TeleportWhenReadyCoroutine(city));
-    // Example: var tbh = FindObjectOfType<TeleportHelpersBehaviour>(); tbh.StartCoroutine(tbh.TeleportWhenReady(city));
-
-    // Configurable timeouts
-    public float sceneLoadTimeout = 8.0f;
-    public float anchorWaitTimeout = 6.0f;
-    public float pollInterval = 0.25f;
-
-    private bool IsUiOrRectTransform(GameObject go)
-    {
-        if (go == null) return false;
-        // RectTransform is used by UI elements; reject them
-        if (go.GetComponent<RectTransform>() != null) return true;
-        // Also reject objects that have a Canvas component in their parents
-        if (go.GetComponentInParent<Canvas>() != null) return true;
-        // Reject objects whose layer is UI (optional: check layer name "UI")
-        try
-        {
-            int uiLayer = LayerMask.NameToLayer("UI");
-            if (uiLayer != -1 && go.layer == uiLayer) return true;
-        }
-        catch { }
-        return false;
-    }
-
-    // Helper: try to find an object at a position in a specific scene (best-effort).
-    private GameObject FindGameObjectAtPositionInScene(Vector3 pos, string expectedName, string sceneName)
-    {
-        try
-        {
-            var scene = SceneManager.GetSceneByName(sceneName);
-            if (!scene.IsValid() || !scene.isLoaded) return null;
-            var roots = scene.GetRootGameObjects();
-            foreach (var r in roots)
-            {
-                if (r == null) continue;
-                // breadth-first search under root
-                var tlist = r.GetComponentsInChildren<Transform>(true);
-                foreach (var t in tlist)
-                {
-                    if (t == null || t.gameObject == null) continue;
-                    if (IsUiOrRectTransform(t.gameObject)) continue;
-                    // name match + proximity check
-                    if (!string.IsNullOrEmpty(expectedName) && t.name.IndexOf(expectedName, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        // prefer exact/close name matches; ensure candidate isn't at (0,0,0)
-                        if (t.position.sqrMagnitude > 0.0001f) return t.gameObject;
-                    }
-                    // If no expected name, check position closeness (rare)
-                    if ((t.position - pos).sqrMagnitude < 0.01f) return t.gameObject;
-                }
-            }
-        }
-        catch { }
-        return null;
-    }
-
-    public static GameObject FindPlayerRoot()
-    {
-        try
-        {
-            // 1) Try known runtime player component types (Assembly-CSharp)
-            string[] typeNames = new string[]
-            {
-            "PlayerCharacter",
-            "PlayerEntity",
-            "LocalPlayer",
-            "PlayerController",
-            "Character",
-            "PC_Player"
-            };
-
-            foreach (var tn in typeNames)
-            {
-                try
-                {
-                    var t = Type.GetType(tn + ", Assembly-CSharp") ?? Type.GetType(tn);
-                    if (t == null) continue;
-                    var objs = UnityEngine.Object.FindObjectsOfType(t);
-                    if (objs != null && objs.Length > 0)
-                    {
-                        // return root of first found instance
-                        var comp = objs[0] as Component;
-                        if (comp != null) return comp.gameObject.transform.root.gameObject;
-                    }
-                }
-                catch { /* ignore type lookup errors */ }
-            }
-
-            // 2) Try player-tagged object
-            try
-            {
-                var byTag = GameObject.FindWithTag("Player");
-                if (byTag != null) return byTag.transform.root.gameObject;
-            }
-            catch { /* tag might not exist */ }
-
-            // 3) Heuristic by name prefix (common Outward naming)
-            try
-            {
-                // Search loaded scene root objects quickly via SceneManager
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    // nothing here; we'll use global find below
-                }
-
-                // Use active scene root objects first for efficiency
-                var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                if (activeScene.IsValid())
-                {
-                    var roots = activeScene.GetRootGameObjects();
-                    foreach (var r in roots)
-                    {
-                        if (r == null) continue;
-                        // look for typical player root names
-                        if (r.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase) ||
-                            r.name.IndexOf("Player", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            r.name.IndexOf("PC_", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            return r;
-                        }
-
-                        // deeper children
-                        var child = r.GetComponentsInChildren<Transform>(true)
-                                     .FirstOrDefault(t => t != null && (t.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase) ||
-                                                                       t.name.IndexOf("Player", StringComparison.OrdinalIgnoreCase) >= 0));
-                        if (child != null) return child.root.gameObject;
-                    }
-                }
-
-                // Global fallback: scan all Transforms (more expensive)
-                var allTransforms = Resources.FindObjectsOfTypeAll<Transform>();
-                var candidate = allTransforms.FirstOrDefault(t =>
-                    t != null &&
-                    (t.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase)
-                     || t.name.IndexOf("PlayerChar", StringComparison.OrdinalIgnoreCase) >= 0
-                     || t.name.IndexOf("Player", StringComparison.OrdinalIgnoreCase) >= 0));
-                if (candidate != null) return candidate.root.gameObject;
-            }
-            catch { /* ignore */ }
-
-            // 4) Fall back to Camera.main's root
-            try
-            {
-                if (Camera.main != null)
-                {
-                    return Camera.main.transform.root.gameObject;
-                }
-            }
-            catch { /* ignore */ }
-        }
-        catch { /* swallow */ }
-
-        return null;
-    }
-
-    // Entry coroutine: waits for scene/anchor then teleports.
-    // In TeleportHelpersBehaviour.TeleportWhenReady(...) replace existing scene load/wait logic with this:
-
-    // Attempt to ensure the target scene is loaded and active before teleporting.
-    // If city.sceneName is set, we try Additive load first, set it active, wait a few frames for in-scene anchors,
-    // move the player GameObject into that scene, then resolve the anchor and teleport.
-    // If Additive doesn't produce a usable result, optionally fall back to LoadSceneMode.Single.
-    public IEnumerator EnsureSceneAndTeleport(TravelButtonMod.City city, Vector3 coordsHint, bool haveCoordsHint, Action<bool> onComplete)
-    {
-        // Basic validation
-        if (city == null)
-        {
-            onComplete?.Invoke(false);
-            yield break;
-        }
-
-        // Re-entry guard
-        if (TravelButtonMod.TeleportInProgress)
-        {
-            TravelButtonMod.LogWarning("EnsureSceneAndTeleport: teleport already in progress, ignoring request.");
-            onComplete?.Invoke(false);
-            yield break;
-        }
-        TravelButtonMod.TeleportInProgress = true;
-
-        // Helper to set TeleportInProgress=false and invoke callback before exit
-        Action<bool> finish = success =>
-        {
-            try { onComplete?.Invoke(success); }
-            catch { }
-            TravelButtonMod.TeleportInProgress = false;
-        };
-
-        string targetSceneName = city.sceneName;
-        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: requested for city='{city.name}' scene='{targetSceneName}' haveCoordsHint={haveCoordsHint}");
-
-        // Local helper: perform teleport inside given scene (no yields here)
-        bool TeleportStepInScene(TravelButtonMod.City cityLocal, Scene sceneLocal, Vector3 coordsLocal, bool haveCoordsLocal, Action<bool> completionLocal)
-        {
-            // 1) try explicit anchor name first
-            if (!string.IsNullOrEmpty(cityLocal.targetGameObjectName))
-            {
-                TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: searching for anchor '{cityLocal.targetGameObjectName}' in scene '{sceneLocal.name}'");
-                var anchorGO = GameObject.Find(cityLocal.targetGameObjectName);
-                if (anchorGO != null && anchorGO.scene.IsValid() && anchorGO.scene.name == sceneLocal.name)
-                {
-                    if (anchorGO.GetComponent<RectTransform>() != null)
-                    {
-                        TravelButtonMod.LogInfo("EnsureSceneAndTeleport: found anchor but it is UI (RectTransform) - ignoring.");
-                    }
-                    else
-                    {
-                        Vector3 anchorPos = anchorGO.transform.position;
-                        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: anchor found '{cityLocal.targetGameObjectName}' at {anchorPos}");
-                        Vector3 grounded = TeleportHelpers.GetGroundedPosition(anchorPos);
-                        grounded = TeleportHelpers.EnsureClearance(grounded);
-                        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: performing teleport to grounded anchor {grounded}");
-                        bool result = TeleportHelpers.AttemptTeleportToPositionSafe(grounded);
-                        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: teleport result = {result}");
-                        completionLocal?.Invoke(result);
-                        return result;
-                    }
-                }
-                else
-                {
-                    TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: anchor '{cityLocal.targetGameObjectName}' not found in scene '{sceneLocal.name}'.");
-                }
-            }
-
-            // 2) fallback to coords hint if available
-            if (haveCoordsLocal)
-            {
-                TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: using coords hint {coordsLocal} for city '{cityLocal.name}'");
-                Vector3 grounded = TeleportHelpers.GetGroundedPosition(coordsLocal);
-                grounded = TeleportHelpers.EnsureClearance(grounded);
-                TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: performing teleport to grounded coords {grounded}");
-                bool result = TeleportHelpers.AttemptTeleportToPositionSafe(grounded);
-                TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: teleport result = {result}");
-                completionLocal?.Invoke(result);
-                return result;
-            }
-
-            TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: no anchor and no coords for city '{cityLocal.name}' in scene '{sceneLocal.name}'.");
-            completionLocal?.Invoke(false);
-            return false;
-        }
-
-        // If no scene name provided, teleport within current active scene
-        if (string.IsNullOrEmpty(targetSceneName))
-        {
-            TravelButtonMod.LogInfo("EnsureSceneAndTeleport: no sceneName provided; will attempt teleport inside active scene.");
-            // small frame wait to let scene stabilize
-            for (int i = 0; i < 3; i++) yield return null;
-
-            var active = SceneManager.GetActiveScene();
-            bool ok = TeleportStepInScene(city, active, coordsHint, haveCoordsHint, finish);
-            // ensure TeleportInProgress reset
-            if (!TravelButtonMod.TeleportInProgress) yield break; // unlikely, but safe
-            finish(ok);
-            yield break;
-        }
-
-        // 1) Try additive load (if not already loaded)
-        var scene = SceneManager.GetSceneByName(targetSceneName);
-        if (!scene.IsValid() || !scene.isLoaded)
-        {
-            TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: scene '{targetSceneName}' not loaded - starting additive load.");
-            var op = SceneManager.LoadSceneAsync(targetSceneName, LoadSceneMode.Additive);
-            if (op == null)
-            {
-                TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: LoadSceneAsync returned null for '{targetSceneName}'.");
-            }
-            else
-            {
-                float start = Time.time;
-                float timeout = 25f;
-                while (!op.isDone && Time.time - start < timeout) yield return null;
-                if (!op.isDone)
-                {
-                    TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: additive load of '{targetSceneName}' timed out after {timeout}s.");
-                }
-                else
-                {
-                    TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: additive load of '{targetSceneName}' completed.");
-                }
-            }
-        }
-        else
-        {
-            TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: target scene '{targetSceneName}' already loaded.");
-        }
-
-        // Refresh scene reference
-        scene = SceneManager.GetSceneByName(targetSceneName);
-
-        if (scene.IsValid() && scene.isLoaded)
-        {
-            // Set active scene
-            SceneManager.SetActiveScene(scene);
-            TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: SetActiveScene('{targetSceneName}') attempted.");
-
-            // Wait a few frames for scene initialization
-            for (int i = 0; i < 6; i++) yield return null;
-
-            // Re-resolve player and move correct player into scene
-            var playerRootCandidate = TeleportHelpers.FindPlayerRoot();
-            if (playerRootCandidate == null)
-            {
-                TravelButtonMod.LogWarning("EnsureSceneAndTeleport: player root not found when moving to scene.");
-                finish(false);
-                yield break;
-            }
-
-            var actualPlayerGO = TeleportHelpers.ResolveActualPlayerGameObject(playerRootCandidate) ?? playerRootCandidate;
-
-            if (actualPlayerGO == null)
-            {
-                TravelButtonMod.LogWarning("EnsureSceneAndTeleport: actualPlayerGO is null - cannot move to scene.");
-                finish(false);
-                yield break;
-            }
-
-            var targetSceneObj = SceneManager.GetSceneByName(targetSceneName);
-            if (!targetSceneObj.IsValid() || !targetSceneObj.isLoaded)
-            {
-                TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: target scene '{targetSceneName}' is not valid/loaded. Skipping MoveGameObjectToScene.");
-            }
-            else
-            {
-                try
-                {
-                    SceneManager.MoveGameObjectToScene(actualPlayerGO, targetSceneObj);
-                    TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: moved player object '{actualPlayerGO.name}' into scene '{targetSceneObj.name}'.");
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonMod.LogWarning("EnsureSceneAndTeleport: MoveGameObjectToScene failed: " + ex.Message);
-                }
-            }
-
-            // After moving player into the scene, perform teleport step (anchor or coords)
-            bool teleResult = TeleportStepInScene(city, scene, coordsHint, haveCoordsHint, finish);
-            finish(teleResult);
-            yield break;
-        }
-
-        // Additive didn't load properly -> fallback single-load
-        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: falling back to single-load for scene '{targetSceneName}'.");
-        var opSingle = SceneManager.LoadSceneAsync(targetSceneName, LoadSceneMode.Single);
-        if (opSingle == null)
-        {
-            TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: Single LoadSceneAsync returned null for '{targetSceneName}'");
-            finish(false);
-            yield break;
-        }
-
-        float sStart = Time.time;
-        float sTimeout = 40f;
-        while (!opSingle.isDone && Time.time - sStart < sTimeout) yield return null;
-        if (!opSingle.isDone)
-        {
-            TravelButtonMod.LogWarning($"EnsureSceneAndTeleport: single load of '{targetSceneName}' timed out after {sTimeout}s.");
-            finish(false);
-            yield break;
-        }
-
-        TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: single load of '{targetSceneName}' completed. Waiting a frame for initialization.");
-        yield return null;
-
-        // re-acquire scene and player after single load
-        var loadedSceneAfterSingle = SceneManager.GetActiveScene();
-        for (int i = 0; i < 4; i++) yield return null;
-
-        var playerRootAfterSingle = TeleportHelpers.FindPlayerRoot();
-        if (playerRootAfterSingle == null)
-        {
-            TravelButtonMod.LogWarning("EnsureSceneAndTeleport: player not found after single-load.");
-            finish(false);
-            yield break;
-        }
-
-        var actualPlayerAfterSingle = TeleportHelpers.ResolveActualPlayerGameObject(playerRootAfterSingle) ?? playerRootAfterSingle;
-        try
-        {
-            SceneManager.MoveGameObjectToScene(actualPlayerAfterSingle, loadedSceneAfterSingle);
-            TravelButtonMod.LogInfo($"EnsureSceneAndTeleport: moved player root '{actualPlayerAfterSingle.name}' into scene '{loadedSceneAfterSingle.name}' (single-load).");
-        }
-        catch (Exception ex)
-        {
-            TravelButtonMod.LogWarning("EnsureSceneAndTeleport: MoveGameObjectToScene (single-load) failed: " + ex.Message);
-        }
-
-        // Teleport step for single-load path
-        bool teleSingle = TeleportStepInScene(city, loadedSceneAfterSingle, coordsHint, haveCoordsHint, finish);
-        finish(teleSingle);
-        yield break;
     }
 }

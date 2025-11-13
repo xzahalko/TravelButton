@@ -257,15 +257,8 @@ public class TravelDialog : MonoBehaviour
             }
         }
 
-        // Check player's inventory/currency using reflection-based helper
+        // Check player's inventory/currency using reflection-based helper (do not deduct yet)
         if (!PlayerHasCurrency(cfg.currencyItem, price))
-        {
-            ShowMessage("not enough resources to travel");
-            return;
-        }
-
-        // Attempt to remove currency (deduct from inventory)
-        if (!RemovePlayerCurrency(cfg.currencyItem, price))
         {
             ShowMessage("not enough resources to travel");
             return;
@@ -295,21 +288,31 @@ public class TravelDialog : MonoBehaviour
             return;
         }
 
-        // Teleport
+        // Teleport first
         bool teleported = TeleportManager.TeleportPlayerTo(new float[] { targetPos.x, targetPos.y, targetPos.z });
         if (teleported)
         {
+            // Mark visited after successful teleport
             VisitedTracker.MarkVisited(cityName);
-            ShowMessage($"Teleported to {cityName}");
+
+            // Now remove currency from player inventory (post-teleport charge)
+            bool charged = RemovePlayerCurrency(cfg.currencyItem, price);
+            if (!charged)
+            {
+                Debug.LogWarning($"[TravelButton] Teleported to {cityName} but failed to deduct {price} {cfg.currencyItem} from player inventory.");
+                ShowMessage($"Teleported to {cityName} (failed to charge {price} {cfg.currencyItem})");
+            }
+            else
+            {
+                ShowMessage($"Teleported to {cityName}");
+            }
+
             // close dialog after short delay to allow message to show
             StartCoroutine(CloseAfterDelay(0.2f));
         }
         else
         {
-            // Attempt refund if teleport failed
-            bool refunded = AttemptRefundCurrency(cfg.currencyItem, price);
-            if (!refunded)
-                Debug.LogWarning($"[TravelButton] Refund failed for {price} {cfg.currencyItem} after teleport failure.");
+            // Teleport failed; do NOT deduct anything
             ShowMessage("Teleport failed");
         }
     }
