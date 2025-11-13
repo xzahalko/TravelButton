@@ -133,16 +133,16 @@ public static class TeleportHelpers
             var initialRoot = FindPlayerRoot();
             if (initialRoot == null)
             {
-                TravelButtonMod.LogWarning("AttemptTeleportToPositionSafe: player root not found.");
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: player root not found.");
                 return false;
             }
 
             // Resolve to the actual player GameObject (PlayerChar)
             var playerGO = ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
-            TravelButtonMod.LogInfo($"AttemptTeleportToPositionSafe: chosen player object = '{playerGO.name}' (root id={playerGO.GetInstanceID()})");
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: chosen player object = '{playerGO.name}' (root id={playerGO.GetInstanceID()})");
 
             var before = playerGO.transform.position;
-            TravelButtonMod.LogInfo($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
 
             // Ensure we clear any physics velocity if present
             try
@@ -163,17 +163,17 @@ public static class TeleportHelpers
             }
             catch (Exception exMove)
             {
-                TravelButtonMod.LogWarning("AttemptTeleportToPositionSafe: exception while setting position: " + exMove);
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception while setting position: " + exMove);
                 return false;
             }
 
             var after = playerGO.transform.position;
-            TravelButtonMod.LogInfo($"AttemptTeleportToPositionSafe: AFTER pos = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: AFTER pos = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
             return true;
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("AttemptTeleportToPositionSafe: exception: " + ex);
+            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception: " + ex);
             return false;
         }
     }

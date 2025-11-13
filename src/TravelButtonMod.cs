@@ -33,429 +33,172 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private Dictionary<string, ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ConfigEntry<int>> bex_cityPrice = new Dictionary<string, ConfigEntry<int>>(StringComparer.OrdinalIgnoreCase);
 
-    // Replace or update your existing Awake() method with this. Only the Awake method is shown.
-    private void Awake()
-    {
-        // add this at top of Awake() or Start() in TravelButtonUI, TeleportHelpersBehaviour and CityDiscovery
-        try
-        {
-            string p = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_component_trace.txt");
-            System.IO.File.AppendAllText(p, $"[{DateTime.UtcNow:O}] TravelButtonUI.Awake/Start reached in {nameof(TravelButtonUI)}\n");
-        }
-        catch { }
+    public static BepInEx.Logging.ManualLogSource LogStatic = null;
 
-        // Ensure EarlyExceptionLogger runs as early as possible
-        var _ = typeof(EarlyExceptionLogger);
-
-        try
-        {
-            string dbgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_startup_debug.txt");
-            File.AppendAllText(dbgPath, $"[TravelButton] Awake() start: {DateTime.UtcNow:O}\n");
-        }
-        catch { /* do not throw from debug logging */ }
-
-        try
-        {
-            try
-            {
-                TravelButtonMod.LogInfo("TravelButton: startup - loaded cities:");
-                if (TravelButtonMod.Cities == null) TravelButtonMod.LogInfo(" - Cities == null");
-                else
-                {
-                    foreach (var c in TravelButtonMod.Cities)
-                    {
-                        try
-                        {
-                            TravelButtonMod.LogInfo($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
-                        }
-                        catch { }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogWarning("Startup city log failed: " + ex);
-            }
-
-            try
-            {
-                TravelButtonMod.Logger = base.Logger;
-                TravelButtonMod.LogInfo("TravelButtonPlugin.Awake: plugin initializing.");
-
-                // Start the init coroutine wrapped in a safe wrapper that logs exceptions to disk
-                // This replaces StartCoroutine(TryInitConfigCoroutine());
-                try
-                {
-                    string dbgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_startup_debug.txt");
-                    File.AppendAllText(dbgPath, $"[TravelButton] before StartCoroutine TryInitConfigCoroutine: {DateTime.UtcNow:O}\n");
-                    StartCoroutine(SafeCoroutineWrapper(TryInitConfigCoroutine(), "TryInitConfigCoroutine"));
-                    File.AppendAllText(dbgPath, $"[TravelButton] after StartCoroutine TryInitConfigCoroutine: {DateTime.UtcNow:O}\n");
-                }
-                catch (Exception exStart)
-                {
-                    // Very defensive: log to desktop in case Unity logging isn't available
-                    try
-                    {
-                        string errPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_startup_debug.txt");
-                        File.AppendAllText(errPath, $"[TravelButton] StartCoroutine exception: {exStart}\n");
-                    }
-                    catch { }
-                    TravelButtonMod.LogError("Failed to start TryInitConfigCoroutine: " + exStart);
-                }
-            }
-            catch (Exception ex)
-            {
-                TravelButtonMod.LogError("TravelButtonPlugin.Awake exception: " + ex);
-            }
-        }
-        catch (Exception exAll)
-        {
-            try
-            {
-                string dbgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_startup_debug.txt");
-                File.AppendAllText(dbgPath, $"[TravelButton] UNHANDLED EXCEPTION in Awake(): {DateTime.UtcNow:O}\n{exAll}\n");
-            }
-            catch { }
-            // swallow to avoid further crashes while debugging
-        }
-    }
-
-    /// <summary>
-    /// Runs an inner IEnumerator and catches/logs any exception thrown while iterating it.
-    /// Write exception text to Desktop so we can inspect crashes that happen inside coroutines.
-    /// Usage: StartCoroutine(SafeCoroutineWrapper(TryInitConfigCoroutine(), "TryInitConfigCoroutine"));
-    /// </summary>
-    private IEnumerator SafeCoroutineWrapper(IEnumerator inner, string name)
-    {
-        if (inner == null) yield break;
-
-        // Try to advance the inner coroutine, catching exceptions on each MoveNext
-        while (true)
-        {
-            bool hasNext = false;
-            try
-            {
-                hasNext = inner.MoveNext();
-            }
-            catch (Exception ex)
-            {
-                // Log to BepInEx logger if available, and to Desktop crash log
-                try
-                {
-                    TravelButtonMod.LogError($"SafeCoroutineWrapper[{name}]: exception during MoveNext: {ex}");
-                }
-                catch { }
-
-                try
-                {
-                    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_coroutine_exception.txt");
-                    File.AppendAllText(path, $"[{DateTime.UtcNow:O}] SafeCoroutineWrapper[{name}] exception:\n{ex}\n\n");
-                }
-                catch { }
-
-                // Stop running the inner coroutine
-                yield break;
-            }
-
-            if (!hasNext)
-                yield break;
-
-            // yield the current inner value (could be WaitForSeconds, other IEnumerator, etc.)
-            object yielded = null;
-            try
-            {
-                yielded = inner.Current;
-            }
-            catch (Exception ex)
-            {
-                try
-                {
-                    TravelButtonMod.LogError($"SafeCoroutineWrapper[{name}]: exception getting Current: {ex}");
-                }
-                catch { }
-
-                try
-                {
-                    string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_coroutine_exception.txt");
-                    File.AppendAllText(path, $"[{DateTime.UtcNow:O}] SafeCoroutineWrapper[{name}] exception getting Current:\n{ex}\n\n");
-                }
-                catch { }
-
-                yield break;
-            }
-
-            // Pass through yielded value to Unity
-            yield return yielded;
-        }
-    }
-
-    private bool TryInvokeMethodByName(string methodName)
-    {
-        try
-        {
-            // 1) try instance method on this
-            var t = this.GetType();
-            var mi = t.GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (mi != null)
-            {
-                mi.Invoke(this, null);
-                return true;
-            }
-
-            // 2) try static method on TravelButtonMod type (if exists)
-            var modType = typeof(TravelButtonMod);
-            if (modType != null)
-            {
-                var smi = modType.GetMethod(methodName, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                if (smi != null)
-                {
-                    smi.Invoke(null, null);
-                    return true;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            try { TravelButtonMod.LogError($"TryInvokeMethodByName('{methodName}') threw: {ex}"); } catch { }
-        }
-
-        return false;
-    }
-
-    private int? TryGetCitiesCount()
-    {
-        try
-        {
-            var modType = typeof(TravelButtonMod);
-            if (modType != null)
-            {
-                var field = modType.GetField("Cities", BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                if (field != null)
-                {
-                    var val = field.GetValue(null) as System.Collections.ICollection;
-                    if (val != null) return val.Count;
-                }
-
-                var prop = modType.GetProperty("Cities", BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                if (prop != null)
-                {
-                    var val = prop.GetValue(null, null) as System.Collections.ICollection;
-                    if (val != null) return val.Count;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            try { TravelButtonMod.LogWarning("TryGetCitiesCount reflection failed: " + ex); } catch { }
-        }
-        return null;
-    }
-
-    // Diagnostic, step-driven init coroutine — place inside the TravelButtonMod class.
-    private IEnumerator TryInitConfigCoroutine()
-    {
-        const int DEBUG_INIT_STEP = 1; // set 1..8 to run up to that step. Start with 1, then increase until crash reproduces.
-        string dbgPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "TravelButton_startup_debug.txt");
-
-        void AppendDbg(string s)
-        {
-            try { File.AppendAllText(dbgPath, s + "\n"); } catch { }
-        }
-
-        AppendDbg($"[TryInitConfigCoroutine] start (DEBUG_INIT_STEP={DEBUG_INIT_STEP}): {DateTime.UtcNow:O}");
-        yield return null;
-        yield return null;
-        AppendDbg("[TryInitConfigCoroutine] after two frames");
-
-        // Step 1: ConfigManager.Load()
-        if (DEBUG_INIT_STEP >= 1)
-        {
-            AppendDbg("[STEP 1] starting ConfigManager.Load()");
-            try
-            {
-                var cfgType = typeof(ConfigManager);
-                var loadMi = cfgType?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                if (loadMi != null) loadMi.Invoke(null, null);
-                AppendDbg("[STEP 1] ConfigManager.Load() finished");
-            }
-            catch (Exception ex)
-            {
-                AppendDbg("[STEP 1] EXCEPTION: " + ex);
-                yield break;
-            }
-        }
-        else { AppendDbg("[STEP 1] skipped"); yield break; }
-
-        // Step 2: LoadCities
-        if (DEBUG_INIT_STEP >= 2)
-        {
-            AppendDbg("[STEP 2] starting LoadCities()");
-            try
-            {
-                bool invoked = false;
-                try
-                {
-                    var mi = this.GetType().GetMethod("LoadCities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (mi != null) { mi.Invoke(this, null); invoked = true; }
-                    else
-                    {
-                        var modType = typeof(TravelButtonMod);
-                        var smi = modType.GetMethod("LoadCities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (smi != null) { smi.Invoke(null, null); invoked = true; }
-                    }
-                }
-                catch (Exception exInner)
-                {
-                    AppendDbg("[STEP 2] EXCEPTION invoking LoadCities: " + exInner);
-                    throw;
-                }
-
-                var cnt = (int?)null;
-                try
-                {
-                    var modType = typeof(TravelButtonMod);
-                    var fld = modType.GetField("Cities", BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                    if (fld != null)
-                    {
-                        var col = fld.GetValue(null) as System.Collections.ICollection;
-                        if (col != null) cnt = col.Count;
-                    }
-                }
-                catch { }
-
-                AppendDbg("[STEP 2] LoadCities() invoked=" + invoked + " CitiesCount=" + (cnt.HasValue ? cnt.Value.ToString() : "unknown"));
-            }
-            catch (Exception ex)
-            {
-                AppendDbg("[STEP 2] EXCEPTION: " + ex);
-                yield break;
-            }
-        }
-        else { AppendDbg("[STEP 2] skipped"); yield break; }
-
-        // Step 3: TravelButtonVisitedManager.Initialize()
-        if (DEBUG_INIT_STEP >= 3)
-        {
-            AppendDbg("[STEP 3] calling TravelButtonVisitedManager.Initialize()");
-            try { TravelButtonVisitedManager.Initialize(); AppendDbg("[STEP 3] succeeded"); }
-            catch (Exception ex) { AppendDbg("[STEP 3] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 3] skipped"); yield break; }
-
-        // Step 4: MergeVisitedFlagsIntoCities
-        if (DEBUG_INIT_STEP >= 4)
-        {
-            AppendDbg("[STEP 4] calling TravelButtonVisitedManager.MergeVisitedFlagsIntoCities()");
-            try { TravelButtonVisitedManager.MergeVisitedFlagsIntoCities(); AppendDbg("[STEP 4] succeeded"); }
-            catch (Exception ex) { AppendDbg("[STEP 4] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 4] skipped"); yield break; }
-
-        // Step 5: CreateCityConfigEntries
-        if (DEBUG_INIT_STEP >= 5)
-        {
-            AppendDbg("[STEP 5] calling CreateCityConfigEntries()");
-            try
-            {
-                var mi = this.GetType().GetMethod("CreateCityConfigEntries", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (mi != null) mi.Invoke(this, null);
-                else
-                {
-                    var modType = typeof(TravelButtonMod);
-                    var smi = modType.GetMethod("CreateCityConfigEntries", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (smi != null) smi.Invoke(null, null);
-                    else AppendDbg("[STEP 5] method CreateCityConfigEntries not found (no-op)");
-                }
-                AppendDbg("[STEP 5] finished");
-            }
-            catch (Exception ex) { AppendDbg("[STEP 5] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 5] skipped"); yield break; }
-
-        // Step 6: Ensure TravelButtonUI exists
-        if (DEBUG_INIT_STEP >= 6)
-        {
-            AppendDbg("[STEP 6] ensuring TravelButtonUI exists");
-            try
-            {
-                var existing = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
-                if (existing != null) AppendDbg("[STEP 6] TravelButtonUI already present");
-                else
-                {
-                    var go = new GameObject("TravelButtonUI");
-                    go.AddComponent<TravelButtonUI>();
-                    UnityEngine.Object.DontDestroyOnLoad(go);
-                    AppendDbg("[STEP 6] TravelButtonUI created");
-                }
-            }
-            catch (Exception ex) { AppendDbg("[STEP 6] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 6] skipped"); yield break; }
-
-        // Step 7: Ensure CityDiscovery exists
-        if (DEBUG_INIT_STEP >= 7)
-        {
-            AppendDbg("[STEP 7] ensuring CityDiscovery exists");
-            try
-            {
-                var existingDiscovery = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
-                if (existingDiscovery != null) AppendDbg("[STEP 7] CityDiscovery already present");
-                else
-                {
-                    var discoveryGO = new GameObject("CityDiscovery");
-                    discoveryGO.AddComponent<CityDiscovery>();
-                    UnityEngine.Object.DontDestroyOnLoad(discoveryGO);
-                    AppendDbg("[STEP 7] CityDiscovery created");
-                }
-            }
-            catch (Exception ex) { AppendDbg("[STEP 7] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 7] skipped"); yield break; }
-
-        // Step 8: Finalize
-        if (DEBUG_INIT_STEP >= 8)
-        {
-            AppendDbg("[STEP 8] finalizing initialization");
-            try { TravelButtonMod.LogInfo("TryInitConfigCoroutine: initialization complete."); AppendDbg("[STEP 8] complete"); }
-            catch (Exception ex) { AppendDbg("[STEP 8] EXCEPTION: " + ex); yield break; }
-        }
-        else { AppendDbg("[STEP 8] skipped"); yield break; }
-
-        yield break;
-    }
-
-    // Exposed logger set by the plugin bootstrap. May be null early during domain load.
-    public static ManualLogSource Logger = null;
-
-    // When true enables developer-only debug helpers in the UI (hidden by default).
-    // NOTE: renamed from `Debug` to `DebugMode` to avoid colliding with UnityEngine.Debug type.
-    public static bool DebugMode = false;
-
+    // When true enables developer-only debug helpers (avoid naming it 'Debug' to prevent collision)
     // ---- Logging helpers ----
+    // Use LogStatic when available, otherwise fallback to UnityEngine.Debug to avoid recursion/stack-overflow.
     public static void LogInfo(string message)
     {
-        if (Logger != null) Logger.LogInfo(message);
-        else UnityEngine.Debug.Log($"[TravelButton][INFO] {message}");
+        try
+        {
+            if (LogStatic != null) { LogStatic.LogInfo(message); return; }
+        }
+        catch { /* swallow to avoid logging causing crash */ }
+
+        try { UnityEngine.Debug.Log($"[TravelButton][INFO] {message}"); } catch { }
     }
 
     public static void LogWarning(string message)
     {
-        if (Logger != null) Logger.LogWarning(message);
-        else UnityEngine.Debug.LogWarning($"[TravelButton][WARN] {message}");
+        try
+        {
+            if (LogStatic != null) { LogStatic.LogWarning(message); return; }
+        }
+        catch { /* swallow */ }
+
+        try { UnityEngine.Debug.LogWarning($"[TravelButton][WARN] {message}"); } catch { }
     }
 
     public static void LogError(string message)
     {
-        if (Logger != null) Logger.LogError(message);
-        else UnityEngine.Debug.LogError($"[TravelButton][ERROR] {message}");
+        try
+        {
+            if (LogStatic != null) { LogStatic.LogError(message); return; }
+        }
+        catch { /* swallow */ }
+
+        try { UnityEngine.Debug.LogError($"[TravelButton][ERROR] {message}"); } catch { }
     }
 
     public static void LogDebug(string message)
     {
-        if (Logger != null) Logger.LogDebug(message);
-        else UnityEngine.Debug.Log($"[TravelButton][DEBUG] {message}");
+        try
+        {
+            if (LogStatic != null) { LogStatic.LogDebug(message); return; }
+        }
+        catch { /* swallow */ }
+
+        try { UnityEngine.Debug.Log($"[TravelButton][DEBUG] {message}"); } catch { }
     }
 
+
+
+    private void Awake()
+    {
+
+        try
+        {
+            TravelButtonPlugin.LogInfo("TravelButton: startup - loaded cities:");
+            if (TravelButtonMod.Cities == null) TravelButtonPlugin.LogInfo(" - Cities == null");
+            else
+            {
+                foreach (var c in TravelButtonMod.Cities)
+                {
+                    try
+                    {
+                        TravelButtonPlugin.LogInfo($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("Startup city log failed: " + ex);
+        }
+
+        try
+        {
+            //TravelButtonPlugin.Logger = base.Logger;
+            TravelButtonPlugin.LogInfo("TravelButtonPlugin.Awake: plugin initializing.");
+
+            // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
+            StartCoroutine(TryInitConfigCoroutine());
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake exception: " + ex);
+        }
+    }
+
+    private IEnumerator TryInitConfigCoroutine()
+    {
+        int maxAttempts = 10;
+        int attempt = 0;
+        bool initialized = false;
+
+        while (attempt < maxAttempts && !initialized)
+        {
+            attempt++;
+            TravelButtonPlugin.LogInfo($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
+            try
+            {
+                initialized = TravelButtonMod.InitFromConfig();
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: InitFromConfig threw: " + ex.Message);
+                initialized = false;
+            }
+
+            if (!initialized)
+                yield return new WaitForSeconds(1.0f);
+        }
+
+        if (!initialized)
+        {
+            TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
+            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            {
+                // Try local Default() again as a deterministic fallback
+                try
+                {
+                    var localCfg = TravelButtonMod.GetLocalType("ConfigManager");
+                    if (localCfg != null)
+                    {
+                        var def = localCfg.GetMethod("Default", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+                        if (def != null)
+                        {
+                            TravelButtonMod.MapConfigInstanceToLocal(def);
+                            TravelButtonPlugin.LogInfo("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
+                            initialized = true;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: fallback Default() failed: " + ex.Message);
+                }
+            }
+        }
+
+        // IMPORTANT: create BepInEx Config bindings so Configuration Manager (and BepInEx GUI) can show/edit settings.
+        try
+        {
+            EnsureBepInExConfigBindings();
+            TravelButtonPlugin.LogInfo("BepInEx config bindings created.");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("Failed to create BepInEx config bindings: " + ex);
+        }
+
+        // Bind any cities that were added after initial bind (defensive)
+        try
+        {
+            BindCityConfigsForNewCities();
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("BindCityConfigsForNewCities failed: " + ex);
+        }
+
+        // Finally ensure UI exists so the player can interact
+        EnsureTravelButtonUI();
+    }
+
+    // Exposed logger set by the plugin bootstrap. May be null early during domain load.
     private void EnsureTravelButtonUI()
     {
         try
@@ -463,18 +206,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
             var existing = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
             if (existing != null)
             {
-                TravelButtonMod.LogInfo("EnsureTravelButtonUI: TravelButtonUI already present in scene.");
+                TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI already present in scene.");
                 return;
             }
 
             var go = new GameObject("TravelButtonUI_Bootstrap");
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<TravelButtonUI>();
-            TravelButtonMod.LogInfo("EnsureTravelButtonUI: TravelButtonUI component created and DontDestroyOnLoad applied.");
+            TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI component created and DontDestroyOnLoad applied.");
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogError("EnsureTravelButtonUI failed: " + ex);
+            TravelButtonPlugin.LogError("EnsureTravelButtonUI failed: " + ex);
         }
     }
 
@@ -501,12 +244,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 TravelButtonMod.cfgEnableMod.Value = bex_enableMod.Value;
                 TravelButtonMod.PersistCitiesToConfig();
-                TravelButtonMod.LogInfo($"BepInEx config changed: EnableMod = {bex_enableMod.Value}");
+                TravelButtonPlugin.LogInfo($"BepInEx config changed: EnableMod = {bex_enableMod.Value}");
             };
             bex_globalPrice.SettingChanged += (s, e) =>
             {
                 TravelButtonMod.cfgTravelCost.Value = bex_globalPrice.Value;
-                TravelButtonMod.LogInfo($"BepInEx config changed: GlobalTravelPrice = {bex_globalPrice.Value}");
+                TravelButtonPlugin.LogInfo($"BepInEx config changed: GlobalTravelPrice = {bex_globalPrice.Value}");
             };
             bex_currencyItem.SettingChanged += (s, e) =>
             {
@@ -536,20 +279,20 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 enabledKey.SettingChanged += (s, e) =>
                 {
                     city.enabled = enabledKey.Value;
-                    TravelButtonMod.LogInfo($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
+                    TravelButtonPlugin.LogInfo($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
                 };
                 priceKey.SettingChanged += (s, e) =>
                 {
                     city.price = priceKey.Value;
-                    TravelButtonMod.LogInfo($"Config changed: {city.name}.Price = {priceKey.Value}");
+                    TravelButtonPlugin.LogInfo($"Config changed: {city.name}.Price = {priceKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
                 };
             }
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("EnsureBepInExConfigBindings failed: " + ex);
+            TravelButtonPlugin.LogWarning("EnsureBepInExConfigBindings failed: " + ex);
         }
     }
 
@@ -589,7 +332,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("BindCityConfigsForNewCities failed: " + ex);
+            TravelButtonPlugin.LogWarning("BindCityConfigsForNewCities failed: " + ex);
         }
     }
 
@@ -618,21 +361,21 @@ public static class TravelButtonMod
         try
         {
             int sceneCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
-            TravelButtonMod.LogInfo($"LogLoadedScenesAndRootObjects: {sceneCount} loaded scene(s).");
+            TravelButtonPlugin.LogInfo($"LogLoadedScenesAndRootObjects: {sceneCount} loaded scene(s).");
             for (int i = 0; i < sceneCount; i++)
             {
                 var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
                 if (!scene.IsValid()) continue;
-                TravelButtonMod.LogInfo($" Scene #{i}: name='{scene.name}', isLoaded={scene.isLoaded}, isDirty={scene.isDirty}");
+                TravelButtonPlugin.LogInfo($" Scene #{i}: name='{scene.name}', isLoaded={scene.isLoaded}, isDirty={scene.isDirty}");
                 var roots = scene.GetRootGameObjects();
                 foreach (var r in roots)
                 {
                     if (r == null) continue;
-                    TravelButtonMod.LogInfo($"  root: '{r.name}' (children count approx: {r.transform.childCount})");
+                    TravelButtonPlugin.LogInfo($"  root: '{r.name}' (children count approx: {r.transform.childCount})");
                 }
             }
         }
-        catch (Exception ex) { TravelButtonMod.LogWarning("LogLoadedScenesAndRootObjects exception: " + ex.Message); }
+        catch (Exception ex) { TravelButtonPlugin.LogWarning("LogLoadedScenesAndRootObjects exception: " + ex.Message); }
     }
 
     public static void LogCityAnchorsFromLoadedScenes()
@@ -641,11 +384,11 @@ public static class TravelButtonMod
         {
             if (Cities == null || Cities.Count == 0)
             {
-                LogWarning("LogCityAnchorsFromLoadedScenes: no cities available.");
+                TravelButtonPlugin.LogWarning("LogCityAnchorsFromLoadedScenes: no cities available.");
                 return;
             }
 
-            LogInfo($"LogCityAnchorsFromLoadedScenes: scanning {UnityEngine.SceneManagement.SceneManager.sceneCount} loaded scene(s) for city anchors...");
+            TravelButtonPlugin.LogInfo($"LogCityAnchorsFromLoadedScenes: scanning {UnityEngine.SceneManagement.SceneManager.sceneCount} loaded scene(s) for city anchors...");
 
             // For each loaded scene, scan root objects and children once and build a lookup of names -> (scene, transform)
             var lookup = new Dictionary<string, List<(string sceneName, Transform t)>>(StringComparer.OrdinalIgnoreCase);
@@ -683,7 +426,7 @@ public static class TravelButtonMod
                     string cname = city.name ?? "(null)";
                     string target = city.targetGameObjectName ?? "";
 
-                    LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}");
+                    TravelButtonPlugin.LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}");
 
                     bool foundAny = false;
 
@@ -694,7 +437,7 @@ public static class TravelButtonMod
                             foreach (var (sceneName, tr) in exacts)
                             {
                                 var pos = tr.position;
-                                LogInfo($"CityScan: FOUND exact '{target}' in scene '{sceneName}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{GetFullPath(tr)}'");
+                                TravelButtonPlugin.LogInfo($"CityScan: FOUND exact '{target}' in scene '{sceneName}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{GetFullPath(tr)}'");
                                 foundAny = true;
                             }
                         }
@@ -706,7 +449,7 @@ public static class TravelButtonMod
                             {
                                 var s = go.scene.IsValid() ? go.scene.name : "(unknown)";
                                 var p = go.transform.position;
-                                LogInfo($"CityScan: FOUND active exact '{target}' in scene '{s}' at ({p.x:F3}, {p.y:F3}, {p.z:F3})");
+                                TravelButtonPlugin.LogInfo($"CityScan: FOUND active exact '{target}' in scene '{s}' at ({p.x:F3}, {p.y:F3}, {p.z:F3})");
                                 foundAny = true;
                             }
                         }
@@ -750,25 +493,25 @@ public static class TravelButtonMod
                         var pos = m.tr.position;
                         string sceneN = m.scene ?? "(unknown)";
                         string path = GetFullPath(m.tr);
-                        LogInfo($"CityScan: SUBSTRING match '{m.tr.name}' in scene '{sceneN}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{path}'");
+                        TravelButtonPlugin.LogInfo($"CityScan: SUBSTRING match '{m.tr.name}' in scene '{sceneN}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{path}'");
                         reportedCount++;
                         if (reportedCount >= 20) break;
                     }
 
                     if (!foundAny && reportedCount == 0)
-                        LogInfo($"CityScan: no matches found in loaded scenes for city '{cname}'. Consider loading the map or using in-game travel to that map, then run this again.");
+                        TravelButtonPlugin.LogInfo($"CityScan: no matches found in loaded scenes for city '{cname}'. Consider loading the map or using in-game travel to that map, then run this again.");
                 }
                 catch (Exception exCity)
                 {
-                    LogWarning("CityScan: error scanning city: " + exCity.Message);
+                    TravelButtonPlugin.LogWarning("CityScan: error scanning city: " + exCity.Message);
                 }
             }
 
-            LogInfo("LogCityAnchorsFromLoadedScenes: scan complete.");
+            TravelButtonPlugin.LogInfo("LogCityAnchorsFromLoadedScenes: scan complete.");
         }
         catch (Exception ex)
         {
-            LogWarning("LogCityAnchorsFromLoadedScenes exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("LogCityAnchorsFromLoadedScenes exception: " + ex.Message);
         }
     }
 
@@ -776,10 +519,10 @@ public static class TravelButtonMod
     {
         try
         {
-            TravelButtonMod.LogInfo("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
+            TravelButtonPlugin.LogInfo("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
             if (Cities == null || Cities.Count == 0)
             {
-                TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
+                TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
                 return;
             }
 
@@ -811,7 +554,7 @@ public static class TravelButtonMod
                                     if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
                                     {
                                         city.sceneName = scene.name;
-                                        TravelButtonMod.LogInfo($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        TravelButtonPlugin.LogInfo($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
                                         assigned++;
                                     }
                                 }
@@ -820,7 +563,7 @@ public static class TravelButtonMod
                                     if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
                                     {
                                         city.sceneName = scene.name;
-                                        TravelButtonMod.LogInfo($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        TravelButtonPlugin.LogInfo($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
                                         assigned++;
                                     }
                                 }
@@ -833,49 +576,18 @@ public static class TravelButtonMod
 
             if (assigned > 0)
             {
-                TravelButtonMod.LogInfo($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
-                try { PersistCitiesToConfig(); } catch { TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
+                TravelButtonPlugin.LogInfo($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
+                try { PersistCitiesToConfig(); } catch { TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
             }
             else
             {
-                TravelButtonMod.LogInfo("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
+                TravelButtonPlugin.LogInfo("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
             }
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
         }
-    }
-
-    // Exposed logger set by the plugin bootstrap. May be null early during domain load.
-    public static ManualLogSource Logger = null;
-
-    // When true enables developer-only debug helpers in the UI (hidden by default).
-    public static bool Debug = false;
-
-    // ---- Logging helpers ----
-    public static void LogInfo(string message)
-    {
-        if (Logger != null) Logger.LogInfo(message);
-        else LogInfo($"[TravelButton][INFO] {message}");
-    }
-
-    public static void LogWarning(string message)
-    {
-        if (Logger != null) Logger.LogWarning(message);
-        else LogWarning($"[TravelButton][WARN] {message}");
-    }
-
-    public static void LogError(string message)
-    {
-        if (Logger != null) Logger.LogError(message);
-        else LogError($"[TravelButton][ERROR] {message}");
-    }
-
-    public static void LogDebug(string message)
-    {
-        if (Logger != null) Logger.LogDebug(message);
-        else LogDebug($"[TravelButton][DEBUG] {message}");
     }
 
     // Simple configurable wrappers to keep compatibility with existing code
@@ -962,7 +674,7 @@ public static class TravelButtonMod
     {
         try
         {
-            LogInfo("InitFromConfig: attempting to obtain ConfigManager.Config (safe, no unconditional Load).");
+            TravelButtonPlugin.LogInfo("InitFromConfig: attempting to obtain ConfigManager.Config (safe, no unconditional Load).");
 
             // Try to locate a type named ConfigManager in loaded assemblies
             Type cfgMgrType = null;
@@ -990,7 +702,7 @@ public static class TravelButtonMod
                 }
                 catch (Exception ex)
                 {
-                    LogWarning("InitFromConfig: reading ConfigManager.Config threw: " + ex.Message);
+                    TravelButtonPlugin.LogWarning("InitFromConfig: reading ConfigManager.Config threw: " + ex.Message);
                     cfgInstance = null;
                 }
             }
@@ -1012,14 +724,14 @@ public static class TravelButtonMod
                             if (def != null)
                             {
                                 MapConfigInstanceToLocal(def);
-                                LogInfo("InitFromConfig: used local ConfigManager.Default() to populate config.");
+                                TravelButtonPlugin.LogInfo("InitFromConfig: used local ConfigManager.Default() to populate config.");
                                 return true;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        LogWarning("InitFromConfig: calling local ConfigManager.Default() failed: " + ex.Message);
+                        TravelButtonPlugin.LogWarning("InitFromConfig: calling local ConfigManager.Default() failed: " + ex.Message);
                         // continue to try safer external Load path below
                     }
                 }
@@ -1035,7 +747,7 @@ public static class TravelButtonMod
                 if (isLocalConfigMgr)
                 {
                     callLoad = true;
-                    LogInfo("InitFromConfig: calling Load() on local ConfigManager type.");
+                    TravelButtonPlugin.LogInfo("InitFromConfig: calling Load() on local ConfigManager type.");
                 }
                 else
                 {
@@ -1048,11 +760,11 @@ public static class TravelButtonMod
                     if (hasNewtonsoft)
                     {
                         callLoad = true;
-                        LogInfo("InitFromConfig: external ConfigManager found and Newtonsoft present; will call Load() via reflection.");
+                        TravelButtonPlugin.LogInfo("InitFromConfig: external ConfigManager found and Newtonsoft present; will call Load() via reflection.");
                     }
                     else
                     {
-                        LogWarning("InitFromConfig: external ConfigManager found but Newtonsoft not present; skipping Load() to avoid assembly load errors.");
+                        TravelButtonPlugin.LogWarning("InitFromConfig: external ConfigManager found but Newtonsoft not present; skipping Load() to avoid assembly load errors.");
                     }
                 }
 
@@ -1071,17 +783,17 @@ public static class TravelButtonMod
                         }
                         else
                         {
-                            LogWarning("InitFromConfig: ConfigManager.Load method not found.");
+                            TravelButtonPlugin.LogWarning("InitFromConfig: ConfigManager.Load method not found.");
                         }
                     }
                     catch (TargetInvocationException tie)
                     {
-                        LogWarning("InitFromConfig: ConfigManager.Load failed via reflection: " + (tie.InnerException?.Message ?? tie.Message));
+                        TravelButtonPlugin.LogWarning("InitFromConfig: ConfigManager.Load failed via reflection: " + (tie.InnerException?.Message ?? tie.Message));
                         return false; // allow retry from coroutine
                     }
                     catch (Exception ex)
                     {
-                        LogWarning("InitFromConfig: exception invoking ConfigManager.Load: " + ex.Message);
+                        TravelButtonPlugin.LogWarning("InitFromConfig: exception invoking ConfigManager.Load: " + ex.Message);
                         return false;
                     }
                 }
@@ -1091,17 +803,17 @@ public static class TravelButtonMod
             if (cfgInstance != null)
             {
                 MapConfigInstanceToLocal(cfgInstance);
-                LogInfo($"InitFromConfig: Loaded {Cities?.Count ?? 0} cities from ConfigManager.");
+                TravelButtonPlugin.LogInfo($"InitFromConfig: Loaded {Cities?.Count ?? 0} cities from ConfigManager.");
                 return true;
             }
 
             // No config available (and we failed to get a local default); signal caller to retry / fallback.
-            LogInfo("InitFromConfig: no config instance available (will retry or fallback).");
+            TravelButtonPlugin.LogInfo("InitFromConfig: no config instance available (will retry or fallback).");
             return false;
         }
         catch (Exception ex)
         {
-            LogError("InitFromConfig: unexpected exception: " + ex);
+            TravelButtonPlugin.LogError("InitFromConfig: unexpected exception: " + ex);
             return false;
         }
     }
@@ -1129,7 +841,7 @@ public static class TravelButtonMod
             }
             catch (Exception ex)
             {
-                LogWarning("MapConfigInstanceToLocal: top-level map failed: " + ex.Message);
+                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: top-level map failed: " + ex.Message);
             }
 
             // cities
@@ -1156,7 +868,7 @@ public static class TravelButtonMod
                             }
                             catch (Exception inner)
                             {
-                                LogWarning("MapConfigInstanceToLocal: error mapping city entry: " + inner.Message);
+                                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: error mapping city entry: " + inner.Message);
                             }
                         }
                     }
@@ -1183,23 +895,23 @@ public static class TravelButtonMod
                         }
                         else
                         {
-                            LogWarning("MapConfigInstanceToLocal: cfg.cities is not enumerable.");
+                            TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cfg.cities is not enumerable.");
                         }
                     }
                 }
                 else
                 {
-                    LogWarning("MapConfigInstanceToLocal: cfg.cities is null.");
+                    TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cfg.cities is null.");
                 }
             }
             catch (Exception ex)
             {
-                LogWarning("MapConfigInstanceToLocal: cities mapping failed: " + ex.Message);
+                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cities mapping failed: " + ex.Message);
             }
         }
         catch (Exception ex)
         {
-            LogWarning("MapConfigInstanceToLocal: unexpected: " + ex.Message);
+            TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: unexpected: " + ex.Message);
         }
     }
 
@@ -1244,7 +956,7 @@ public static class TravelButtonMod
         }
         catch (Exception ex)
         {
-            LogWarning("MapSingleCityFromObject: " + ex.Message);
+            TravelButtonPlugin.LogWarning("MapSingleCityFromObject: " + ex.Message);
             return null;
         }
     }
@@ -1331,12 +1043,12 @@ public static class TravelButtonMod
                     if (!IsUiGameObject(go) && go.scene.IsValid() && go.scene.isLoaded)
                     {
                         outPos = go.transform.position;
-                        LogInfo($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                        TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                         return true;
                     }
                     else
                     {
-                        LogWarning($"TryGetTargetPosition: found '{targetGameObjectName}' but it's a UI/invalid-scene object (ignored).");
+                        TravelButtonPlugin.LogWarning($"TryGetTargetPosition: found '{targetGameObjectName}' but it's a UI/invalid-scene object (ignored).");
                     }
                 }
 
@@ -1355,7 +1067,7 @@ public static class TravelButtonMod
                     // If city.sceneName set, require scene match
                     if (string.IsNullOrEmpty(cityName) || string.IsNullOrEmpty(exactSceneObj.scene.name) || true) { /* keep logging below */ }
                     outPos = exactSceneObj.transform.position;
-                    LogInfo($"TryGetTargetPosition: found scene GameObject by exact match '{exactSceneObj.name}' at {outPos} for city '{cityName}'.");
+                    TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found scene GameObject by exact match '{exactSceneObj.name}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
@@ -1375,7 +1087,7 @@ public static class TravelButtonMod
                 if (containsSceneObj != null)
                 {
                     outPos = containsSceneObj.transform.position;
-                    LogInfo($"TryGetTargetPosition: found scene GameObject by substring match '{containsSceneObj.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                    TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found scene GameObject by substring match '{containsSceneObj.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
@@ -1386,17 +1098,17 @@ public static class TravelButtonMod
                     if (byTag != null && byTag.scene.IsValid() && byTag.scene.isLoaded && !IsUiGameObject(byTag))
                     {
                         outPos = byTag.transform.position;
-                        LogInfo($"TryGetTargetPosition: found GameObject by tag '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                        TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found GameObject by tag '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                         return true;
                     }
                 }
                 catch { /* ignore tag errors */ }
 
-                LogWarning($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found in any loaded scene for city '{cityName}'.");
+                TravelButtonPlugin.LogWarning($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found in any loaded scene for city '{cityName}'.");
             }
             catch (Exception ex)
             {
-                LogWarning($"TryGetTargetPosition: error while searching for '{targetGameObjectName}' for city '{cityName}': {ex.Message}");
+                TravelButtonPlugin.LogWarning($"TryGetTargetPosition: error while searching for '{targetGameObjectName}' for city '{cityName}': {ex.Message}");
             }
 
             // Optionally emit diagnostic candidates for debugging
@@ -1407,11 +1119,11 @@ public static class TravelButtonMod
         if (coordsFallback != null && coordsFallback.Length >= 3)
         {
             outPos = new Vector3(coordsFallback[0], coordsFallback[1], coordsFallback[2]);
-            LogInfo($"TryGetTargetPosition: using explicit coords ({outPos.x}, {outPos.y}, {outPos.z}) for city '{cityName}'.");
+            TravelButtonPlugin.LogInfo($"TryGetTargetPosition: using explicit coords ({outPos.x}, {outPos.y}, {outPos.z}) for city '{cityName}'.");
             return true;
         }
 
-        LogWarning($"TryGetTargetPosition: no GameObject and no explicit coords available for city '{cityName}'.");
+        TravelButtonPlugin.LogWarning($"TryGetTargetPosition: no GameObject and no explicit coords available for city '{cityName}'.");
         return false;
     }
 
@@ -1438,7 +1150,7 @@ public static class TravelButtonMod
     {
         try
         {
-            LogInfo($"Anchor diagnostic: searching for candidates for city '{cityName}'...");
+            TravelButtonPlugin.LogInfo($"Anchor diagnostic: searching for candidates for city '{cityName}'...");
 
             var all = Resources.FindObjectsOfTypeAll<GameObject>();
             int count = 0;
@@ -1455,17 +1167,17 @@ public static class TravelButtonMod
                     count++;
                     string path = GetFullPath(go.transform);
                     string scene = (go.scene.IsValid() ? go.scene.name : "(asset)");
-                    LogInfo($"Anchor candidate #{count}: name='{name}' scene='{scene}' path='{path}'");
+                    TravelButtonPlugin.LogInfo($"Anchor candidate #{count}: name='{name}' scene='{scene}' path='{path}'");
                     if (count >= maxResults) break;
                 }
             }
 
             if (count == 0)
-                LogInfo($"Anchor diagnostic: no candidates found for '{cityName}' (tried substrings). Consider checking scene objects or config targetGameObjectName.");
+                TravelButtonPlugin.LogInfo($"Anchor diagnostic: no candidates found for '{cityName}' (tried substrings). Consider checking scene objects or config targetGameObjectName.");
         }
         catch (Exception ex)
         {
-            LogWarning("Anchor diagnostic failed: " + ex.Message);
+            TravelButtonPlugin.LogWarning("Anchor diagnostic failed: " + ex.Message);
         }
     }
 
@@ -1533,7 +1245,7 @@ public static class TravelButtonMod
         }
         catch (Exception ex)
         {
-            LogWarning("IsCityEnabled: reading external config failed: " + ex.Message);
+            TravelButtonPlugin.LogWarning("IsCityEnabled: reading external config failed: " + ex.Message);
         }
 
         var local = Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
@@ -1610,7 +1322,7 @@ public static class TravelButtonMod
                         var saveMethod = cfgMgrType.GetMethod("Save", BindingFlags.Public | BindingFlags.Static);
                         saveMethod?.Invoke(null, null);
                         persisted = true;
-                        LogInfo("PersistCitiesToConfig: persisted cities into external ConfigManager.Config and called Save().");
+                        TravelButtonPlugin.LogInfo("PersistCitiesToConfig: persisted cities into external ConfigManager.Config and called Save().");
                         break;
                     }
                 }
@@ -1619,12 +1331,12 @@ public static class TravelButtonMod
 
             if (!persisted)
             {
-                LogWarning("PersistCitiesToConfig: Could not persist cities because external ConfigManager not found or not writable.");
+                TravelButtonPlugin.LogWarning("PersistCitiesToConfig: Could not persist cities because external ConfigManager not found or not writable.");
             }
         }
         catch (Exception ex)
         {
-            LogError("PersistCitiesToConfig exception: " + ex);
+            TravelButtonPlugin.LogError("PersistCitiesToConfig exception: " + ex);
         }
     }
 
@@ -1649,7 +1361,7 @@ public static class TravelButtonMod
         }
         catch (Exception ex)
         {
-            LogError("OnSuccessfulTeleport exception: " + ex);
+            TravelButtonPlugin.LogError("OnSuccessfulTeleport exception: " + ex);
         }
     }
 
@@ -1663,7 +1375,7 @@ public static class TravelButtonMod
             var tb = GameObject.Find("TravelButton");
             if (tb == null)
             {
-                LogWarning("DumpTravelButtonState: TravelButton GameObject not found.");
+                TravelButtonPlugin.LogWarning("DumpTravelButtonState: TravelButton GameObject not found.");
                 return;
             }
 
@@ -1672,19 +1384,19 @@ public static class TravelButtonMod
             var img = tb.GetComponent<Image>();
             var cg = tb.GetComponent<CanvasGroup>();
             var root = tb.transform.root;
-            LogInfo($"DumpTravelButtonState: name='{tb.name}', activeSelf={tb.activeSelf}, activeInHierarchy={tb.activeInHierarchy}");
-            LogInfo($"DumpTravelButtonState: parent='{tb.transform.parent?.name}', root='{root?.name}'");
-            if (rt != null) LogInfo($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}, pivot={rt.pivot}");
-            if (btn != null) LogInfo($"DumpTravelButtonState: Button.interactable={btn.interactable}");
-            if (img != null) LogInfo($"DumpTravelButtonState: Image.color={img.color}, raycastTarget={img.raycastTarget}");
-            if (cg != null) LogInfo($"DumpTravelButtonState: CanvasGroup alpha={cg.alpha}, interactable={cg.interactable}, blocksRaycasts={cg.blocksRaycasts}");
+            TravelButtonPlugin.LogInfo($"DumpTravelButtonState: name='{tb.name}', activeSelf={tb.activeSelf}, activeInHierarchy={tb.activeInHierarchy}");
+            TravelButtonPlugin.LogInfo($"DumpTravelButtonState: parent='{tb.transform.parent?.name}', root='{root?.name}'");
+            if (rt != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}, pivot={rt.pivot}");
+            if (btn != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Button.interactable={btn.interactable}");
+            if (img != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Image.color={img.color}, raycastTarget={img.raycastTarget}");
+            if (cg != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: CanvasGroup alpha={cg.alpha}, interactable={cg.interactable}, blocksRaycasts={cg.blocksRaycasts}");
             var canvas = tb.GetComponentInParent<Canvas>();
-            if (canvas != null) LogInfo($"DumpTravelButtonState: Canvas name={canvas.gameObject.name}, sortingOrder={canvas.sortingOrder}, renderMode={canvas.renderMode}");
-            else LogWarning("DumpTravelButtonState: No parent Canvas found.");
+            if (canvas != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Canvas name={canvas.gameObject.name}, sortingOrder={canvas.sortingOrder}, renderMode={canvas.renderMode}");
+            else TravelButtonPlugin.LogWarning("DumpTravelButtonState: No parent Canvas found.");
         }
         catch (Exception ex)
         {
-            LogWarning("DumpTravelButtonState exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("DumpTravelButtonState exception: " + ex.Message);
         }
     }
 
@@ -1696,7 +1408,7 @@ public static class TravelButtonMod
             var tb = GameObject.Find("TravelButton");
             if (tb == null)
             {
-                LogWarning("ForceShowTravelButton: TravelButton GameObject not found.");
+                TravelButtonPlugin.LogWarning("ForceShowTravelButton: TravelButton GameObject not found.");
                 return;
             }
 
@@ -1709,7 +1421,7 @@ public static class TravelButtonMod
                 canvas.renderMode = RenderMode.ScreenSpaceOverlay;
                 go.AddComponent<GraphicRaycaster>();
                 UnityEngine.Object.DontDestroyOnLoad(go);
-                LogInfo("ForceShowTravelButton: created debug Canvas 'TravelButton_DebugCanvas'.");
+                TravelButtonPlugin.LogInfo("ForceShowTravelButton: created debug Canvas 'TravelButton_DebugCanvas'.");
             }
             else
             {
@@ -1717,7 +1429,7 @@ public static class TravelButtonMod
                 if (canvas.GetComponent<GraphicRaycaster>() == null)
                 {
                     canvas.gameObject.AddComponent<GraphicRaycaster>();
-                    LogInfo("ForceShowTravelButton: added missing GraphicRaycaster to existing Canvas.");
+                    TravelButtonPlugin.LogInfo("ForceShowTravelButton: added missing GraphicRaycaster to existing Canvas.");
                 }
             }
 
@@ -1755,11 +1467,11 @@ public static class TravelButtonMod
                 catch { }
             }
 
-            LogInfo("ForceShowTravelButton: forced TravelButton onto top Canvas and made visible.");
+            TravelButtonPlugin.LogInfo("ForceShowTravelButton: forced TravelButton onto top Canvas and made visible.");
         }
         catch (Exception ex)
         {
-            LogWarning("ForceShowTravelButton exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("ForceShowTravelButton exception: " + ex.Message);
         }
     }
 }

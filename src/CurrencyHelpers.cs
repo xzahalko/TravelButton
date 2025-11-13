@@ -102,12 +102,12 @@ public static class CurrencyHelpers
                 }
             }
 
-            TravelButtonMod.LogWarning("CurrencyHelpers: could not detect a currency field/property automatically.");
+            TravelButtonPlugin.LogWarning("CurrencyHelpers: could not detect a currency field/property automatically.");
             return -1;
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("CurrencyHelpers.DetectPlayerCurrencyOrMinusOne exception: " + ex);
+            TravelButtonPlugin.LogWarning("CurrencyHelpers.DetectPlayerCurrencyOrMinusOne exception: " + ex);
             return -1;
         }
     }
@@ -121,7 +121,7 @@ public static class CurrencyHelpers
     {
         try
         {
-            TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: trying to deduct {amount} silver.");
+            TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: trying to deduct {amount} silver.");
 
             var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
             foreach (var mb in allMonoBehaviours)
@@ -141,16 +141,16 @@ public static class CurrencyHelpers
                             try
                             {
                                 var res = mi.Invoke(mb, new object[] { amount });
-                                TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: called {t.FullName}.{mn}({amount}) -> {res}");
+                                TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: called {t.FullName}.{mn}({amount}) -> {res}");
                                 return true;
                             }
                             catch (TargetInvocationException tie)
                             {
-                                TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: {t.FullName}.{mn} threw: {tie.InnerException?.Message ?? tie.Message}");
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: {t.FullName}.{mn} threw: {tie.InnerException?.Message ?? tie.Message}");
                             }
                             catch (Exception ex)
                             {
-                                TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: invoking {t.FullName}.{mn} failed: {ex.Message}");
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: invoking {t.FullName}.{mn} failed: {ex.Message}");
                             }
                         }
                     }
@@ -171,12 +171,12 @@ public static class CurrencyHelpers
                                 if (cur >= amount)
                                 {
                                     fi.SetValue(mb, cur - amount);
-                                    TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
+                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
                                     return true;
                                 }
                                 else
                                 {
-                                    TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
                                     return false;
                                 }
                             }
@@ -186,12 +186,12 @@ public static class CurrencyHelpers
                                 if (cur >= amount)
                                 {
                                     fi.SetValue(mb, cur - amount);
-                                    TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
+                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
                                     return true;
                                 }
                                 else
                                 {
-                                    TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
                                     return false;
                                 }
                             }
@@ -199,7 +199,7 @@ public static class CurrencyHelpers
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: field access {t.FullName}.{fi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: field access {t.FullName}.{fi.Name} threw: {ex}");
                     }
                 }
 
@@ -217,12 +217,12 @@ public static class CurrencyHelpers
                                 if (cur >= amount)
                                 {
                                     pi.SetValue(mb, cur - amount);
-                                    TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
+                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
                                     return true;
                                 }
                                 else
                                 {
-                                    TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
                                     return false;
                                 }
                             }
@@ -232,12 +232,12 @@ public static class CurrencyHelpers
                                 if (cur >= amount)
                                 {
                                     pi.SetValue(mb, cur - amount);
-                                    TravelButtonMod.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
+                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
                                     return true;
                                 }
                                 else
                                 {
-                                    TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
                                     return false;
                                 }
                             }
@@ -245,17 +245,17 @@ public static class CurrencyHelpers
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonMod.LogWarning($"TryDeductPlayerCurrency: property access {t.FullName}.{pi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: property access {t.FullName}.{pi.Name} threw: {ex}");
                     }
                 }
             }
 
-            TravelButtonMod.LogWarning("TryDeductPlayerCurrency: could not find an inventory/money field or method automatically. Travel aborted.");
+            TravelButtonPlugin.LogWarning("TryDeductPlayerCurrency: could not find an inventory/money field or method automatically. Travel aborted.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("TryDeductPlayerCurrency exception: " + ex);
+            TravelButtonPlugin.LogWarning("TryDeductPlayerCurrency exception: " + ex);
             return false;
         }
     }
@@ -268,7 +268,7 @@ public static class CurrencyHelpers
     {
         try
         {
-            TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: trying to refund {amount} silver.");
+            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: trying to refund {amount} silver.");
 
             var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
             foreach (var mb in allMonoBehaviours)
@@ -288,12 +288,12 @@ public static class CurrencyHelpers
                             try
                             {
                                 mi.Invoke(mb, new object[] { amount });
-                                TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: called {t.FullName}.{mn}({amount})");
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: called {t.FullName}.{mn}({amount})");
                                 return true;
                             }
                             catch (Exception ex)
                             {
-                                TravelButtonMod.LogWarning($"TryRefundPlayerCurrency: calling {t.FullName}.{mn} threw: {ex}");
+                                TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: calling {t.FullName}.{mn} threw: {ex}");
                             }
                         }
                     }
@@ -312,21 +312,21 @@ public static class CurrencyHelpers
                             {
                                 int cur = (int)fi.GetValue(mb);
                                 fi.SetValue(mb, cur + amount);
-                                TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
                                 return true;
                             }
                             else if (fi.FieldType == typeof(long))
                             {
                                 long cur = (long)fi.GetValue(mb);
                                 fi.SetValue(mb, cur + amount);
-                                TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
                                 return true;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonMod.LogWarning($"TryRefundPlayerCurrency: field access {t.FullName}.{fi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: field access {t.FullName}.{fi.Name} threw: {ex}");
                     }
                 }
 
@@ -341,31 +341,31 @@ public static class CurrencyHelpers
                             {
                                 int cur = (int)pi.GetValue(mb);
                                 pi.SetValue(mb, cur + amount);
-                                TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
                                 return true;
                             }
                             else if (pi.PropertyType == typeof(long))
                             {
                                 long cur = (long)pi.GetValue(mb);
                                 pi.SetValue(mb, cur + amount);
-                                TravelButtonMod.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
                                 return true;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonMod.LogWarning($"TryRefundPlayerCurrency: property access {t.FullName}.{pi.Name} threw: {ex}");
+                        TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: property access {t.FullName}.{pi.Name} threw: {ex}");
                     }
                 }
             }
 
-            TravelButtonMod.LogWarning("TryRefundPlayerCurrency: could not find a place to refund the currency automatically.");
+            TravelButtonPlugin.LogWarning("TryRefundPlayerCurrency: could not find a place to refund the currency automatically.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonMod.LogWarning("TryRefundPlayerCurrency exception: " + ex);
+            TravelButtonPlugin.LogWarning("TryRefundPlayerCurrency exception: " + ex);
             return false;
         }
     }
