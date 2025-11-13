@@ -896,12 +896,12 @@ public class TravelButtonUI : MonoBehaviour
                     }
                     catch { /* ignore */ }
 
-                    // Set interactability: only if (visited OR enabled by config) AND coords available. Later refresh coroutine will also check money.
-                    bool initialInteractable = (visited || enabledByConfig) && coordsAvailable;
-                    if (haveMoneyInfo && playerMoney >= 0)
-                    {
-                        if (playerMoney < cost) initialInteractable = false;
-                    }
+                    // Determine player money at dialog open (best-effort)
+                    haveMoneyInfo = playerMoney >= 0;
+                    bool hasEnoughMoney = haveMoneyInfo && playerMoney >= cost;
+
+                    // New rule: enabled only when config allows it AND player has visited AND coords available AND player has enough money
+                    bool initialInteractable = enabledByConfig && visited && coordsAvailable && hasEnoughMoney;
 
                     bbtn.interactable = initialInteractable;
                     if (!initialInteractable)
@@ -909,11 +909,11 @@ public class TravelButtonUI : MonoBehaviour
                         bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
                     }
 
-                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}).");
+                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}, hasEnoughMoney={hasEnoughMoney})");
 
                     var capturedCity = city;
 
-                    // NEW BEHAVIOR: check funds first, then teleport, then charge (post-teleport charge)
+                    // Click handler: re-check config, visited and funds immediately before attempting teleport
                     bbtn.onClick.AddListener(() =>
                     {
                         try
@@ -924,11 +924,34 @@ public class TravelButtonUI : MonoBehaviour
                                 return;
                             }
 
-                            // Check player's visible currency amount (best-effort). If known and insufficient => show message.
+                            // Re-evaluate the gating conditions, in case they changed since dialog open
+                            bool cfgEnabled = TravelButtonMod.IsCityEnabled(capturedCity.name);
+                            bool visitedNow = false;
+                            try { visitedNow = VisitedTracker.HasVisited(capturedCity.name); } catch { visitedNow = false; }
                             long pm = GetPlayerCurrencyAmountOrMinusOne();
+
+                            if (!cfgEnabled)
+                            {
+                                ShowInlineDialogMessage("Destination disabled by config");
+                                return;
+                            }
+
+                            if (!visitedNow)
+                            {
+                                ShowInlineDialogMessage("Destination not discovered yet");
+                                return;
+                            }
+
+                            // Money check
                             if (pm >= 0 && pm < cost)
                             {
                                 ShowInlineDialogMessage("not enough resources to travel");
+                                return;
+                            }
+                            if (pm < 0)
+                            {
+                                // Could not detect money reliably; be conservative and show message rather than attempt
+                                ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
                                 return;
                             }
 
@@ -2180,15 +2203,16 @@ public class TravelButtonUI : MonoBehaviour
                         if (objName.StartsWith("CityButton_"))
                         {
                             string cityName = objName.Substring("CityButton_".Length);
+
+                            // Evaluate gating conditions fresh
                             bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
-                            bool visited = false;
-                            try { visited = VisitedTracker.HasVisited(cityName); } catch { visited = false; }
+                            bool visitedNow = false;
+                            try { visitedNow = VisitedTracker.HasVisited(cityName); } catch { visitedNow = false; }
 
                             // determine cost (per-city or global) by reflection similar to creation
                             int cost = TravelButtonMod.cfgTravelCost.Value;
                             try
                             {
-                                // try to find the city object in TravelButtonMod.Cities
                                 TravelButtonMod.City foundCity = null;
                                 foreach (var c in TravelButtonMod.Cities)
                                 {
@@ -2221,10 +2245,10 @@ public class TravelButtonUI : MonoBehaviour
                             }
                             catch { /* ignore */ }
 
+                            // quick check for coords or targetGameObject
                             bool coordsAvailable = false;
                             try
                             {
-                                // quick check for coords or targetGameObject
                                 TravelButtonMod.City found = null;
                                 foreach (var c in TravelButtonMod.Cities)
                                 {
@@ -2245,9 +2269,12 @@ public class TravelButtonUI : MonoBehaviour
                             }
                             catch { coordsAvailable = false; }
 
-                            bool shouldBeInteractable = (visited || enabledByConfig) && coordsAvailable;
-                            if (haveMoneyInfo)
-                                shouldBeInteractable = shouldBeInteractable && (currentMoney >= cost);
+                            // Money read
+                            haveMoneyInfo = currentMoney >= 0;
+                            bool hasEnoughMoney = haveMoneyInfo && (currentMoney >= cost);
+
+                            // New rule: enabled only when config allows it AND visited AND coords available AND sufficient money
+                            bool shouldBeInteractable = enabledByConfig && visitedNow && coordsAvailable && hasEnoughMoney;
 
                             if (btn.interactable != shouldBeInteractable)
                             {
