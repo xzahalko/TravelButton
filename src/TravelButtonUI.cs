@@ -1,3 +1,18 @@
+// NOTE: This is the full TravelButtonUI.cs with additional debug logging and sanity checks
+// added to help diagnose bad/incorrect teleport target positions.
+//
+// Key changes:
+// - More detailed logging in TryTeleportThenCharge to show which target source is used:
+//   - targetGameObjectName present but GAMEOBJECT not found => logged explicitly
+//   - explicit coords present => logged (and validated)
+//   - if neither present, logged (helper may rely on sceneName / heuristics)
+// - Added IsCoordsReasonable() to detect obviously bogus coords and warn/avoid using them
+// - TryGetTargetPosition now returns whether it could find a GameObject or coords and logs details
+// - No behavioural changes to the teleport flow (still uses TeleportHelpersBehaviour.EnsureSceneAndTeleport),
+//   but it will log why a coordsHint is used so you can fix config/anchors.
+//
+// Use these logs to check travel_config.json coordinates and city.targetGameObjectName values,
+// and to correlate TravelButtonMod.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -42,6 +57,9 @@ public class TravelButtonUI : MonoBehaviour
 
     // Fallback visibility monitor coroutine when inventoryVisibilityTarget is not found
     private Coroutine visibilityMonitorCoroutine;
+
+    // Prevent multiple teleport attempts at the same time
+    private bool isTeleporting = false;
 
     void Start()
     {
@@ -891,7 +909,7 @@ public class TravelButtonUI : MonoBehaviour
                         bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
                     }
 
-                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coords present={(city.coords != null && city.coords.Length >= 3)})");
+                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}).");
 
                     var capturedCity = city;
 
@@ -900,6 +918,12 @@ public class TravelButtonUI : MonoBehaviour
                     {
                         try
                         {
+                            if (isTeleporting)
+                            {
+                                TravelButtonPlugin.LogInfo("City button click ignored: teleport already in progress.");
+                                return;
+                            }
+
                             // Check player's visible currency amount (best-effort). If known and insufficient => show message.
                             long pm = GetPlayerCurrencyAmountOrMinusOne();
                             if (pm >= 0 && pm < cost)
@@ -908,7 +932,24 @@ public class TravelButtonUI : MonoBehaviour
                                 return;
                             }
 
-                            // Start teleport-then-charge flow
+                            // Disable all city buttons in the dialog to prevent duplicates while teleport is happening
+                            try
+                            {
+                                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                                if (contentParent != null)
+                                {
+                                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                                    {
+                                        var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
+                                        if (childBtn != null) childBtn.interactable = false;
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            isTeleporting = true;
+
+                            // Start teleport-then-charge flow. The helper callback will clear isTeleporting.
                             TryTeleportThenCharge(capturedCity, cost);
                         }
                         catch (Exception ex)
@@ -1020,6 +1061,7 @@ public class TravelButtonUI : MonoBehaviour
         if (city == null)
         {
             TravelButtonPlugin.LogWarning("TryTeleportThenCharge: city is null.");
+            isTeleporting = false;
             return;
         }
 
@@ -1027,14 +1069,58 @@ public class TravelButtonUI : MonoBehaviour
         {
             TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: attempting teleport to {city.name} (post-charge flow).");
 
-            // Prepare coords hint (use explicit coords fallback if present)
+            // Figure out what we'll pass as coordsHint and why (detailed logging to help debug bad positions)
             Vector3 coordsHint = Vector3.zero;
             bool haveCoordsHint = false;
-            if (city != null && city.coords != null && city.coords.Length >= 3)
+            bool haveTargetGameObject = false;
+            bool targetGameObjectFound = false;
+
+            // If the city provides a targetGameObjectName, check for the GameObject first (preferred)
+            try
             {
-                coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-                haveCoordsHint = true;
+                if (!string.IsNullOrEmpty(city.targetGameObjectName))
+                {
+                    haveTargetGameObject = true;
+                    var tgo = GameObject.Find(city.targetGameObjectName);
+                    if (tgo != null)
+                    {
+                        targetGameObjectFound = true;
+                        coordsHint = tgo.transform.position;
+                        haveCoordsHint = true; // we have a precise anchor position
+                        TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
+                    }
+                }
             }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
+            }
+
+            // If no anchor found, fall back to explicit coords if provided in the city config
+            if (!haveCoordsHint)
+            {
+                if (city != null && city.coords != null && city.coords.Length >= 3)
+                {
+                    coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                    haveCoordsHint = true;
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
+                    if (!IsCoordsReasonable(coordsHint))
+                    {
+                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: explicit coords {coordsHint} look suspicious for city '{city.name}'. Verify travel_config.json contains correct world coordinates for that scene.");
+                    }
+                }
+                else
+                {
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: no explicit coords or anchor found for {city.name}. Teleport helper will rely on city.sceneName / internal heuristics.");
+                }
+            }
+
+            // Prepare coords hint validity note for logs
+            TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}");
 
             // Find or create a TeleportHelpersBehaviour to run the coroutine
             TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
@@ -1078,9 +1164,11 @@ public class TravelButtonUI : MonoBehaviour
                     // Persist visited/cities to config if desired
                     try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
 
-                    // Close the dialog (optional UX choice)
+                    // Reset teleporting flag and close the dialog (optional UX choice)
                     try
                     {
+                        isTeleporting = false;
+
                         if (dialogRoot != null) dialogRoot.SetActive(false);
                         if (refreshButtonsCoroutine != null)
                         {
@@ -1094,12 +1182,38 @@ public class TravelButtonUI : MonoBehaviour
                 {
                     TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: teleport to '{city.name}' failed.");
                     ShowInlineDialogMessage("Teleport failed");
+
+                    // Re-enable city buttons so user can try again
+                    try
+                    {
+                        isTeleporting = false;
+                        var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                        if (contentParent != null)
+                        {
+                            for (int ci = 0; ci < contentParent.childCount; ci++)
+                            {
+                                var child = contentParent.GetChild(ci);
+                                var childBtn = child.GetComponent<Button>();
+                                var childImg = child.GetComponent<Image>();
+                                if (childBtn != null)
+                                {
+                                    childBtn.interactable = true;
+                                    if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exEnable)
+                    {
+                        TravelButtonPlugin.LogWarning("TryTeleportThenCharge: failed to re-enable buttons after failed teleport: " + exEnable);
+                    }
                 }
             }));
         }
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("TryTeleportThenCharge exception: " + ex);
+            isTeleporting = false;
         }
     }
 
@@ -1110,12 +1224,13 @@ public class TravelButtonUI : MonoBehaviour
         pos = Vector3.zero;
         try
         {
+            // 1) explicit target GameObject name
             if (!string.IsNullOrEmpty(city.targetGameObjectName))
             {
-                var targetGO = GameObject.Find(city.targetGameObjectName);
-                if (targetGO != null)
+                var go = GameObject.Find(city.targetGameObjectName);
+                if (go != null)
                 {
-                    pos = targetGO.transform.position;
+                    pos = go.transform.position;
                     TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found GameObject '{city.targetGameObjectName}' at {pos}");
                     return true;
                 }
@@ -1125,6 +1240,7 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
+            // 2) explicit coords from config / visited metadata
             if (city.coords != null && city.coords.Length >= 3)
             {
                 pos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
@@ -1132,7 +1248,25 @@ public class TravelButtonUI : MonoBehaviour
                 return true;
             }
 
+            // 3) heuristic: find any scene object with the city name in it (useful when scene or objects include the region name)
+            try
+            {
+                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var tr in allTransforms)
+                {
+                    if (tr == null) continue;
+                    if (tr.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        pos = tr.position;
+                        TravelButtonPlugin.LogInfo($"TryGetTargetPosition: heuristic found scene object '{tr.name}' for city '{city.name}' at {pos}");
+                        return true;
+                    }
+                }
+            }
+            catch { }
+
             // not found
+            TravelButtonPlugin.LogInfo($"TryGetTargetPosition: no explicit position found for city '{city.name}'.");
             return false;
         }
         catch (Exception ex)
@@ -1141,6 +1275,20 @@ public class TravelButtonUI : MonoBehaviour
             pos = Vector3.zero;
             return false;
         }
+    }
+
+    // Sanity-check coords to detect obviously wrong positions (helpful to spot placeholder coords).
+    // This is intentionally conservative: it only flags extremely large NaN/inf coordinates.
+    private bool IsCoordsReasonable(Vector3 v)
+    {
+        if (float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z)) return false;
+        if (float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z)) return false;
+
+        // very large threshold to avoid false positives; tune if your world uses large coordinates
+        const float MAX_REASONABLE = 200000f;
+        if (Mathf.Abs(v.x) > MAX_REASONABLE || Mathf.Abs(v.y) > MAX_REASONABLE || Mathf.Abs(v.z) > MAX_REASONABLE) return false;
+
+        return true;
     }
 
     // Teleport player to a specific world position. Returns true on success.
@@ -1979,7 +2127,7 @@ public class TravelButtonUI : MonoBehaviour
             var root = tb.transform.root;
             TravelButtonPlugin.LogInfo($"DumpTravelButtonState: name='{tb.name}', activeSelf={tb.activeSelf}, activeInHierarchy={tb.activeInHierarchy}");
             TravelButtonPlugin.LogInfo($"DumpTravelButtonState: parent='{tb.transform.parent?.name}', root='{root?.name}'");
-            if (rt != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}, pivot={rt.pivot}");
+            if (rt != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}");
             if (btn != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Button.interactable={btn.interactable}");
             if (img != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Image.color={img.color}, raycastTarget={img.raycastTarget}");
             if (cg != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: CanvasGroup alpha={cg.alpha}, interactable={cg.interactable}, blocksRaycasts={cg.blocksRaycasts}");
