@@ -33,11 +33,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private Dictionary<string, ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, ConfigEntry<int>> bex_cityPrice = new Dictionary<string, ConfigEntry<int>>(StringComparer.OrdinalIgnoreCase);
 
-    // Set by plugin during Awake: e.g. TravelButtonPlugin.Initialize(Logger);
+    // Optional prefix to make entries easy to find in BepInEx logs
+    // Set by the plugin during Awake: e.g. TravelButtonPlugin.Initialize(this.Logger);
     public static ManualLogSource LogSource { get; private set; }
-
-    // Fallback file path (only used when BepInEx logger isn't available).
-    private static readonly string FallbackLogFile = Path.Combine(Application.persistentDataPath ?? ".", "outward_log.txt");
 
     private const string Prefix = "[TravelButton] ";
 
@@ -45,47 +43,42 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
-        LogInfo("TravelButtonPlugin initialized with BepInEx ManualLogSource.");
+        try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); }
+        catch { /* swallow to avoid throwing during init */ }
     }
 
     public static void LogInfo(string message)
     {
-        if (LogSource != null)
-        {
-            try { LogSource.LogInfo(Prefix + message); return; }
-            catch { /* fall through to fallback */ }
-        }
+        var src = LogSource;
+        if (src == null) return;               // avoid object-reference errors when not initialized
+        try { src.LogInfo(Prefix + message); } catch { /* swallow */ }
     }
 
     public static void LogWarning(string message)
     {
-        if (LogSource != null)
-        {
-            try { LogSource.LogWarning(Prefix + message); return; }
-            catch { /* fall through to fallback */ }
-        }
+        var src = LogSource;
+        if (src == null) return;
+        try { src.LogWarning(Prefix + message); } catch { /* swallow */ }
     }
 
     public static void LogError(string message)
     {
-        if (LogSource != null)
-        {
-            try { LogSource.LogError(Prefix + message); return; }
-            catch { /* fall through to fallback */ }
-        }
+        var src = LogSource;
+        if (src == null) return;
+        try { src.LogError(Prefix + message); } catch { /* swallow */ }
     }
 
     public static void LogDebug(string message)
     {
-        if (LogSource != null)
-        {
-            try { LogSource.LogDebug(Prefix + message); return; }
-            catch { /* fall through to fallback */ }
-        }
+        var src = LogSource;
+        if (src == null) return;
+        try { src.LogDebug(Prefix + message); } catch { /* swallow */ }
     }
 
     private void Awake()
     {
+        // sanity checks to confirm BepInEx receives logs:
+        TravelButtonPlugin.LogInfo("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
         try
         {

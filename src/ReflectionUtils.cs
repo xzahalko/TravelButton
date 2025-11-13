@@ -1,67 +1,85 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 /// <summary>
-/// Small helper to perform reflection Type lookups in a safe way:
-/// - catches TypeLoadException, FileNotFoundException and other common reflection exceptions
-/// - returns null when the type cannot be resolved instead of throwing
-/// - optionally (via the last parameter) allow a single sanitized log message when resolution fails
+/// Safe reflection helpers: never throw on missing types, and provide a best-effort resolution fallback.
+/// Also deduplicates missing-type warnings so the log won't be spammed.
 /// </summary>
 public static class ReflectionUtils
 {
+    // remember which type names we've already warned about so we only warn once
+    private static readonly HashSet<string> warnedMissingTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
-    /// Safely attempts to resolve a Type by name. Returns null on failure.
+    /// Safely attempts to resolve a Type by assembly-qualified name or simple name.
+    /// Returns null when the type cannot be resolved.
+    /// Does not throw TypeLoadException/FileNotFoundException; those are swallowed.
     /// </summary>
     public static Type SafeGetType(string assemblyQualifiedTypeName)
     {
         if (string.IsNullOrEmpty(assemblyQualifiedTypeName)) return null;
+
+        // 1) Try Type.GetType directly (assembly-qualified names)
         try
         {
-            return Type.GetType(assemblyQualifiedTypeName);
+            // Use the throwOnError=false overload where available; Type.GetType(string) can still throw in some runtimes so catch broadly.
+            var t = Type.GetType(assemblyQualifiedTypeName, false);
+            if (t != null) return t;
         }
-        catch (TypeLoadException)
+        catch
         {
-            // Expected when a type token refers to something not present in this runtime.
-            return null;
+            // swallow; we'll try other strategies
         }
-        catch (FileNotFoundException)
-        {
-            // Expected when an assembly referenced in the name is not present.
-            return null;
-        }
-        catch (Exception)
-        {
-            // Be conservative: do not let reflection exceptions bubble to top and spam log.
-            return null;
-        }
-    }
 
-    /// <summary>
-    /// Try a bare type name first (Type.GetType) and fall back to scanning loaded assemblies (best-effort).
-    /// Returns null if not found.
-    /// </summary>
-    public static Type SafeResolveTypeByName(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return null;
-        // First try Type.GetType (handles assembly-qualified names)
-        var t = SafeGetType(name);
-        if (t != null) return t;
+        // 2) Extract simple name (e.g., "UnityEngine.Input" from "UnityEngine.Input, UnityEngine.CoreModule, ...")
+        string simpleName = assemblyQualifiedTypeName;
+        int commaIndex = assemblyQualifiedTypeName.IndexOf(',');
+        if (commaIndex >= 0) simpleName = assemblyQualifiedTypeName.Substring(0, commaIndex).Trim();
 
+        // 3) Scan all loaded assemblies for the simple name (best-effort)
         try
         {
-            // Fallback: scan loaded assemblies for a matching type by full name
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (var asm in assemblies)
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
+                Type found = null;
                 try
                 {
-                    var candidate = asm.GetType(name, false, false);
-                    if (candidate != null) return candidate;
+                    found = asm.GetType(simpleName, false, false);
                 }
-                catch { /* ignore assembly load errors */ }
+                catch
+                {
+                    // ignore assembly load issues
+                }
+                if (found != null) return found;
             }
         }
-        catch { /* swallow */ }
+        catch
+        {
+            // swallow; we cannot resolve the type
+        }
+
+        // 4) Log a single sanitized warning the first time we fail to resolve this name (do not spam)
+        try
+        {
+            lock (warnedMissingTypes)
+            {
+                if (!warnedMissingTypes.Contains(assemblyQualifiedTypeName))
+                {
+                    warnedMissingTypes.Add(assemblyQualifiedTypeName);
+                    // Use TravelButtonPlugin if available (it is safe), otherwise fallback to UnityEngine.Debug
+                    try
+                    {
+                        TravelButtonPlugin.LogWarning($"Reflection: could not resolve type '{assemblyQualifiedTypeName}'. Some optional features may be disabled.");
+                    }
+                    catch
+                    {
+                        try { UnityEngine.Debug.LogWarning($"[TravelButton] Reflection: could not resolve type '{assemblyQualifiedTypeName}'."); } catch { }
+                    }
+                }
+            }
+        }
+        catch { /* swallow logging errors */ }
 
         return null;
     }
