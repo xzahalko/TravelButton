@@ -1069,13 +1069,12 @@ public class TravelButtonUI : MonoBehaviour
         {
             TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: attempting teleport to {city.name} (post-charge flow).");
 
-            // Figure out what we'll pass as coordsHint and why (detailed logging to help debug bad positions)
+            // 1) Determine coords/anchor availability
             Vector3 coordsHint = Vector3.zero;
             bool haveCoordsHint = false;
             bool haveTargetGameObject = false;
             bool targetGameObjectFound = false;
 
-            // If the city provides a targetGameObjectName, check for the GameObject first (preferred)
             try
             {
                 if (!string.IsNullOrEmpty(city.targetGameObjectName))
@@ -1086,7 +1085,7 @@ public class TravelButtonUI : MonoBehaviour
                     {
                         targetGameObjectFound = true;
                         coordsHint = tgo.transform.position;
-                        haveCoordsHint = true; // we have a precise anchor position
+                        haveCoordsHint = true;
                         TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
                     }
                     else
@@ -1100,121 +1099,467 @@ public class TravelButtonUI : MonoBehaviour
                 TravelButtonPlugin.LogWarning("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
             }
 
-            // If no anchor found, fall back to explicit coords if provided in the city config
             if (!haveCoordsHint)
             {
-                if (city != null && city.coords != null && city.coords.Length >= 3)
+                if (city.coords != null && city.coords.Length >= 3)
                 {
                     coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
                     haveCoordsHint = true;
                     TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
                     if (!IsCoordsReasonable(coordsHint))
                     {
-                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: explicit coords {coordsHint} look suspicious for city '{city.name}'. Verify travel_config.json contains correct world coordinates for that scene.");
+                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: explicit coords {coordsHint} look suspicious for city '{city.name}'. Verify travel_config.json contains correct world coords.");
                     }
-                }
-                else
-                {
-                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: no explicit coords or anchor found for {city.name}. Teleport helper will rely on city.sceneName / internal heuristics.");
                 }
             }
 
-            // Prepare coords hint validity note for logs
-            TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}");
-
-            // Find or create a TeleportHelpersBehaviour to run the coroutine
-            TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
-            if (helper == null)
+            // 2) If sceneName not provided, try to guess it from build settings BEFORE deciding immediate vs load
+            if (string.IsNullOrEmpty(city.sceneName))
             {
-                var go = new GameObject("TeleportHelpersHost");
-                UnityEngine.Object.DontDestroyOnLoad(go);
-                helper = go.AddComponent<TeleportHelpersBehaviour>();
+                try
+                {
+                    var guessed = GuessSceneNameFromBuildSettings(city.name);
+                    if (!string.IsNullOrEmpty(guessed))
+                    {
+                        TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: guessed sceneName='{guessed}' from build settings for city '{city.name}'");
+                        city.sceneName = guessed; // in-memory assignment only
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("TryTeleportThenCharge: GuessSceneNameFromBuildSettings failed: " + ex);
+                }
             }
 
-            // Start teleport coroutine which handles scene loading / anchor wait / grounding and safe teleport
-            helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, success =>
+            TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}, sceneName='{city.sceneName}'");
+
+            // 3) Decide whether target scene is specified and whether it matches active scene
+            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
+            bool sceneMatches = !targetSceneSpecified || string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
+
+            // 4) FAST PATH: same-scene or unspecified-scene + coords available => immediate teleport
+            if (haveCoordsHint && sceneMatches)
             {
-                if (success)
+                try
                 {
-                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: teleport to '{city.name}' completed successfully.");
+                    TravelButtonPlugin.LogInfo("TryTeleportThenCharge: performing immediate teleport (coords available in active scene).");
+                    bool ok = AttemptTeleportToPositionSafe(coordsHint);
 
-                    // Mark visited in the visited tracker if available
-                    try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
-
-                    // Attempt to deduct currency post-teleport
-                    try
+                    if (ok)
                     {
-                        bool charged = AttemptDeductSilver(cost);
-                        if (!charged)
-                        {
-                            TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
-                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
-                        }
-                        else
-                        {
-                            ShowInlineDialogMessage($"Teleported to {city.name}");
-                        }
-                    }
-                    catch (Exception exCharge)
-                    {
-                        TravelButtonPlugin.LogWarning("TryTeleportThenCharge: charge attempt threw: " + exCharge);
-                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
-                    }
+                        TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: immediate teleport to '{city.name}' completed successfully.");
+                        try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
 
-                    // Persist visited/cities to config if desired
-                    try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
-
-                    // Reset teleporting flag and close the dialog (optional UX choice)
-                    try
-                    {
-                        isTeleporting = false;
-
-                        if (dialogRoot != null) dialogRoot.SetActive(false);
-                        if (refreshButtonsCoroutine != null)
+                        try
                         {
-                            StopCoroutine(refreshButtonsCoroutine);
-                            refreshButtonsCoroutine = null;
-                        }
-                    }
-                    catch { }
-                }
-                else
-                {
-                    TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: teleport to '{city.name}' failed.");
-                    ShowInlineDialogMessage("Teleport failed");
-
-                    // Re-enable city buttons so user can try again
-                    try
-                    {
-                        isTeleporting = false;
-                        var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
-                        if (contentParent != null)
-                        {
-                            for (int ci = 0; ci < contentParent.childCount; ci++)
+                            bool charged = AttemptDeductSilver(cost);
+                            if (!charged)
                             {
-                                var child = contentParent.GetChild(ci);
-                                var childBtn = child.GetComponent<Button>();
-                                var childImg = child.GetComponent<Image>();
-                                if (childBtn != null)
+                                TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                            }
+                            else
+                            {
+                                ShowInlineDialogMessage($"Teleported to {city.name}");
+                            }
+                        }
+                        catch (Exception exCharge)
+                        {
+                            TravelButtonPlugin.LogWarning("TryTeleportThenCharge: charge attempt threw: " + exCharge);
+                            ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                        }
+
+                        try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+
+                        try
+                        {
+                            isTeleporting = false;
+                            if (dialogRoot != null) dialogRoot.SetActive(false);
+                            if (refreshButtonsCoroutine != null)
+                            {
+                                StopCoroutine(refreshButtonsCoroutine);
+                                refreshButtonsCoroutine = null;
+                            }
+                        }
+                        catch { }
+                        return;
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: immediate teleport to '{city.name}' failed - will try loading the correct scene or helper fallback.");
+                        // continue to fallback below
+                    }
+                }
+                catch (Exception exImmediate)
+                {
+                    TravelButtonPlugin.LogWarning("TryTeleportThenCharge: immediate teleport attempt exception: " + exImmediate);
+                    // fallthrough to fallback
+                }
+            }
+
+            // 5) If a target scene is specified and it differs from active, load it and teleport there
+            if (targetSceneSpecified && !sceneMatches)
+            {
+                TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: target scene '{city.sceneName}' differs from active '{activeScene.name}' - loading scene then teleporting.");
+                try
+                {
+                    StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("TryTeleportThenCharge: failed to start LoadSceneAndTeleportCoroutine: " + ex);
+                    // fall back to helper below
+                }
+            }
+
+            // 6) Fallback: use existing TeleportHelpersBehaviour coroutine (keeps previous robust behavior)
+            try
+            {
+                TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
+                if (helper == null)
+                {
+                    var go = new GameObject("TeleportHelpersHost");
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+                    helper = go.AddComponent<TeleportHelpersBehaviour>();
+                }
+
+                helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, success =>
+                {
+                    if (success)
+                    {
+                        TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: teleport to '{city.name}' completed successfully (helper).");
+                        try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
+
+                        try
+                        {
+                            bool charged = AttemptDeductSilver(cost);
+                            if (!charged)
+                            {
+                                TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                            }
+                            else
+                            {
+                                ShowInlineDialogMessage($"Teleported to {city.name}");
+                            }
+                        }
+                        catch (Exception exCharge)
+                        {
+                            TravelButtonPlugin.LogWarning("TryTeleportThenCharge: charge attempt threw: " + exCharge);
+                            ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                        }
+
+                        try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+
+                        try
+                        {
+                            isTeleporting = false;
+                            if (dialogRoot != null) dialogRoot.SetActive(false);
+                            if (refreshButtonsCoroutine != null)
+                            {
+                                StopCoroutine(refreshButtonsCoroutine);
+                                refreshButtonsCoroutine = null;
+                            }
+                        }
+                        catch { }
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: teleport to '{city.name}' failed (helper).");
+                        ShowInlineDialogMessage("Teleport failed");
+                        try
+                        {
+                            isTeleporting = false;
+                            var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                            if (contentParent != null)
+                            {
+                                for (int ci = 0; ci < contentParent.childCount; ci++)
                                 {
-                                    childBtn.interactable = true;
-                                    if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+                                    var child = contentParent.GetChild(ci);
+                                    var childBtn = child.GetComponent<Button>();
+                                    var childImg = child.GetComponent<Image>();
+                                    if (childBtn != null)
+                                    {
+                                        childBtn.interactable = true;
+                                        if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+                                    }
                                 }
                             }
                         }
+                        catch (Exception exEnable)
+                        {
+                            TravelButtonPlugin.LogWarning("TryTeleportThenCharge: failed to re-enable buttons after failed teleport: " + exEnable);
+                        }
                     }
-                    catch (Exception exEnable)
-                    {
-                        TravelButtonPlugin.LogWarning("TryTeleportThenCharge: failed to re-enable buttons after failed teleport: " + exEnable);
-                    }
-                }
-            }));
+                }));
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogError("TryTeleportThenCharge exception: " + ex);
+                isTeleporting = false;
+            }
         }
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("TryTeleportThenCharge exception: " + ex);
             isTeleporting = false;
         }
+    }
+
+    // Coroutine to load a target scene (map) and teleport the player there.
+    // This version avoids yielding inside try/catch blocks (C# restriction).
+    private IEnumerator LoadSceneAndTeleportCoroutine(TravelButtonMod.City city, int cost, Vector3 coordsHint, bool haveCoordsHint)
+    {
+        if (city == null)
+        {
+            isTeleporting = false;
+            yield break;
+        }
+
+        // display inline message to inform user
+        ShowInlineDialogMessage("Loading map...");
+
+        AsyncOperation op = null;
+        bool loadFailed = false;
+
+        // Start the async load - keep try/catch that does not contain any yields
+        try
+        {
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: starting async load for scene '{city.sceneName}'.");
+            op = UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(city.sceneName, UnityEngine.SceneManagement.LoadSceneMode.Single);
+            if (op == null)
+            {
+                TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: LoadSceneAsync returned null for '{city.sceneName}'.");
+                loadFailed = true;
+            }
+        }
+        catch (Exception exLoad)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: exception while initiating scene load: " + exLoad);
+            loadFailed = true;
+        }
+
+        // If we successfully obtained an AsyncOperation, wait for it (yields are not inside a try/catch here)
+        if (!loadFailed && op != null)
+        {
+            while (!op.isDone)
+            {
+                yield return null;
+            }
+
+            // Give one frame (two frames) for scene initialization
+            yield return null;
+            yield return null;
+        }
+
+        if (loadFailed)
+        {
+            ShowInlineDialogMessage("Map load failed");
+            isTeleporting = false;
+            // re-enable buttons
+            try
+            {
+                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                if (contentParent != null)
+                {
+                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                    {
+                        var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
+                        if (childBtn != null) childBtn.interactable = true;
+                    }
+                }
+            }
+            catch { }
+            yield break;
+        }
+
+        // After load, determine the teleport target (prefer GameObject anchor if present)
+        Vector3 finalPos = Vector3.zero;
+        bool haveFinalPos = false;
+
+        try
+        {
+            if (!string.IsNullOrEmpty(city.targetGameObjectName))
+            {
+                var tgo = GameObject.Find(city.targetGameObjectName);
+                if (tgo != null)
+                {
+                    finalPos = tgo.transform.position;
+                    haveFinalPos = true;
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: found target GameObject '{city.targetGameObjectName}' at {finalPos} after load.");
+                }
+                else
+                {
+                    TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: target GameObject '{city.targetGameObjectName}' still not found after scene load.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: error searching for target GameObject after load: " + ex);
+        }
+
+        if (!haveFinalPos && haveCoordsHint)
+        {
+            finalPos = coordsHint;
+            haveFinalPos = true;
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using coordsHint {finalPos} after load.");
+        }
+
+        if (!haveFinalPos)
+        {
+            // Try heuristics similar to TryGetTargetPosition: search for a transform matching city name
+            try
+            {
+                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var tr in allTransforms)
+                {
+                    if (tr == null) continue;
+                    if (tr.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        finalPos = tr.position;
+                        haveFinalPos = true;
+                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: heuristic found scene object '{tr.name}' for city '{city.name}' at {finalPos}");
+                        break;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        if (!haveFinalPos)
+        {
+            TravelButtonPlugin.LogError($"LoadSceneAndTeleportCoroutine: could not determine a teleport target for '{city.name}' after loading scene '{city.sceneName}'.");
+            ShowInlineDialogMessage("Teleport target not found in map");
+            isTeleporting = false;
+            yield break;
+        }
+
+        // Attempt the teleport in the newly loaded scene
+        bool teleported = false;
+        try
+        {
+            teleported = AttemptTeleportToPositionSafe(finalPos);
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + ex);
+            teleported = false;
+        }
+
+        if (teleported)
+        {
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleported player to '{city.name}' at {finalPos}.");
+
+            try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
+
+            try
+            {
+                bool charged = AttemptDeductSilver(cost);
+                if (!charged)
+                {
+                    TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: Teleported to {city.name} but failed to deduct {cost} silver.");
+                    ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                }
+                else
+                {
+                    ShowInlineDialogMessage($"Teleported to {city.name}");
+                }
+            }
+            catch (Exception exCharge)
+            {
+                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: charge attempt threw: " + exCharge);
+                ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+            }
+
+            try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+
+            try
+            {
+                isTeleporting = false;
+                if (dialogRoot != null) dialogRoot.SetActive(false);
+                if (refreshButtonsCoroutine != null)
+                {
+                    StopCoroutine(refreshButtonsCoroutine);
+                    refreshButtonsCoroutine = null;
+                }
+            }
+            catch { }
+        }
+        else
+        {
+            TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: teleport to '{city.name}' failed after scene load.");
+            ShowInlineDialogMessage("Teleport failed");
+            isTeleporting = false;
+
+            // Re-enable buttons
+            try
+            {
+                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                if (contentParent != null)
+                {
+                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                    {
+                        var child = contentParent.GetChild(ci);
+                        var childBtn = child.GetComponent<Button>();
+                        var childImg = child.GetComponent<Image>();
+                        if (childBtn != null)
+                        {
+                            childBtn.interactable = true;
+                            if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        yield break;
+    }
+
+    private static string GuessSceneNameFromBuildSettings(string cityName)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(cityName)) return null;
+            int count = UnityEngine.SceneManagement.SceneManager.sceneCountInBuildSettings;
+            for (int i = 0; i < count; i++)
+            {
+                try
+                {
+                    string path = UnityEngine.SceneManagement.SceneUtility.GetScenePathByBuildIndex(i);
+                    if (string.IsNullOrEmpty(path)) continue;
+                    // Use case-insensitive matching against path or file name
+                    if (path.IndexOf(cityName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string file = System.IO.Path.GetFileNameWithoutExtension(path);
+                        TravelButtonPlugin.LogInfo($"GuessSceneNameFromBuildSettings: matched build-scene '{file}' (path='{path}') for city '{cityName}'.");
+                        return file;
+                    }
+
+                    // also attempt matching with common suffix/prefix variants
+                    // e.g., cityName + "NewTerrain", cityName + "Terrain", cityName + "Map"
+                    string[] variants = new[] { cityName + "NewTerrain", cityName + "Terrain", cityName + "Map" };
+                    foreach (var v in variants)
+                    {
+                        if (path.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            string file = System.IO.Path.GetFileNameWithoutExtension(path);
+                            TravelButtonPlugin.LogInfo($"GuessSceneNameFromBuildSettings: matched variant '{v}' -> build-scene '{file}' for city '{cityName}'.");
+                            return file;
+                        }
+                    }
+                }
+                catch { /* ignore individual index errors */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("GuessSceneNameFromBuildSettings exception: " + ex);
+        }
+        return null;
     }
 
     // Try to determine target position for a city without moving anything.
