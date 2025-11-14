@@ -369,4 +369,61 @@ public static class CurrencyHelpers
             return false;
         }
     }
+
+    public static bool AttemptDeductSilverDirect(int amount)
+    {
+        if (amount < 0)
+        {
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot deduct a negative amount: {amount}");
+            return false;
+        }
+        if (amount == 0)
+        {
+            return true;
+        }
+        try
+        {
+            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (player == null)
+            {
+                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Could not find the local player character.");
+                return false;
+            }
+            var inventory = player.Inventory;
+            if (inventory == null)
+            {
+                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
+                return false;
+            }
+            // The item ID for Silver in Outward is 6100110
+            const int silverItemID = 6100110;
+            var silverStacks = inventory.GetItems(silverItemID);
+            int totalSilver = 0;
+            if (silverStacks != null)
+            {
+                foreach (var stack in silverStacks)
+                {
+                    totalSilver += stack.StackAmount;
+                }
+            }
+
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Player has {totalSilver} silver. Attempting to deduct {amount}.");
+
+            if (totalSilver < amount)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Not enough silver. Player has {totalSilver}, required {amount}.");
+                return false;
+            }
+
+            inventory.RemoveItem(silverItemID, amount);
+
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: An exception occurred: {ex}");
+            return false;
+        }
+    }
 }
