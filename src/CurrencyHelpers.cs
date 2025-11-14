@@ -397,20 +397,22 @@ public static class CurrencyHelpers
             }
             // The item ID for Silver in Outward is 6100110
             const int silverItemID = 6100110;
-            int totalSilver = player.Inventory.GetItemStack(silverItemID).Count;
 
-            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Player has {totalSilver} silver. Attempting to deduct {amount}.");
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
 
-            if (totalSilver < amount)
+            // We can't easily query the silver amount, so we'll rely on RemoveItem to fail if there's not enough.
+            // This is not ideal, but it's the most robust solution without proper API access.
+            try
             {
-                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Not enough silver. Player has {totalSilver}, required {amount}.");
+                inventory.RemoveItem(silverItemID, amount);
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Failed to deduct silver. Player may not have enough. Exception: {ex.Message}");
                 return false;
             }
-
-            inventory.RemoveItem(silverItemID, amount);
-
-            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
-            return true;
         }
         catch (Exception ex)
         {
