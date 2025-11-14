@@ -412,8 +412,6 @@ public static class CurrencyHelpers
             }
             if (justSimulate)
             {
-                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver ({playerSilver} >= {amount}).");
-                return true;
                 TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
                 try
                 {
