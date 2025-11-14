@@ -2180,8 +2180,14 @@ public class TravelButtonUI : MonoBehaviour
                         // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                        // debug log to help trace why a button was enabled/disabled
-                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
+                        // Detailed debug log for each condition
+                        TravelButtonPlugin.LogInfo($"Debug Refresh '{cityName}': " +
+                                                   $"enabledByConfig={enabledByConfig}, " +
+                                                   $"visitedNow={visitedNow}, " +
+                                                   $"hasEnoughMoney={hasEnoughMoney}, " +
+                                                   $"coordsAvailable={coordsAvailable}, " +
+                                                   $"isCurrentScene={isCurrentScene} " +
+                                                   $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)
                         {

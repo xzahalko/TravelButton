@@ -126,9 +126,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
-            //TravelButtonPlugin.Logger = base.Logger;
             TravelButtonPlugin.LogInfo("TravelButtonPlugin.Awake: plugin initializing.");
-
+            TravelButtonMod.InitFromConfig();
+            if (TravelButtonMod.Cities != null && TravelButtonMod.Cities.Count > 0)
+            {
+                TravelButtonPlugin.LogInfo($"Successfully loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json.");
+            }
+            else
+            {
+                TravelButtonPlugin.LogWarning("Failed to load cities from TravelButton_Cities.json or the file is empty.");
+            }
             // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
             StartCoroutine(TryInitConfigCoroutine());
         }
@@ -223,13 +230,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
             if (existing != null)
             {
                 TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI already present in scene.");
+                // Ensure DontDestroyOnLoad is set on the existing GameObject
+                UnityEngine.Object.DontDestroyOnLoad(existing.gameObject);
                 return;
             }
 
-            var go = new GameObject("TravelButtonUI_Bootstrap");
+            var go = new GameObject("TravelButton_Global");
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<TravelButtonUI>();
-            TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI component created and DontDestroyOnLoad applied.");
+            go.AddComponent<CityDiscovery>(); // Add CityDiscovery to the same persistent GameObject
+            TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI and CityDiscovery components created and DontDestroyOnLoad applied.");
         }
         catch (Exception ex)
         {
