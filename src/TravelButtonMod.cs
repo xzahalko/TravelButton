@@ -1,17 +1,19 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using BepInEx.Logging;
+using Newtonsoft.Json.Linq;
+using System;
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using UnityEngine;
-using UnityEngine.UI;
 using UnityEngine.SceneManagement;
-using System;
-using BepInEx.Logging;
+using UnityEngine.UI;
 
 //
 // TravelButtonMod.cs
@@ -44,6 +46,477 @@ public class TravelButtonPlugin : BaseUnityPlugin
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
         try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); } catch { /* swallow */ }
+    }
+
+    /// <summary>
+    /// Best-effort: locate TravelButton_Cities.json in common locations and parse it using UnityEngine.JsonUtility.
+    /// Supports two common shapes:
+    ///  - { "cities": { "TownA": { ... }, "TownB": { ... } } }  (dictionary form)
+    ///  - { "cities": [ { "name":"TownA", ... }, { "name":"TownB", ... } ] }  (array form)
+    /// If the file uses the dictionary form this method transforms it into an array of objects with "name" set.
+    /// The method is defensive and will not throw on parse errors; it logs and returns.
+    /// </summary>
+    /// <summary>
+    /// Best-effort: locate TravelButton_Cities.json in common locations and parse it using UnityEngine.JsonUtility.
+    /// Supports two common shapes:
+    ///  - { "cities": { "TownA": { ... }, "TownB": { ... } } }  (dictionary form)
+    ///  - { "cities": [ { "name":"TownA", ... }, { "name":"TownB", ... } ] }  (array form)
+    /// If the file uses the dictionary form this method transforms it into an array of objects with "name" set.
+    /// The method is defensive and will not throw on parse errors; it logs and returns.
+    /// </summary>
+    private static void TryLoadCitiesJsonIntoTravelButtonMod()
+    {
+        try
+        {
+            var logger = LogSource;
+            void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
+            void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
+
+            var candidatePaths = new List<string>();
+
+            // Common BepInEx config location
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            // Assembly location (same folder as plugin)
+            try
+            {
+                var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+                if (!string.IsNullOrEmpty(asmLocation))
+                    candidatePaths.Add(Path.Combine(asmLocation, "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            // Current working directory
+            try
+            {
+                var cwd = Directory.GetCurrentDirectory();
+                candidatePaths.Add(Path.Combine(cwd, "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            // Unity data path (best-effort; may not be available at domain-load time)
+            try
+            {
+                var dataPath = Application.dataPath;
+                if (!string.IsNullOrEmpty(dataPath))
+                    candidatePaths.Add(Path.Combine(dataPath, "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            // Also consider the BepInEx config path returned by our helper (if available)
+            try
+            {
+                var cfgPath = TravelButtonMod.ConfigFilePath;
+                if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)")
+                {
+                    var dir = cfgPath;
+                    try
+                    {
+                        if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath);
+                    }
+                    catch { }
+                    if (!string.IsNullOrEmpty(dir))
+                        candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+                }
+            }
+            catch { }
+
+            // De-duplicate and test existence
+            var tested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string foundPath = null;
+            foreach (var p in candidatePaths)
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                string full;
+                try { full = Path.GetFullPath(p); } catch { full = p; }
+                if (tested.Contains(full)) continue;
+                tested.Add(full);
+                try
+                {
+                    if (File.Exists(full))
+                    {
+                        foundPath = full;
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(foundPath))
+            {
+                LInfo("No TravelButton_Cities.json found in candidate locations.");
+                return;
+            }
+
+            LInfo("Found TravelButton_Cities.json at: " + foundPath);
+            string json = null;
+            try
+            {
+                json = File.ReadAllText(foundPath);
+            }
+            catch (Exception ex)
+            {
+                LWarn("Could not read TravelButton_Cities.json: " + ex.Message);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                LWarn("TravelButton_Cities.json is empty.");
+                return;
+            }
+
+            // Determine how "cities" is represented: object (dictionary) or array.
+            try
+            {
+                int idx = IndexOfJsonProperty(json, "cities");
+                if (idx < 0)
+                {
+                    LWarn("TravelButton_Cities.json does not contain a top-level 'cities' property.");
+                    return;
+                }
+
+                // Find the colon after the property name
+                int colon = json.IndexOf(':', idx);
+                if (colon < 0)
+                {
+                    LWarn("Malformed TravelButton_Cities.json: cannot find ':' after 'cities'.");
+                    return;
+                }
+
+                // Find first non-whitespace char after colon
+                int i = colon + 1;
+                while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+                if (i >= json.Length)
+                {
+                    LWarn("Malformed TravelButton_Cities.json: unexpected end after 'cities:'.");
+                    return;
+                }
+
+                // If cities is an array, we could try the previous JsonUtility path; but since JsonUtility was unreliable for your file,
+                // we'll parse the dictionary/array into TravelButtonMod.City instances using a simple targeted parser that doesn't require Newtonsoft.
+                var citiesList = new List<TravelButtonMod.City>();
+
+                if (json[i] == '{')
+                {
+                    // dictionary/object form: parse each "CityName": { ... } entry out of the cities object
+                    int objStart = i;
+                    int objEnd = FindMatchingClosingBrace(json, objStart);
+                    if (objEnd < 0)
+                    {
+                        LWarn("Malformed TravelButton_Cities.json: cannot find matching '}' for cities object.");
+                        return;
+                    }
+
+                    string citiesObjText = json.Substring(objStart + 1, objEnd - objStart - 1); // inner content
+
+                    int pos = 0;
+                    while (pos < citiesObjText.Length)
+                    {
+                        // skip whitespace and commas
+                        while (pos < citiesObjText.Length && (char.IsWhiteSpace(citiesObjText[pos]) || citiesObjText[pos] == ',')) pos++;
+                        if (pos >= citiesObjText.Length) break;
+
+                        // expect quoted property name
+                        if (citiesObjText[pos] != '\"')
+                        {
+                            // skip to next quote if formatting differs
+                            int nextQuote = citiesObjText.IndexOf('\"', pos);
+                            if (nextQuote < 0) break;
+                            pos = nextQuote;
+                            if (citiesObjText[pos] != '\"') break;
+                        }
+
+                        int nameStart = pos;
+                        int nameEnd = FindClosingQuote(citiesObjText, nameStart);
+                        if (nameEnd < 0) break;
+                        string cityName = citiesObjText.Substring(nameStart + 1, nameEnd - nameStart - 1);
+                        pos = nameEnd + 1;
+
+                        // skip whitespace and colon
+                        while (pos < citiesObjText.Length && char.IsWhiteSpace(citiesObjText[pos])) pos++;
+                        if (pos < citiesObjText.Length && citiesObjText[pos] == ':') pos++;
+                        while (pos < citiesObjText.Length && char.IsWhiteSpace(citiesObjText[pos])) pos++;
+
+                        // next token should be an object {...}
+                        if (pos >= citiesObjText.Length || citiesObjText[pos] != '{') break;
+                        int valueStart = pos;
+                        int valueEnd = FindMatchingClosingBrace(citiesObjText, valueStart);
+                        if (valueEnd < 0) break;
+                        string innerObject = citiesObjText.Substring(valueStart + 1, valueEnd - valueStart - 1).Trim();
+
+                        // Parse innerObject with targeted extraction (no Json library)
+                        try
+                        {
+                            var city = ParseCityInnerJson(cityName, innerObject);
+                            if (city != null) citiesList.Add(city);
+                        }
+                        catch (Exception pe)
+                        {
+                            LWarn($"Error parsing city '{cityName}': {pe.Message}");
+                        }
+
+                        pos = valueEnd + 1;
+                    }
+                }
+                else if (json[i] == '[')
+                {
+                    // array form: find array end and iterate items that must include a "name" property
+                    int arrStart = i;
+                    int arrEnd = FindMatchingClosingBracket(json, arrStart);
+                    if (arrEnd < 0)
+                    {
+                        LWarn("Malformed TravelButton_Cities.json: cannot find matching ']' for cities array.");
+                        return;
+                    }
+                    string arrText = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+                    int pos = 0;
+                    while (pos < arrText.Length)
+                    {
+                        // skip whitespace and commas
+                        while (pos < arrText.Length && (char.IsWhiteSpace(arrText[pos]) || arrText[pos] == ',')) pos++;
+                        if (pos >= arrText.Length) break;
+                        if (arrText[pos] != '{') break;
+                        int itemStart = pos;
+                        int itemEnd = FindMatchingClosingBrace(arrText, itemStart);
+                        if (itemEnd < 0) break;
+                        string itemInner = arrText.Substring(itemStart + 1, itemEnd - itemStart - 1).Trim();
+
+                        // attempt to read name property inside itemInner
+                        int nameIdx = IndexOfJsonProperty(itemInner, "name");
+                        string nameVal = null;
+                        if (nameIdx >= 0)
+                        {
+                            int colonIdx = itemInner.IndexOf(':', nameIdx);
+                            if (colonIdx >= 0)
+                            {
+                                int j = colonIdx + 1;
+                                while (j < itemInner.Length && char.IsWhiteSpace(itemInner[j])) j++;
+                                if (j < itemInner.Length && itemInner[j] == '"')
+                                {
+                                    int qend = FindClosingQuote(itemInner, j);
+                                    if (qend >= 0) nameVal = itemInner.Substring(j + 1, qend - j - 1);
+                                }
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(nameVal))
+                        {
+                            try
+                            {
+                                var city = ParseCityInnerJson(nameVal, itemInner);
+                                if (city != null) citiesList.Add(city);
+                            }
+                            catch (Exception pe)
+                            {
+                                LWarn($"Error parsing city '{nameVal}' from array: {pe.Message}");
+                            }
+                        }
+
+                        pos = itemEnd + 1;
+                    }
+                }
+                else
+                {
+                    LWarn("Unsupported JSON token after 'cities': expected '[' or '{'.");
+                    return;
+                }
+
+                if (citiesList.Count > 0)
+                {
+                    TravelButtonMod.Cities = citiesList;
+                    LInfo($"Loaded {citiesList.Count} cities from TravelButton_Cities.json.");
+                }
+                else
+                {
+                    LWarn("No cities were parsed from TravelButton_Cities.json (after manual parse).");
+                }
+            }
+            catch (Exception ex)
+            {
+                LWarn("Error while processing TravelButton_Cities.json: " + ex.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "TryLoadCitiesJsonIntoTravelButtonMod unexpected failure: " + ex.Message); } catch { }
+        }
+    }
+
+    // Parse the inner JSON object text for a single city (contents between { ... } without the outer braces)
+    private static TravelButtonMod.City ParseCityInnerJson(string cityName, string innerObject)
+    {
+        if (string.IsNullOrEmpty(cityName)) return null;
+        var city = new TravelButtonMod.City(cityName);
+
+        // enabled (bool)
+        var en = ExtractJsonBool(innerObject, "enabled");
+        if (en.HasValue) city.enabled = en.Value;
+
+        // price (int?)
+        var price = ExtractJsonIntNullable(innerObject, "price");
+        city.price = price;
+
+        // coords (float[] of at least 3)
+        var coords = ExtractJsonFloatArray(innerObject, "coords");
+        if (coords != null && coords.Length >= 3)
+            city.coords = new float[] { coords[0], coords[1], coords[2] };
+
+        // targetGameObjectName (string)
+        var tgn = ExtractJsonString(innerObject, "targetGameObjectName") ?? ExtractJsonString(innerObject, "targetGameObject") ?? ExtractJsonString(innerObject, "target");
+        if (!string.IsNullOrEmpty(tgn)) city.targetGameObjectName = tgn;
+
+        // sceneName (string)
+        var scn = ExtractJsonString(innerObject, "sceneName") ?? ExtractJsonString(innerObject, "scene");
+        if (!string.IsNullOrEmpty(scn)) city.sceneName = scn;
+
+        return city;
+    }
+
+    // Extract a quoted string value for a property name from the given JSON object fragment (best-effort)
+    private static string ExtractJsonString(string jsonFrag, string propName)
+    {
+        int idx = IndexOfJsonProperty(jsonFrag, propName);
+        if (idx < 0) return null;
+        int colon = jsonFrag.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int i = colon + 1;
+        while (i < jsonFrag.Length && char.IsWhiteSpace(jsonFrag[i])) i++;
+        if (i >= jsonFrag.Length) return null;
+        if (jsonFrag[i] != '"') return null;
+        int qend = FindClosingQuote(jsonFrag, i);
+        if (qend < 0) return null;
+        return jsonFrag.Substring(i + 1, qend - i - 1);
+    }
+
+    // Extract a nullable int for a property (best-effort)
+    private static int? ExtractJsonIntNullable(string jsonFrag, string propName)
+    {
+        int idx = IndexOfJsonProperty(jsonFrag, propName);
+        if (idx < 0) return null;
+        int colon = jsonFrag.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int i = colon + 1;
+        // read until comma or end or closing brace
+        while (i < jsonFrag.Length && char.IsWhiteSpace(jsonFrag[i])) i++;
+        if (i >= jsonFrag.Length) return null;
+        int start = i;
+        while (i < jsonFrag.Length && (char.IsDigit(jsonFrag[i]) || jsonFrag[i] == '-' || jsonFrag[i] == '+')) i++;
+        var token = jsonFrag.Substring(start, i - start);
+        if (int.TryParse(token, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var value))
+            return value;
+        return null;
+    }
+
+    // Extract a bool for a property (best-effort)
+    private static bool? ExtractJsonBool(string jsonFrag, string propName)
+    {
+        int idx = IndexOfJsonProperty(jsonFrag, propName);
+        if (idx < 0) return null;
+        int colon = jsonFrag.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int i = colon + 1;
+        while (i < jsonFrag.Length && char.IsWhiteSpace(jsonFrag[i])) i++;
+        if (i >= jsonFrag.Length) return null;
+        if (jsonFrag.Substring(i).StartsWith("true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (jsonFrag.Substring(i).StartsWith("false", StringComparison.OrdinalIgnoreCase)) return false;
+        return null;
+    }
+
+    // Extract an array of floats like [x,y,z] (best-effort)
+    private static float[] ExtractJsonFloatArray(string jsonFrag, string propName)
+    {
+        int idx = IndexOfJsonProperty(jsonFrag, propName);
+        if (idx < 0) return null;
+        int colon = jsonFrag.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int i = colon + 1;
+        while (i < jsonFrag.Length && char.IsWhiteSpace(jsonFrag[i])) i++;
+        if (i >= jsonFrag.Length || jsonFrag[i] != '[') return null;
+        int arrStart = i;
+        int arrEnd = FindMatchingClosingBracket(jsonFrag, arrStart);
+        if (arrEnd < 0) return null;
+        string inner = jsonFrag.Substring(arrStart + 1, arrEnd - arrStart - 1);
+        var parts = inner.Split(',');
+        var list = new List<float>();
+        foreach (var p in parts)
+        {
+            var t = p.Trim();
+            if (string.IsNullOrEmpty(t)) continue;
+            if (float.TryParse(t, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out var f))
+                list.Add(f);
+        }
+        return list.Count > 0 ? list.ToArray() : null;
+    }
+
+    // Find matching closing bracket ']' for an array that starts at startIndex (assumes json[startIndex] == '[')
+    private static int FindMatchingClosingBracket(string json, int startIndex)
+    {
+        if (string.IsNullOrEmpty(json) || startIndex < 0 || startIndex >= json.Length) return -1;
+        if (json[startIndex] != '[') return -1;
+        int depth = 0;
+        bool inString = false;
+        for (int i = startIndex; i < json.Length; i++)
+        {
+            char c = json[i];
+            if (c == '"' && (i == 0 || json[i - 1] != '\\')) inString = !inString;
+            if (inString) continue;
+            if (c == '[') depth++;
+            else if (c == ']')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    // Helper: find the index of a JSON property name in the text (best-effort, case-sensitive looking for "propName")
+    private static int IndexOfJsonProperty(string json, string propName)
+    {
+        if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(propName)) return -1;
+        string quoted = "\"" + propName + "\"";
+        return json.IndexOf(quoted, StringComparison.Ordinal);
+    }
+
+    // Find matching closing brace for an object that starts at startIndex (assumes json[startIndex] == '{')
+    private static int FindMatchingClosingBrace(string json, int startIndex)
+    {
+        if (string.IsNullOrEmpty(json) || startIndex < 0 || startIndex >= json.Length) return -1;
+        if (json[startIndex] != '{') return -1;
+        int depth = 0;
+        bool inString = false;
+        for (int i = startIndex; i < json.Length; i++)
+        {
+            char c = json[i];
+            if (c == '"' && (i == 0 || json[i - 1] != '\\')) inString = !inString;
+            if (inString) continue;
+            if (c == '{') depth++;
+            else if (c == '}')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    // Find closing quote for a string starting at idx (json[idx] == '"')
+    private static int FindClosingQuote(string json, int idx)
+    {
+        if (string.IsNullOrEmpty(json) || idx < 0 || idx >= json.Length) return -1;
+        if (json[idx] != '"') return -1;
+        for (int i = idx + 1; i < json.Length; i++)
+        {
+            if (json[i] == '"' && json[i - 1] != '\\') return i;
+        }
+        return -1;
     }
 
     // static wrappers - always delegate safely to TravelButtonPlugin
@@ -103,6 +576,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // sanity checks to confirm BepInEx receives logs:
         TravelButtonPlugin.LogInfo("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
+        
+        // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
+        // This is a best-effort load for deterministic defaults so that other initialization steps can observe cities.
+        try
+        {
+            TryLoadCitiesJsonIntoTravelButtonMod();
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "Failed to load TravelButton_Cities.json during Initialize: " + ex.Message); } catch { }
+        }
+        
         try
         {
             TravelButtonPlugin.LogInfo("TravelButton: startup - loaded cities:");

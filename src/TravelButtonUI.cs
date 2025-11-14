@@ -2057,7 +2057,6 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // Refresh city buttons while dialog is open: re-evaluates player's currency and enables/disables buttons.
     private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialog)
     {
         TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen start");
@@ -2066,6 +2065,156 @@ public class TravelButtonUI : MonoBehaviour
             TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen activeInHierarchy");
             try
             {
+                // --- Player position logging (best-effort multi-strategy) ---
+                Vector3 playerPos = Vector3.zero;
+                bool havePlayerPos = false;
+                try
+                {
+                    // local helper to try several common strategies for locating the local player
+                    bool TryGetPlayerPosition(out Vector3 outPos)
+                    {
+                        outPos = Vector3.zero;
+                        try
+                        {
+                            // 1) Common Unity tag
+                            try
+                            {
+                                var go = GameObject.FindWithTag("Player");
+                                if (go != null && go.transform != null)
+                                {
+                                    outPos = go.transform.position;
+                                    return true;
+                                }
+                            }
+                            catch { /* ignore tag errors */ }
+
+                            // 2) Common object name(s)
+                            string[] candidateNames = new[] { "Player", "player", "LocalPlayer", "localPlayer", "Character" };
+                            foreach (var nm in candidateNames)
+                            {
+                                try
+                                {
+                                    var go = GameObject.Find(nm);
+                                    if (go != null && go.transform != null)
+                                    {
+                                        outPos = go.transform.position;
+                                        return true;
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            // 3) Try to find a game-specific "local player" static (e.g., Player.m_localPlayer or LocalPlayer.Instance)
+                            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                            {
+                                try
+                                {
+                                    Type playerType = null;
+                                    try { playerType = asm.GetTypes().FirstOrDefault(t => t.Name == "Player" || t.Name == "LocalPlayer"); } catch { }
+                                    if (playerType == null) continue;
+
+                                    // look for common static fields/properties
+                                    var fld = playerType.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                              ?? playerType.GetField("localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                                    if (fld != null)
+                                    {
+                                        var inst = fld.GetValue(null);
+                                        if (inst != null)
+                                        {
+                                            // if instance is a Component or has a 'transform' property
+                                            var comp = inst as UnityEngine.Component;
+                                            if (comp != null)
+                                            {
+                                                outPos = comp.transform.position;
+                                                return true;
+                                            }
+                                            // attempt to get a 'transform' property or field via reflection
+                                            var tProp = inst.GetType().GetProperty("transform");
+                                            if (tProp != null)
+                                            {
+                                                var t = tProp.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                            var tField = inst.GetType().GetField("transform");
+                                            if (tField != null)
+                                            {
+                                                var t = tField.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                        }
+                                    }
+
+                                    var prop = playerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                               ?? playerType.GetProperty("instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                               ?? playerType.GetProperty("LocalPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                                    if (prop != null)
+                                    {
+                                        var inst = prop.GetValue(null);
+                                        if (inst != null)
+                                        {
+                                            var comp = inst as UnityEngine.Component;
+                                            if (comp != null)
+                                            {
+                                                outPos = comp.transform.position;
+                                                return true;
+                                            }
+                                            var tProp = inst.GetType().GetProperty("transform");
+                                            if (tProp != null)
+                                            {
+                                                var t = tProp.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                            var tField = inst.GetType().GetField("transform");
+                                            if (tField != null)
+                                            {
+                                                var t = tField.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch { /* ignore assembly/type reflection errors */ }
+                            }
+
+                            // 4) Fallback: search all Transforms for likely player-like names (inefficient but safe)
+                            try
+                            {
+                                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                                foreach (var t in allTransforms)
+                                {
+                                    if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                                    var nmLower = t.name.ToLowerInvariant();
+                                    if (nmLower.Contains("player") || nmLower.Contains("local") || nmLower.Contains("character"))
+                                    {
+                                        outPos = t.position;
+                                        return true;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        catch { }
+                        return false;
+                    }
+
+                    havePlayerPos = TryGetPlayerPosition(out playerPos);
+                }
+                catch { havePlayerPos = false; }
+
+                // Log player coordinates (if found) or note that we couldn't locate player
+                try
+                {
+                    if (havePlayerPos)
+                    {
+                        TravelButtonPlugin.LogInfo($"Player position: ({playerPos.x:F3}, {playerPos.y:F3}, {playerPos.z:F3})");
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogInfo("Player position: (not found)");
+                    }
+                }
+                catch { /* swallow logging errors */ }
+
                 // fetch current player money (best-effort)
                 long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = currentMoney >= 0;
@@ -2185,13 +2334,14 @@ public class TravelButtonUI : MonoBehaviour
                         // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                        // Detailed debug log for each condition
+                        // Detailed debug log for each condition (include player coords if known)
                         TravelButtonPlugin.LogInfo($"Debug Refresh '{cityName}': " +
                                                    $"enabledByConfig={enabledByConfig}, " +
                                                    $"visitedNow={visitedNow}, " +
                                                    $"hasEnoughMoney={hasEnoughMoney}, " +
                                                    $"coordsAvailable={coordsAvailable}, " +
-                                                   $"isCurrentScene={isCurrentScene} " +
+                                                   $"isCurrentScene={isCurrentScene}, " +
+                                                   $"playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")} " +
                                                    $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)

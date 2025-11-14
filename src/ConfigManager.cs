@@ -34,7 +34,7 @@ public static class ConfigManager
 {
     // NOTE: keep this path in sync with where you place the mod files.
     // Returns a path like "<GameData>/Mods/TravelButton/config/travel_config.json".
-    private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "travel_config.json");
+    private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "TravelButton_Cities.json");
 
     // Runtime-held config instance
     public static TravelConfig Config { get; set; } = null;
@@ -162,7 +162,7 @@ public static class ConfigManager
             { "Berg", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{400.0f, 0.0f, -10.0f},
+                coords = new float[]{ 1205.0f, -12.0f, 1365.0f},
                 targetGameObjectName = "Berg_Location",
                 desc = "Berg - example description",
                 visited = false,
