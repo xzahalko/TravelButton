@@ -383,6 +383,7 @@ public static class CurrencyHelpers
         {
             return true;
         }
+
         try
         {
             var player = CharacterManager.Instance?.GetFirstLocalCharacter();
@@ -391,55 +392,64 @@ public static class CurrencyHelpers
                 TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Could not find the local player character.");
                 return false;
             }
+
             var inventory = player.Inventory;
             if (inventory == null)
             {
                 TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
                 return false;
             }
+
             const int silverItemID = 6100110;
-            // First, check if the player has enough silver.
+
+            // If you already have a reliable read (preferred), use it first.
             long playerSilver = DetectPlayerCurrencyOrMinusOne();
-            if (playerSilver == -1)
-            {
-                TravelButtonPlugin.LogWarning("AttemptDeductSilverDirect: Could not determine player's silver amount.");
-                return false;
-            }
-            if (playerSilver < amount)
+            if (playerSilver != -1 && playerSilver < amount)
             {
                 TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Player does not have enough silver ({playerSilver} < {amount}).");
                 return false;
             }
+
             if (justSimulate)
             {
-                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver by attempting to remove and refund.");
+                bool removed = false;
                 try
                 {
-                    TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver.");
-                    try
+                    // Attempt to remove; if RemoveItem throws on insufficient, this will go to catch.
+                    inventory.RemoveItem(silverItemID, amount);
+                    removed = true;
+                    TravelButtonPlugin.LogInfo("AttemptDeductSilverDirect: Simulation remove succeeded - will attempt refund.");
+                    // TryRefundPlayerCurrency should add the silver back. Ensure it returns success/false.
+                    if (!TryRefundPlayerCurrency(amount))
                     {
-                        // Try to remove the silver.
-                        inventory.RemoveItem(silverItemID, amount);
-                        // If successful, immediately add it back.
-                        // Use the existing refund logic to add the silver back.
-                        TryRefundPlayerCurrency(amount);
-                        TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver.");
-                        return true;
-                    }
-                    catch (Exception)
-                    {
-                        // If RemoveItem fails, it means the player doesn't have enough.
-                        TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Simulation failed. Player does not have enough silver.");
+                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
+                        // At this point inventory has been mutated and refund failed — decide how to handle.
                         return false;
                     }
+                    TravelButtonPlugin.LogInfo("AttemptDeductSilverDirect: Simulation successful (remove + refund).");
+                    return true;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Simulation failed. Player does not have enough silver.");
+                    TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Simulation remove failed (player likely lacks silver). Exception: {ex.Message}");
+                    // If RemoveItem threw and removed == false, nothing to refund.
+                    if (removed)
+                    {
+                        // Attempt to refund in case RemoveItem succeeded but something threw later.
+                        try
+                        {
+                            TryRefundPlayerCurrency(amount);
+                        }
+                        catch (Exception refundEx)
+                        {
+                            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: Failed to refund after partial simulation remove: {refundEx}");
+                        }
+                    }
                     return false;
                 }
             }
-            else // This is the actual deduction
+            else
             {
                 TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
                 try
@@ -450,7 +460,7 @@ public static class CurrencyHelpers
                 }
                 catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Failed to deduct silver. Player may not have enough. Exception: {ex.Message}");
+                    TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Failed to deduct silver. Exception: {ex.Message}");
                     return false;
                 }
             }
