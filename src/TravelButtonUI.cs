@@ -819,12 +819,11 @@ public class TravelButtonUI : MonoBehaviour
                                 ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
                                 return;
                             }
-                            if (pm < cost)
+                            if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true))
                             {
                                 ShowInlineDialogMessage("not enough resources to travel");
                                 return;
                             }
-
                             // disable all city buttons while teleporting
                             try
                             {
@@ -1042,7 +1041,7 @@ public class TravelButtonUI : MonoBehaviour
 
                         try
                         {
-                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
+                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                             if (!charged)
                             {
                                 TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -1123,7 +1122,7 @@ public class TravelButtonUI : MonoBehaviour
 
                         try
                         {
-                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
+                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                             if (!charged)
                             {
                                 TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -1346,7 +1345,7 @@ public class TravelButtonUI : MonoBehaviour
 
             try
             {
-                bool charged = AttemptDeductSilver(cost);
+                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                 if (!charged)
                 {
                     TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: Teleported to {city.name} but failed to deduct {cost} silver.");
