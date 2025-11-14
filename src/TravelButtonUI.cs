@@ -819,12 +819,11 @@ public class TravelButtonUI : MonoBehaviour
                                 ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
                                 return;
                             }
-                            if (pm < cost)
+                            if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true))
                             {
                                 ShowInlineDialogMessage("not enough resources to travel");
                                 return;
                             }
-
                             // disable all city buttons while teleporting
                             try
                             {
@@ -1032,8 +1031,10 @@ public class TravelButtonUI : MonoBehaviour
             {
                 try
                 {
-                    TravelButtonPlugin.LogInfo("TryTeleportThenCharge: performing immediate teleport (coords available in active scene).");
-                    bool ok = AttemptTeleportToPositionSafe(coordsHint);
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: performing immediate teleport (coords available in active scene). Initial coords: {coordsHint}");
+                    Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: Coords after GetGroundedPosition: {groundedCoords}");
+                    bool ok = AttemptTeleportToPositionSafe(groundedCoords);
 
                     if (ok)
                     {
@@ -1042,7 +1043,7 @@ public class TravelButtonUI : MonoBehaviour
 
                         try
                         {
-                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
+                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                             if (!charged)
                             {
                                 TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -1123,7 +1124,7 @@ public class TravelButtonUI : MonoBehaviour
 
                         try
                         {
-                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
+                            bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                             if (!charged)
                             {
                                 TravelButtonPlugin.LogWarning($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -1330,7 +1331,10 @@ public class TravelButtonUI : MonoBehaviour
         bool teleported = false;
         try
         {
-            teleported = AttemptTeleportToPositionSafe(finalPos);
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounding final position {finalPos}");
+            Vector3 groundedFinalPos = TeleportHelpers.GetGroundedPosition(finalPos);
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounded position is {groundedFinalPos}");
+            teleported = AttemptTeleportToPositionSafe(groundedFinalPos);
         }
         catch (Exception ex)
         {
@@ -1346,7 +1350,7 @@ public class TravelButtonUI : MonoBehaviour
 
             try
             {
-                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
+                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
                 if (!charged)
                 {
                     TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -2024,74 +2028,6 @@ public class TravelButtonUI : MonoBehaviour
         }
         catch { }
         return false;
-    }
-
-    public static Vector3 GetGroundedPosition(Vector3 desiredPosition, float maxUp = 50f, float maxDown = 200f, float groundOffset = 1.2f)
-    {
-        try
-        {
-            // Raycast from above downwards to find the nearest collider/ground under the desired X/Z.
-            Vector3 rayStart = desiredPosition + Vector3.up * maxUp;
-            Ray ray = new Ray(rayStart, Vector3.down);
-            RaycastHit hit;
-
-            if (Physics.Raycast(ray, out hit, maxUp + maxDown, ~0, QueryTriggerInteraction.Ignore))
-            {
-                return new Vector3(desiredPosition.x, hit.point.y + groundOffset, desiredPosition.z);
-            }
-
-            // If no physics hit, attempt Terrain.activeTerrain.SampleHeight via reflection (if Terrain module loaded)
-            try
-            {
-                // Try to get the Terrain type from the Unity Terrain module
-                // Full name including assembly: "UnityEngine.Terrain, UnityEngine.TerrainModule"
-                var terrainType = ReflectionUtils.SafeGetType("UnityEngine.Terrain, UnityEngine.TerrainModule");
-                if (terrainType != null)
-                {
-                    // Get static property activeTerrain
-                    var activeTerrainProp = terrainType.GetProperty("activeTerrain", BindingFlags.Public | BindingFlags.Static);
-                    var activeTerrain = activeTerrainProp?.GetValue(null);
-                    if (activeTerrain != null)
-                    {
-                        // call SampleHeight(Vector3) on the activeTerrain instance
-                        var sampleHeightMethod = terrainType.GetMethod("SampleHeight", new Type[] { typeof(Vector3) });
-                        if (sampleHeightMethod != null)
-                        {
-                            var terrainYObj = sampleHeightMethod.Invoke(activeTerrain, new object[] { desiredPosition });
-                            if (terrainYObj is float terrainLocalHeight)
-                            {
-                                // activeTerrain.transform.position.y may be non-zero; get transform.position.y via reflection
-                                var transformProp = terrainType.GetProperty("transform", BindingFlags.Public | BindingFlags.Instance);
-                                var terrainTransform = transformProp?.GetValue(activeTerrain) as Transform;
-                                float terrainWorldY = (terrainTransform != null) ? terrainTransform.position.y : 0f;
-                                float worldHeight = terrainLocalHeight + terrainWorldY;
-                                return new Vector3(desiredPosition.x, worldHeight + groundOffset, desiredPosition.z);
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore terrain reflection errors; continue to fallback below
-            }
-
-            // last-resort short downward ray from a small height above desiredPosition
-            rayStart = desiredPosition + Vector3.up * 1.0f;
-            ray = new Ray(rayStart, Vector3.down);
-            if (Physics.Raycast(ray, out hit, maxUp + 1f, ~0, QueryTriggerInteraction.Ignore))
-            {
-                return new Vector3(desiredPosition.x, hit.point.y + groundOffset, desiredPosition.z);
-            }
-
-            // Nothing found: return desired position with a small upward offset so player isn't at y=0 in many maps
-            return new Vector3(desiredPosition.x, desiredPosition.y + groundOffset, desiredPosition.z);
-        }
-        catch (Exception)
-        {
-            // On unexpected errors, return desired position + offset
-            return new Vector3(desiredPosition.x, desiredPosition.y + groundOffset, desiredPosition.z);
-        }
     }
 
     private void TryPayAndTeleport(TravelButtonMod.City city)
