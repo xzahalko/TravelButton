@@ -423,7 +423,8 @@ public static class CurrencyHelpers
                         // Try to remove the silver.
                         inventory.RemoveItem(silverItemID, amount);
                         // If successful, immediately add it back.
-                        inventory.AddItem(silverItemID, amount);
+                        // Use the existing refund logic to add the silver back.
+                        TryRefundPlayerCurrency(amount);
                         TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver.");
                         return true;
                     }
