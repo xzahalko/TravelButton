@@ -369,4 +369,55 @@ public static class CurrencyHelpers
             return false;
         }
     }
+
+    public static bool AttemptDeductSilverDirect(int amount)
+    {
+        if (amount < 0)
+        {
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot deduct a negative amount: {amount}");
+            return false;
+        }
+        if (amount == 0)
+        {
+            return true;
+        }
+        try
+        {
+            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (player == null)
+            {
+                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Could not find the local player character.");
+                return false;
+            }
+            var inventory = player.Inventory;
+            if (inventory == null)
+            {
+                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
+                return false;
+            }
+            // The item ID for Silver in Outward is 6100110
+            const int silverItemID = 6100110;
+
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+
+            // We can't easily query the silver amount, so we'll rely on RemoveItem to fail if there's not enough.
+            // This is not ideal, but it's the most robust solution without proper API access.
+            try
+            {
+                inventory.RemoveItem(silverItemID, amount);
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Failed to deduct silver. Player may not have enough. Exception: {ex.Message}");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: An exception occurred: {ex}");
+            return false;
+        }
+    }
 }
