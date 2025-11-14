@@ -2175,14 +2175,20 @@ public class TravelButtonUI : MonoBehaviour
                             try { visitedNow = IsCityVisitedFallback(foundCity); } catch { visitedNow = false; }
                         }
 
-                        // 7) scene-aware coords logic: allow clicking when target scene differs from active scene
+                        // 7) scene-aware coords logic & current location check
                         bool targetSceneSpecified = foundCity != null && !string.IsNullOrEmpty(foundCity.sceneName);
                         var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                        bool sceneMatches = !targetSceneSpecified || (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
-                        bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
+                        bool isCurrentScene = targetSceneSpecified && (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
 
-                        // final interactable decision
-                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
+                        // A city is visitable if it has coordinates OR if it's in a different scene (where coords will be found after load)
+                        bool canVisit = coordsAvailable || (targetSceneSpecified && !isCurrentScene);
+
+                        // final interactable decision: mesto je aktivni v pripade, ze je povoleno v configu (enabledByConfig) a zaroven
+                        // mesto bylo navstiveno v minulosti hracem ve hre (visited) a zaroven
+                        // hrac ma dostatek prostredku v inventari ( hasEnoughMoney ) a zaroven
+                        // existuji souradnice pro teleport (canVisit) a zaroven
+                        // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
+                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
                         // debug log to help trace why a button was enabled/disabled
                         TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
