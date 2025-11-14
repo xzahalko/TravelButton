@@ -398,8 +398,25 @@ public static class CurrencyHelpers
                 return false;
             }
             const int silverItemID = 6100110;
-
+            // First, check if the player has enough silver.
+            long playerSilver = DetectPlayerCurrencyOrMinusOne();
+            if (playerSilver == -1)
+            {
+                TravelButtonPlugin.LogWarning("AttemptDeductSilverDirect: Could not determine player's silver amount.");
+                return false;
+            }
+            if (playerSilver < amount)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Player does not have enough silver ({playerSilver} < {amount}).");
+                return false;
+            }
             if (justSimulate)
+            {
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver ({playerSilver} >= {amount}).");
+                return true;
+            }
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+            try
             {
                 TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver.");
                 try
