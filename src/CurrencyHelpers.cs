@@ -324,8 +324,11 @@ public static class CurrencyHelpers
                     var inventory = player.Inventory;
                     if (inventory != null)
                     {
+<<<<<<< Updated upstream
                         long before = DetectPlayerCurrencyOrMinusOne();
 
+=======
+>>>>>>> Stashed changes
                         // If currencyKeyword == "silver" try removing silver item via Inventory.RemoveItem(itemId, qty) if available
                         if (currencyKeyword == "silver")
                         {
@@ -338,6 +341,7 @@ public static class CurrencyHelpers
                                 var removeMi = invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
                                                                  null, new Type[] { typeof(int), typeof(int) }, null)
                                                ?? invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+<<<<<<< Updated upstream
                                                                     null, new Type[] { typeof(int), typeof(long) }, null)
                                                // some games use signatures with more parameters (e.g. removeItem(id, qty, out, flags)), try simpler fallback
                                                ?? invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
@@ -346,11 +350,15 @@ public static class CurrencyHelpers
                                                                              && (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long))
                                                                              && (m.GetParameters()[1].ParameterType == typeof(int) || m.GetParameters()[1].ParameterType == typeof(long)));
 
+=======
+                                                                    null, new Type[] { typeof(int), typeof(long) }, null);
+>>>>>>> Stashed changes
                                 if (removeMi != null)
                                 {
                                     object res = null;
                                     try
                                     {
+<<<<<<< Updated upstream
                                         var pType = removeMi.GetParameters()[1].ParameterType;
                                         var argQty = pType == typeof(long) ? (object)(long)amount : (object)amount;
                                         // For methods with >=2 params we only pass the first two; additional params may be optional/defaulted.
@@ -371,6 +379,10 @@ public static class CurrencyHelpers
 
                                         res = removeMi.Invoke(inventory, args);
                                         TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: called Inventory.{removeMi.Name}({silverItemID},{amount}) -> {res}");
+=======
+                                        res = removeMi.Invoke(inventory, new object[] { silverItemID, argQty });
+                                        TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: called Inventory.RemoveItem({silverItemID},{amount}) -> {res}");
+>>>>>>> Stashed changes
                                     }
                                     catch (TargetInvocationException tie)
                                     {
@@ -390,6 +402,7 @@ public static class CurrencyHelpers
                                     }
                                     else
                                     {
+<<<<<<< Updated upstream
                                         // Non-boolean return: verify effect by re-reading currency when possible.
                                         long after = DetectPlayerCurrencyOrMinusOne();
                                         if (before != -1 && after != -1)
@@ -453,6 +466,39 @@ public static class CurrencyHelpers
                                     {
                                         if (res is bool ok && ok)
                                         {
+=======
+                                        TryRefreshCurrencyDisplay(currencyKeyword);
+                                        return true;
+                                    }
+                                }
+
+                                // 2) If explicit RemoveItem not found, see if AddItem exists and supports negative amounts
+                                var addMi = invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                              null, new Type[] { typeof(int), typeof(int) }, null)
+                                            ?? invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                                  null, new Type[] { typeof(int), typeof(long) }, null);
+                                if (addMi != null)
+                                {
+                                    var paramType = addMi.GetParameters()[1].ParameterType;
+                                    // attempt to pass a negative quantity
+                                    var argQty = paramType == typeof(long) ? (object)(long)-amount : (object)-amount;
+
+                                    object res = null;
+                                    try
+                                    {
+                                        res = addMi.Invoke(inventory, new object[] { silverItemID, argQty });
+                                        TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: called Inventory.AddItem({silverItemID},-{amount}) -> {res}");
+                                    }
+                                    catch (TargetInvocationException tie)
+                                    {
+                                        TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: Inventory.AddItem threw: {tie.InnerException?.Message ?? tie.Message}");
+                                    }
+
+                                    if (addMi.ReturnType == typeof(bool))
+                                    {
+                                        if (res is bool ok && ok)
+                                        {
+>>>>>>> Stashed changes
                                             TryRefreshCurrencyDisplay(currencyKeyword);
                                             return true;
                                         }
@@ -461,6 +507,7 @@ public static class CurrencyHelpers
                                     }
                                     else
                                     {
+<<<<<<< Updated upstream
                                         long after = DetectPlayerCurrencyOrMinusOne();
                                         if (before != -1 && after != -1)
                                         {
@@ -475,6 +522,10 @@ public static class CurrencyHelpers
                                         {
                                             TravelButtonPlugin.LogInfo("TryDeductPlayerCurrency: AddItem(negative) returned non-bool and currency read is unreliable; will attempt fallbacks.");
                                         }
+=======
+                                        TryRefreshCurrencyDisplay(currencyKeyword);
+                                        return true;
+>>>>>>> Stashed changes
                                     }
                                 }
                             }
@@ -528,6 +579,7 @@ public static class CurrencyHelpers
                                 }
                                 else
                                 {
+<<<<<<< Updated upstream
                                     long after = DetectPlayerCurrencyOrMinusOne();
                                     if (before != -1 && after != -1)
                                     {
@@ -542,6 +594,10 @@ public static class CurrencyHelpers
                                     {
                                         TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: {invMi.Name} returned non-bool and currency read is unreliable; trying other fallbacks.");
                                     }
+=======
+                                    TryRefreshCurrencyDisplay(currencyKeyword);
+                                    return true;
+>>>>>>> Stashed changes
                                 }
                             }
                         }
