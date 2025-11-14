@@ -945,10 +945,15 @@ public static class CurrencyHelpers
                     return false;
                 }
             }
+
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+            inventory.RemoveItem(silverItemID, amount);
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
+            return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: An exception occurred: {ex}");
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: An exception occurred: {ex.Message}");
             return false;
         }
     }
