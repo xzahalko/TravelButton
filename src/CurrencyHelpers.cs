@@ -21,12 +21,18 @@ public static class CurrencyHelpers
     {
         try
         {
-            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMono)
+            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (player == null)
+            {
+                TravelButtonPlugin.LogWarning("DetectPlayerCurrencyOrMinusOne: Could not find the local player character.");
+                return -1;
+            }
+            // Instead of scanning all MonoBehaviours, only scan components on the player character.
+            var playerComponents = player.GetComponentsInChildren<MonoBehaviour>(true);
+            foreach (var mb in playerComponents)
             {
                 if (mb == null) continue;
                 var t = mb.GetType();
-
                 // Try common property names first (readable)
                 string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
                 foreach (var pn in propNames)
@@ -45,7 +51,6 @@ public static class CurrencyHelpers
                     }
                     catch { /* ignore property access errors */ }
                 }
-
                 // Try common zero-arg methods like GetMoney(), GetSilver()
                 string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
                 foreach (var mn in methodNames)
@@ -64,7 +69,6 @@ public static class CurrencyHelpers
                     }
                     catch { /* ignore method invocation errors */ }
                 }
-
                 // Try fields with heuristic names
                 foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
@@ -82,7 +86,6 @@ public static class CurrencyHelpers
                     }
                     catch { /* ignore field access */ }
                 }
-
                 // Try properties by heuristic names (generic scan)
                 foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
@@ -101,8 +104,7 @@ public static class CurrencyHelpers
                     catch { /* ignore property access */ }
                 }
             }
-
-            TravelButtonPlugin.LogWarning("CurrencyHelpers: could not detect a currency field/property automatically.");
+            TravelButtonPlugin.LogWarning("CurrencyHelpers: could not detect a currency field/property on the player character.");
             return -1;
         }
         catch (Exception ex)
@@ -370,11 +372,11 @@ public static class CurrencyHelpers
         }
     }
 
-    public static bool AttemptDeductSilverDirect(int amount)
+    public static bool AttemptDeductSilverDirect(int amount, bool justSimulate = false)
     {
         if (amount < 0)
         {
-            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot deduct a negative amount: {amount}");
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot process a negative amount: {amount}");
             return false;
         }
         if (amount == 0)
@@ -395,28 +397,33 @@ public static class CurrencyHelpers
                 TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
                 return false;
             }
-            // The item ID for Silver in Outward is 6100110
             const int silverItemID = 6100110;
 
-            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+            if (justSimulate)
+            {
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver.");
+                try
+                {
+                    inventory.RemoveItem(silverItemID, amount);
+                    inventory.AddItem(silverItemID, amount);
+                    TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver.");
+                    return true;
+                }
+                catch (Exception)
+                {
+                    TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Simulation failed. Player does not have enough silver.");
+                    return false;
+                }
+            }
 
-            // We can't easily query the silver amount, so we'll rely on RemoveItem to fail if there's not enough.
-            // This is not ideal, but it's the most robust solution without proper API access.
-            try
-            {
-                inventory.RemoveItem(silverItemID, amount);
-                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Failed to deduct silver. Player may not have enough. Exception: {ex.Message}");
-                return false;
-            }
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
+            inventory.RemoveItem(silverItemID, amount);
+            TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
+            return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: An exception occurred: {ex}");
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: An exception occurred: {ex.Message}");
             return false;
         }
     }
