@@ -1031,8 +1031,10 @@ public class TravelButtonUI : MonoBehaviour
             {
                 try
                 {
-                    TravelButtonPlugin.LogInfo("TryTeleportThenCharge: performing immediate teleport (coords available in active scene).");
-                    bool ok = AttemptTeleportToPositionSafe(coordsHint);
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: performing immediate teleport (coords available in active scene). Initial coords: {coordsHint}");
+                    Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+                    TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: Coords after GetGroundedPosition: {groundedCoords}");
+                    bool ok = AttemptTeleportToPositionSafe(groundedCoords);
 
                     if (ok)
                     {
@@ -1329,7 +1331,10 @@ public class TravelButtonUI : MonoBehaviour
         bool teleported = false;
         try
         {
-            teleported = AttemptTeleportToPositionSafe(finalPos);
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounding final position {finalPos}");
+            Vector3 groundedFinalPos = TeleportHelpers.GetGroundedPosition(finalPos);
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounded position is {groundedFinalPos}");
+            teleported = AttemptTeleportToPositionSafe(groundedFinalPos);
         }
         catch (Exception ex)
         {
@@ -2025,74 +2030,6 @@ public class TravelButtonUI : MonoBehaviour
         return false;
     }
 
-    public static Vector3 GetGroundedPosition(Vector3 desiredPosition, float maxUp = 50f, float maxDown = 200f, float groundOffset = 1.2f)
-    {
-        try
-        {
-            // Raycast from above downwards to find the nearest collider/ground under the desired X/Z.
-            Vector3 rayStart = desiredPosition + Vector3.up * maxUp;
-            Ray ray = new Ray(rayStart, Vector3.down);
-            RaycastHit hit;
-
-            if (Physics.Raycast(ray, out hit, maxUp + maxDown, ~0, QueryTriggerInteraction.Ignore))
-            {
-                return new Vector3(desiredPosition.x, hit.point.y + groundOffset, desiredPosition.z);
-            }
-
-            // If no physics hit, attempt Terrain.activeTerrain.SampleHeight via reflection (if Terrain module loaded)
-            try
-            {
-                // Try to get the Terrain type from the Unity Terrain module
-                // Full name including assembly: "UnityEngine.Terrain, UnityEngine.TerrainModule"
-                var terrainType = ReflectionUtils.SafeGetType("UnityEngine.Terrain, UnityEngine.TerrainModule");
-                if (terrainType != null)
-                {
-                    // Get static property activeTerrain
-                    var activeTerrainProp = terrainType.GetProperty("activeTerrain", BindingFlags.Public | BindingFlags.Static);
-                    var activeTerrain = activeTerrainProp?.GetValue(null);
-                    if (activeTerrain != null)
-                    {
-                        // call SampleHeight(Vector3) on the activeTerrain instance
-                        var sampleHeightMethod = terrainType.GetMethod("SampleHeight", new Type[] { typeof(Vector3) });
-                        if (sampleHeightMethod != null)
-                        {
-                            var terrainYObj = sampleHeightMethod.Invoke(activeTerrain, new object[] { desiredPosition });
-                            if (terrainYObj is float terrainLocalHeight)
-                            {
-                                // activeTerrain.transform.position.y may be non-zero; get transform.position.y via reflection
-                                var transformProp = terrainType.GetProperty("transform", BindingFlags.Public | BindingFlags.Instance);
-                                var terrainTransform = transformProp?.GetValue(activeTerrain) as Transform;
-                                float terrainWorldY = (terrainTransform != null) ? terrainTransform.position.y : 0f;
-                                float worldHeight = terrainLocalHeight + terrainWorldY;
-                                return new Vector3(desiredPosition.x, worldHeight + groundOffset, desiredPosition.z);
-                            }
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore terrain reflection errors; continue to fallback below
-            }
-
-            // last-resort short downward ray from a small height above desiredPosition
-            rayStart = desiredPosition + Vector3.up * 1.0f;
-            ray = new Ray(rayStart, Vector3.down);
-            if (Physics.Raycast(ray, out hit, maxUp + 1f, ~0, QueryTriggerInteraction.Ignore))
-            {
-                return new Vector3(desiredPosition.x, hit.point.y + groundOffset, desiredPosition.z);
-            }
-
-            // Nothing found: return desired position with a small upward offset so player isn't at y=0 in many maps
-            return new Vector3(desiredPosition.x, desiredPosition.y + groundOffset, desiredPosition.z);
-        }
-        catch (Exception)
-        {
-            // On unexpected errors, return desired position + offset
-            return new Vector3(desiredPosition.x, desiredPosition.y + groundOffset, desiredPosition.z);
-        }
-    }
-
     private void TryPayAndTeleport(TravelButtonMod.City city)
     {
         // Kept for compatibility with older callers; but the new flow uses TryTeleportThenCharge.
@@ -2198,23 +2135,13 @@ public class TravelButtonUI : MonoBehaviour
                             catch { /* ignore reflection issues; fallback to global */ }
                         }
 
-                        // 4) coords/anchor availability (safe checks)
+                        // 4) coords/anchor availability (configuration check only)
                         bool coordsAvailable = false;
                         if (foundCity != null)
                         {
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(foundCity.targetGameObjectName))
-                                {
-                                    var go = GameObject.Find(foundCity.targetGameObjectName);
-                                    coordsAvailable = go != null;
-                                }
-                                if (!coordsAvailable && foundCity.coords != null && foundCity.coords.Length >= 3)
-                                {
-                                    coordsAvailable = true;
-                                }
-                            }
-                            catch { coordsAvailable = false; }
+                            // This check now only verifies that coordinates are *configured*, not if the target GameObject is currently loaded.
+                            // This is the key change to prevent buttons from becoming disabled after a scene change.
+                            coordsAvailable = !string.IsNullOrEmpty(foundCity.targetGameObjectName) || (foundCity.coords != null && foundCity.coords.Length >= 3);
                         }
 
                         // 5) money checks
@@ -2238,17 +2165,29 @@ public class TravelButtonUI : MonoBehaviour
                             try { visitedNow = IsCityVisitedFallback(foundCity); } catch { visitedNow = false; }
                         }
 
-                        // 7) scene-aware coords logic: allow clicking when target scene differs from active scene
+                        // 7) scene-aware coords logic & current location check
                         bool targetSceneSpecified = foundCity != null && !string.IsNullOrEmpty(foundCity.sceneName);
                         var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                        bool sceneMatches = !targetSceneSpecified || (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
-                        bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
+                        bool isCurrentScene = targetSceneSpecified && (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
 
-                        // final interactable decision
-                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
+                        // A city is visitable if it has coordinates OR if it's in a different scene (where coords will be found after load)
+                        bool canVisit = coordsAvailable || (targetSceneSpecified && !isCurrentScene);
 
-                        // debug log to help trace why a button was enabled/disabled
-                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
+                        // final interactable decision: mesto je aktivni v pripade, ze je povoleno v configu (enabledByConfig) a zaroven
+                        // mesto bylo navstiveno v minulosti hracem ve hre (visited) a zaroven
+                        // hrac ma dostatek prostredku v inventari ( hasEnoughMoney ) a zaroven
+                        // existuji souradnice pro teleport (canVisit) a zaroven
+                        // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
+                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
+
+                        // Detailed debug log for each condition
+                        TravelButtonPlugin.LogInfo($"Debug Refresh '{cityName}': " +
+                                                   $"enabledByConfig={enabledByConfig}, " +
+                                                   $"visitedNow={visitedNow}, " +
+                                                   $"hasEnoughMoney={hasEnoughMoney}, " +
+                                                   $"coordsAvailable={coordsAvailable}, " +
+                                                   $"isCurrentScene={isCurrentScene} " +
+                                                   $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)
                         {
