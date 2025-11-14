@@ -119,11 +119,27 @@ public static class CurrencyHelpers
     /// Uses common method names (RemoveMoney, SpendMoney, RemoveSilver, etc.) or direct field/property mutation.
     /// If it finds a candidate and determines funds are insufficient it returns false.
     /// </summary>
-    public static bool TryDeductPlayerCurrency(int amount)
+    public static bool TryDeductPlayerCurrency(int amount, string currencyKeyword = "silver")
     {
+        if (amount < 0)
+        {
+            TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: cannot process a negative amount: {amount}");
+            return false;
+        }
+        if (amount == 0)
+        {
+            return true;
+        }
+
+        currencyKeyword = (currencyKeyword ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(currencyKeyword))
+        {
+            currencyKeyword = "silver";
+        }
+
         try
         {
-            TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: trying to deduct {amount} silver.");
+            TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: trying to deduct {amount} {currencyKeyword}.");
 
             var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
             foreach (var mb in allMonoBehaviours)
@@ -131,7 +147,7 @@ public static class CurrencyHelpers
                 if (mb == null) continue;
                 var t = mb.GetType();
 
-                // Try common methods first
+                // 1) Try common method names first (explicit list).
                 string[] methodNames = new string[] { "RemoveMoney", "SpendMoney", "RemoveSilver", "SpendSilver", "RemoveCurrency", "TakeMoney", "UseMoney" };
                 foreach (var mn in methodNames)
                 {
@@ -156,48 +172,83 @@ public static class CurrencyHelpers
                             }
                         }
                     }
-                    catch { /* ignore reflect lookup problems */ }
+                    catch
+                    {
+                        // ignore reflect lookup problems
+                    }
                 }
 
-                // Try fields
+                // 1b) Try any method that contains the currencyKeyword (e.g. "RemoveSilver"), taking an int argument.
+                try
+                {
+                    foreach (var mi in t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic))
+                    {
+                        try
+                        {
+                            if (!mi.Name.ToLowerInvariant().Contains(currencyKeyword)) continue;
+                            var pars = mi.GetParameters();
+                            if (pars.Length == 1 && pars[0].ParameterType == typeof(int))
+                            {
+                                try
+                                {
+                                    var res = mi.Invoke(mb, new object[] { amount });
+                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: called {t.FullName}.{mi.Name}({amount}) -> {res}");
+                                    return true;
+                                }
+                                catch (TargetInvocationException tie)
+                                {
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: {t.FullName}.{mi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: invoking {t.FullName}.{mi.Name} failed: {ex.Message}");
+                                }
+                            }
+                        }
+                        catch { /* ignore per-method reflection issues */ }
+                    }
+                }
+                catch { /* ignore method enumeration issues */ }
+
+                // 2) Try fields (first matching field only)
                 foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     try
                     {
                         var name = fi.Name.ToLowerInvariant();
-                        if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                        if (!name.Contains(currencyKeyword)) continue;
+
+                        if (fi.FieldType == typeof(int))
                         {
-                            if (fi.FieldType == typeof(int))
+                            int cur = (int)fi.GetValue(mb);
+                            if (cur >= amount)
                             {
-                                int cur = (int)fi.GetValue(mb);
-                                if (cur >= amount)
-                                {
-                                    fi.SetValue(mb, cur - amount);
-                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
-                                    return true;
-                                }
-                                else
-                                {
-                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
-                                    return false;
-                                }
+                                fi.SetValue(mb, cur - amount);
+                                TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (int). New value {cur - amount}.");
+                                return true;
                             }
-                            else if (fi.FieldType == typeof(long))
+                            else
                             {
-                                long cur = (long)fi.GetValue(mb);
-                                if (cur >= amount)
-                                {
-                                    fi.SetValue(mb, cur - amount);
-                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
-                                    return true;
-                                }
-                                else
-                                {
-                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
-                                    return false;
-                                }
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                return false;
                             }
                         }
+                        else if (fi.FieldType == typeof(long))
+                        {
+                            long cur = (long)fi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                fi.SetValue(mb, cur - amount);
+                                TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{fi.Name} (long). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{fi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                        // If other numeric types are possible, handle them here (float/decimal) as needed.
                     }
                     catch (Exception ex)
                     {
@@ -205,43 +256,43 @@ public static class CurrencyHelpers
                     }
                 }
 
-                // Try properties
+                // 3) Try properties (first matching property only)
                 foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     try
                     {
                         var name = pi.Name.ToLowerInvariant();
-                        if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
+                        if (!name.Contains(currencyKeyword)) continue;
+                        if (!pi.CanRead || !pi.CanWrite) continue;
+
+                        if (pi.PropertyType == typeof(int))
                         {
-                            if (pi.PropertyType == typeof(int))
+                            int cur = (int)pi.GetValue(mb);
+                            if (cur >= amount)
                             {
-                                int cur = (int)pi.GetValue(mb);
-                                if (cur >= amount)
-                                {
-                                    pi.SetValue(mb, cur - amount);
-                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
-                                    return true;
-                                }
-                                else
-                                {
-                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
-                                    return false;
-                                }
+                                pi.SetValue(mb, cur - amount);
+                                TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (int). New value {cur - amount}.");
+                                return true;
                             }
-                            else if (pi.PropertyType == typeof(long))
+                            else
                             {
-                                long cur = (long)pi.GetValue(mb);
-                                if (cur >= amount)
-                                {
-                                    pi.SetValue(mb, cur - amount);
-                                    TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
-                                    return true;
-                                }
-                                else
-                                {
-                                    TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
-                                    return false;
-                                }
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                return false;
+                            }
+                        }
+                        else if (pi.PropertyType == typeof(long))
+                        {
+                            long cur = (long)pi.GetValue(mb);
+                            if (cur >= amount)
+                            {
+                                pi.SetValue(mb, cur - amount);
+                                TravelButtonPlugin.LogInfo($"TryDeductPlayerCurrency: deducted {amount} from {t.FullName}.{pi.Name} (long). New value {cur - amount}.");
+                                return true;
+                            }
+                            else
+                            {
+                                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: not enough funds in {t.FullName}.{pi.Name} ({cur} < {amount}).");
+                                return false;
                             }
                         }
                     }
@@ -252,7 +303,7 @@ public static class CurrencyHelpers
                 }
             }
 
-            TravelButtonPlugin.LogWarning("TryDeductPlayerCurrency: could not find an inventory/money field or method automatically. Travel aborted.");
+            TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: could not find an inventory/money field, property or method containing '{currencyKeyword}'. Travel aborted.");
             return false;
         }
         catch (Exception ex)
@@ -266,11 +317,27 @@ public static class CurrencyHelpers
     /// Attempts to refund currency to the player. Returns true if a refund action was performed.
     /// Mirrors the deduction heuristics with additive actions.
     /// </summary>
-    public static bool TryRefundPlayerCurrency(int amount)
+    public static bool TryRefundPlayerCurrency(int amount, string currencyKeyword = "silver")
     {
+        if (amount < 0)
+        {
+            TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: cannot process a negative amount: {amount}");
+            return false;
+        }
+        if (amount == 0)
+        {
+            return true;
+        }
+
+        currencyKeyword = (currencyKeyword ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(currencyKeyword))
+        {
+            currencyKeyword = "silver";
+        }
+
         try
         {
-            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: trying to refund {amount} silver.");
+            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: trying to refund {amount} {currencyKeyword}.");
 
             var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
             foreach (var mb in allMonoBehaviours)
@@ -278,8 +345,8 @@ public static class CurrencyHelpers
                 if (mb == null) continue;
                 var t = mb.GetType();
 
-                // Try methods that add money
-                string[] addMethodNames = new string[] { "AddMoney", "GrantMoney", "GiveMoney", "AddSilver", "GiveSilver", "GrantSilver", "AddCoins" };
+                // Try common add-money methods first
+                string[] addMethodNames = new string[] { "AddMoney", "GrantMoney", "GiveMoney", "AddSilver", "GiveSilver", "GrantSilver", "AddCoins", "AddCurrency" };
                 foreach (var mn in addMethodNames)
                 {
                     try
@@ -289,42 +356,81 @@ public static class CurrencyHelpers
                         {
                             try
                             {
-                                mi.Invoke(mb, new object[] { amount });
-                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: called {t.FullName}.{mn}({amount})");
+                                var res = mi.Invoke(mb, new object[] { amount });
+                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: called {t.FullName}.{mn}({amount}) -> {res}");
                                 return true;
+                            }
+                            catch (TargetInvocationException tie)
+                            {
+                                TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: {t.FullName}.{mn} threw: {tie.InnerException?.Message ?? tie.Message}");
                             }
                             catch (Exception ex)
                             {
-                                TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: calling {t.FullName}.{mn} threw: {ex}");
+                                TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: invoking {t.FullName}.{mn} failed: {ex.Message}");
                             }
                         }
                     }
-                    catch { /* ignore lookup failures */ }
+                    catch
+                    {
+                        // ignore reflection lookup problems
+                    }
                 }
 
-                // Try fields/properties to increment
+                // Try any method that contains the currencyKeyword (e.g. "AddSilver"), taking an int argument.
+                try
+                {
+                    foreach (var mi in t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic))
+                    {
+                        try
+                        {
+                            if (!mi.Name.ToLowerInvariant().Contains(currencyKeyword)) continue;
+                            var pars = mi.GetParameters();
+                            if (pars.Length == 1 && pars[0].ParameterType == typeof(int))
+                            {
+                                try
+                                {
+                                    var res = mi.Invoke(mb, new object[] { amount });
+                                    TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: called {t.FullName}.{mi.Name}({amount}) -> {res}");
+                                    return true;
+                                }
+                                catch (TargetInvocationException tie)
+                                {
+                                    TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: {t.FullName}.{mi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: invoking {t.FullName}.{mi.Name} failed: {ex.Message}");
+                                }
+                            }
+                        }
+                        catch { /* ignore per-method reflection issues */ }
+                    }
+                }
+                catch { /* ignore method enumeration issues */ }
+
+                // Try fields (first matching field only)
                 foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     try
                     {
                         var name = fi.Name.ToLowerInvariant();
-                        if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
+                        if (!name.Contains(currencyKeyword)) continue;
+
+                        if (fi.FieldType == typeof(int))
                         {
-                            if (fi.FieldType == typeof(int))
-                            {
-                                int cur = (int)fi.GetValue(mb);
-                                fi.SetValue(mb, cur + amount);
-                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
-                                return true;
-                            }
-                            else if (fi.FieldType == typeof(long))
-                            {
-                                long cur = (long)fi.GetValue(mb);
-                                fi.SetValue(mb, cur + amount);
-                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
-                                return true;
-                            }
+                            int cur = (int)fi.GetValue(mb);
+                            fi.SetValue(mb, cur + amount);
+                            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
+                            return true;
                         }
+                        else if (fi.FieldType == typeof(long))
+                        {
+                            long cur = (long)fi.GetValue(mb);
+                            fi.SetValue(mb, cur + amount);
+                            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
+                            return true;
+                        }
+                        // handle other numeric types if needed
                     }
                     catch (Exception ex)
                     {
@@ -332,27 +438,28 @@ public static class CurrencyHelpers
                     }
                 }
 
+                // Try properties (first matching property only)
                 foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                 {
                     try
                     {
                         var name = pi.Name.ToLowerInvariant();
-                        if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
+                        if (!name.Contains(currencyKeyword)) continue;
+                        if (!pi.CanRead || !pi.CanWrite) continue;
+
+                        if (pi.PropertyType == typeof(int))
                         {
-                            if (pi.PropertyType == typeof(int))
-                            {
-                                int cur = (int)pi.GetValue(mb);
-                                pi.SetValue(mb, cur + amount);
-                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
-                                return true;
-                            }
-                            else if (pi.PropertyType == typeof(long))
-                            {
-                                long cur = (long)pi.GetValue(mb);
-                                pi.SetValue(mb, cur + amount);
-                                TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
-                                return true;
-                            }
+                            int cur = (int)pi.GetValue(mb);
+                            pi.SetValue(mb, cur + amount);
+                            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
+                            return true;
+                        }
+                        else if (pi.PropertyType == typeof(long))
+                        {
+                            long cur = (long)pi.GetValue(mb);
+                            pi.SetValue(mb, cur + amount);
+                            TravelButtonPlugin.LogInfo($"TryRefundPlayerCurrency: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
+                            return true;
                         }
                     }
                     catch (Exception ex)
@@ -362,7 +469,7 @@ public static class CurrencyHelpers
                 }
             }
 
-            TravelButtonPlugin.LogWarning("TryRefundPlayerCurrency: could not find a place to refund the currency automatically.");
+            TravelButtonPlugin.LogWarning($"TryRefundPlayerCurrency: could not find a place to refund the currency containing '{currencyKeyword}'.");
             return false;
         }
         catch (Exception ex)
@@ -400,7 +507,7 @@ public static class CurrencyHelpers
                 return false;
             }
 
-            const int silverItemID = 6100110;
+//            const int silverItemID = 9000010;
 
             // If you already have a reliable read (preferred), use it first.
             long playerSilver = DetectPlayerCurrencyOrMinusOne();
@@ -417,7 +524,14 @@ public static class CurrencyHelpers
                 try
                 {
                     // Attempt to remove; if RemoveItem throws on insufficient, this will go to catch.
-                    inventory.RemoveItem(silverItemID, amount);
+//                    inventory.RemoveItem(silverItemID, amount);
+                    if (!TryDeductPlayerCurrency(amount))
+                    {
+                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
+                        // At this point inventory has been mutated and refund failed — decide how to handle.
+                        return false;
+                    }
+
                     removed = true;
                     TravelButtonPlugin.LogInfo("AttemptDeductSilverDirect: Simulation remove succeeded - will attempt refund.");
                     // TryRefundPlayerCurrency should add the silver back. Ensure it returns success/false.
@@ -454,7 +568,13 @@ public static class CurrencyHelpers
                 TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
                 try
                 {
-                    inventory.RemoveItem(silverItemID, amount);
+//                    inventory.RemoveItem(silverItemID, amount);
+                    if (!TryDeductPlayerCurrency(amount))
+                    {
+                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
+                        // At this point inventory has been mutated and refund failed — decide how to handle.
+                        return false;
+                    }
                     TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
                     return true;
                 }
