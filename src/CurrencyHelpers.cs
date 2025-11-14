@@ -370,11 +370,11 @@ public static class CurrencyHelpers
         }
     }
 
-    public static bool AttemptDeductSilverDirect(int amount)
+    public static bool AttemptDeductSilverDirect(int amount, bool justSimulate = false)
     {
         if (amount < 0)
         {
-            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot deduct a negative amount: {amount}");
+            TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Cannot process a negative amount: {amount}");
             return false;
         }
         if (amount == 0)
@@ -395,13 +395,25 @@ public static class CurrencyHelpers
                 TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
                 return false;
             }
-            // The item ID for Silver in Outward is 6100110
             const int silverItemID = 6100110;
-
+            // First, check if the player has enough silver.
+            long playerSilver = DetectPlayerCurrencyOrMinusOne();
+            if (playerSilver == -1)
+            {
+                TravelButtonPlugin.LogWarning("AttemptDeductSilverDirect: Could not determine player's silver amount.");
+                return false;
+            }
+            if (playerSilver < amount)
+            {
+                TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: Player does not have enough silver ({playerSilver} < {amount}).");
+                return false;
+            }
+            if (justSimulate)
+            {
+                TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Simulation successful. Player has enough silver ({playerSilver} >= {amount}).");
+                return true;
+            }
             TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
-
-            // We can't easily query the silver amount, so we'll rely on RemoveItem to fail if there's not enough.
-            // This is not ideal, but it's the most robust solution without proper API access.
             try
             {
                 inventory.RemoveItem(silverItemID, amount);
