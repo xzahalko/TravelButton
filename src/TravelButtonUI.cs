@@ -2140,23 +2140,13 @@ public class TravelButtonUI : MonoBehaviour
                             catch { /* ignore reflection issues; fallback to global */ }
                         }
 
-                        // 4) coords/anchor availability (safe checks)
+                        // 4) coords/anchor availability (configuration check only)
                         bool coordsAvailable = false;
                         if (foundCity != null)
                         {
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(foundCity.targetGameObjectName))
-                                {
-                                    var go = GameObject.Find(foundCity.targetGameObjectName);
-                                    coordsAvailable = go != null;
-                                }
-                                if (!coordsAvailable && foundCity.coords != null && foundCity.coords.Length >= 3)
-                                {
-                                    coordsAvailable = true;
-                                }
-                            }
-                            catch { coordsAvailable = false; }
+                            // This check now only verifies that coordinates are *configured*, not if the target GameObject is currently loaded.
+                            // This is the key change to prevent buttons from becoming disabled after a scene change.
+                            coordsAvailable = !string.IsNullOrEmpty(foundCity.targetGameObjectName) || (foundCity.coords != null && foundCity.coords.Length >= 3);
                         }
 
                         // 5) money checks
@@ -2195,8 +2185,14 @@ public class TravelButtonUI : MonoBehaviour
                         // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                        // debug log to help trace why a button was enabled/disabled
-                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
+                        // Detailed debug log for each condition
+                        TravelButtonPlugin.LogInfo($"Debug Refresh '{cityName}': " +
+                                                   $"enabledByConfig={enabledByConfig}, " +
+                                                   $"visitedNow={visitedNow}, " +
+                                                   $"hasEnoughMoney={hasEnoughMoney}, " +
+                                                   $"coordsAvailable={coordsAvailable}, " +
+                                                   $"isCurrentScene={isCurrentScene} " +
+                                                   $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)
                         {
