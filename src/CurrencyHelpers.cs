@@ -571,6 +571,10 @@ public static class CurrencyHelpers
             {
                 TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: player/inventory attempt failed: {ex}");
             }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: player/inventory attempt failed: {ex}");
+            }
 
             TravelButtonPlugin.LogWarning($"TryDeductPlayerCurrency: could not find an authoritative inventory/money field, property, or method containing '{currencyKeyword}'. Travel aborted.");
             return false;
@@ -580,6 +584,11 @@ public static class CurrencyHelpers
             TravelButtonPlugin.LogWarning("TryDeductPlayerCurrency exception: " + ex);
             return false;
         }
+    }
+
+    private static void TryRefreshCurrencyDisplay(string currencyKeyword)
+    {
+        // Placeholder for the refresh logic
     }
 
     /// <summary>
@@ -916,7 +925,7 @@ public static class CurrencyHelpers
             TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
             return true;
         }
-        catch (Exception ex)
+        else
         {
             TravelButtonPlugin.LogWarning($"AttemptDeductSilverDirect: An exception occurred: {ex.Message}");
             return false;
