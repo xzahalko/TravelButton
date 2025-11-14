@@ -1009,9 +1009,10 @@ public static class CurrencyHelpers
                     }
 
                     // TryRefundPlayerCurrency should add the silver back. Ensure it returns success/false.
+//                    if (!TryRefundPlayerCurrency(100))
                     if (!TryRefundPlayerCurrency(amount))
                     {
-                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
+                            TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
                         return false;
                     }
 

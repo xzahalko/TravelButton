@@ -2060,8 +2060,10 @@ public class TravelButtonUI : MonoBehaviour
     // Refresh city buttons while dialog is open: re-evaluates player's currency and enables/disables buttons.
     private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialog)
     {
+        TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen start");
         while (dialog != null && dialog.activeInHierarchy)
         {
+            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen activeInHierarchy");
             try
             {
                 // fetch current player money (best-effort)
@@ -2079,6 +2081,7 @@ public class TravelButtonUI : MonoBehaviour
                 var content = dialog.transform.Find("ScrollArea/Viewport/Content");
                 if (content != null)
                 {
+                    TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen content found");
                     for (int i = 0; i < content.childCount; i++)
                     {
                         var child = content.GetChild(i);
@@ -2112,6 +2115,8 @@ public class TravelButtonUI : MonoBehaviour
                         int cost = TravelButtonMod.cfgTravelCost.Value;
                         if (foundCity != null)
                         {
+                            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen foundCity found");
+
                             try
                             {
                                 var priceField = foundCity.GetType().GetField("price");
@@ -2191,7 +2196,7 @@ public class TravelButtonUI : MonoBehaviour
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
                         // debug log to help trace why a button was enabled/disabled
-                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
+                        TravelButtonPlugin.LogDebug($"RefreshCityButtons: city='{cityName}', enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, coordsAvailable={coordsAvailable}, currentMoney={currentMoney}, cost={cost}, enforceMoneyNow={enforceMoneyNow}, interactable={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)
                         {
