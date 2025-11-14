@@ -1346,7 +1346,7 @@ public class TravelButtonUI : MonoBehaviour
 
             try
             {
-                bool charged = AttemptDeductSilver(cost);
+                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost);
                 if (!charged)
                 {
                     TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: Teleported to {city.name} but failed to deduct {cost} silver.");

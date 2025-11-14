@@ -397,15 +397,7 @@ public static class CurrencyHelpers
             }
             // The item ID for Silver in Outward is 6100110
             const int silverItemID = 6100110;
-            var silverStacks = inventory.GetItems(silverItemID);
-            int totalSilver = 0;
-            if (silverStacks != null)
-            {
-                foreach (var stack in silverStacks)
-                {
-                    totalSilver += stack.StackAmount;
-                }
-            }
+            int totalSilver = playerCharacter.Inventory.GetItemStack(6100110).Count;
 
             TravelButtonPlugin.LogInfo($"AttemptDeductSilverDirect: Player has {totalSilver} silver. Attempting to deduct {amount}.");
 
