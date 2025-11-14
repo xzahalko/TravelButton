@@ -156,15 +156,35 @@ public static class TeleportHelpers
             }
             catch { }
 
-            // Actually move the player's transform. Doing transform.position is usually fine for Outward.
-            try
+            // Handle CharacterController teleportation safely
+            var characterController = playerGO.GetComponentInChildren<CharacterController>();
+            if (characterController != null)
             {
-                playerGO.transform.position = target;
+                try
+                {
+                    characterController.enabled = false;
+                    playerGO.transform.position = target;
+                    characterController.enabled = true;
+                    TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Teleported using CharacterController.");
+                }
+                catch (Exception exCC)
+                {
+                    TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: Exception while using CharacterController: " + exCC);
+                    return false;
+                }
             }
-            catch (Exception exMove)
+            else
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception while setting position: " + exMove);
-                return false;
+                // Fallback for non-CharacterController players
+                try
+                {
+                    playerGO.transform.position = target;
+                }
+                catch (Exception exMove)
+                {
+                    TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception while setting position: " + exMove);
+                    return false;
+                }
             }
 
             var after = playerGO.transform.position;
@@ -178,20 +198,33 @@ public static class TeleportHelpers
         }
     }
 
-    // additional helper: ground a position (simple raycast down)
+    // additional helper: ground a position (more robust raycast down)
     public static Vector3 GetGroundedPosition(Vector3 pos)
     {
         try
         {
+            // Raycast from high above the target downwards to find ground, with a much longer leash
             RaycastHit hit;
-            var origin = pos + Vector3.up * 5f;
-            if (Physics.Raycast(origin, Vector3.down, out hit, 50f, ~0, QueryTriggerInteraction.Ignore))
+            var origin = pos + Vector3.up * 200f; // Start high to clear mountains/buildings
+            if (Physics.Raycast(origin, Vector3.down, out hit, 400f, ~0, QueryTriggerInteraction.Ignore)) // 400m limit
             {
-                return new Vector3(pos.x, hit.point.y + 0.1f, pos.z);
+                return new Vector3(pos.x, hit.point.y + 0.2f, pos.z); // Slightly higher clearance
             }
+
+            // Fallback: SphereCast for wider check (helps with falling through cracks)
+            if (Physics.SphereCast(origin, 0.5f, Vector3.down, out hit, 400f, ~0, QueryTriggerInteraction.Ignore))
+            {
+                return new Vector3(pos.x, hit.point.y + 0.2f, pos.z);
+            }
+
+            // If we reach here, no ground was found. Log a warning.
+            TravelButtonPlugin.LogWarning($"GetGroundedPosition: Could not find ground for position {pos}. Teleport may be unsafe.");
         }
-        catch { }
-        return pos;
+        catch (Exception ex)
+        {
+             TravelButtonPlugin.LogWarning($"GetGroundedPosition: Exception while finding ground for {pos}: {ex.Message}");
+        }
+        return pos; // Return original position as a last resort
     }
 
     public static Vector3 EnsureClearance(Vector3 pos)
