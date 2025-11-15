@@ -305,7 +305,7 @@ public class CityDiscovery : MonoBehaviour
         return null;
     }
 
-    private Vector3? GetCityPosition(TravelButtonMod.City city)
+    public Vector3? GetCityPosition(TravelButtonMod.City city)
     {
         if (city == null) return null;
         try
