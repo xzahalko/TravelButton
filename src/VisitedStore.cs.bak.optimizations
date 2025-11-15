@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -66,7 +66,7 @@ public static class VisitedStore
         }
         catch (Exception ex)
         {
-            TBLog.Warn("VisitedStore.HasVisited exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("VisitedStore.HasVisited exception: " + ex.Message);
             return false;
         }
     }
@@ -90,7 +90,7 @@ public static class VisitedStore
         }
         catch (Exception ex)
         {
-            TBLog.Warn("VisitedStore.MarkVisited exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("VisitedStore.MarkVisited exception: " + ex.Message);
             return false;
         }
     }
@@ -123,7 +123,7 @@ public static class VisitedStore
         }
         catch (Exception ex)
         {
-            TBLog.Warn("VisitedStore.ClearVisited exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("VisitedStore.ClearVisited exception: " + ex.Message);
         }
     }
 
@@ -138,7 +138,7 @@ public static class VisitedStore
             if (!File.Exists(path))
             {
                 visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                TBLog.Info($"VisitedStore: no visited file found at '{path}'. Starting with empty set.");
+                TravelButtonPlugin.LogInfo($"VisitedStore: no visited file found at '{path}'. Starting with empty set.");
                 return;
             }
 
@@ -146,7 +146,7 @@ public static class VisitedStore
             if (string.IsNullOrWhiteSpace(txt))
             {
                 visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                TBLog.Info($"VisitedStore: visited file '{path}' empty -> starting with empty set.");
+                TravelButtonPlugin.LogInfo($"VisitedStore: visited file '{path}' empty -> starting with empty set.");
                 return;
             }
 
@@ -157,18 +157,18 @@ public static class VisitedStore
                 if (wrapper != null && wrapper.visited != null)
                 {
                     visited = new HashSet<string>(wrapper.visited, StringComparer.OrdinalIgnoreCase);
-                    TBLog.Info($"VisitedStore: loaded {visited.Count} visited entries from '{path}'.");
+                    TravelButtonPlugin.LogInfo($"VisitedStore: loaded {visited.Count} visited entries from '{path}'.");
                 }
                 else
                 {
                     visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    TBLog.Warn($"VisitedStore: visited file '{path}' parsed to null wrapper; starting empty.");
+                    TravelButtonPlugin.LogWarning($"VisitedStore: visited file '{path}' parsed to null wrapper; starting empty.");
                 }
             }
             catch (Exception exJson)
             {
                 // Fall back to attempting to parse a raw JSON array using a minimal approach
-                TBLog.Warn("VisitedStore: JsonUtility.FromJson failed: " + exJson.Message + " - attempting minimal parse.");
+                TravelButtonPlugin.LogWarning("VisitedStore: JsonUtility.FromJson failed: " + exJson.Message + " - attempting minimal parse.");
                 try
                 {
                     // Attempt to parse as ["a","b",...] by trimming brackets and splitting commas conservatively
@@ -188,25 +188,25 @@ public static class VisitedStore
                             }
                         }
                         visited = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
-                        TBLog.Info($"VisitedStore: minimal parse loaded {visited.Count} entries.");
+                        TravelButtonPlugin.LogInfo($"VisitedStore: minimal parse loaded {visited.Count} entries.");
                     }
                     else
                     {
                         visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        TBLog.Warn("VisitedStore: visited file did not look like an array - starting empty.");
+                        TravelButtonPlugin.LogWarning("VisitedStore: visited file did not look like an array - starting empty.");
                     }
                 }
                 catch (Exception ex2)
                 {
                     visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    TBLog.Warn("VisitedStore: fallback parse failed: " + ex2.Message);
+                    TravelButtonPlugin.LogWarning("VisitedStore: fallback parse failed: " + ex2.Message);
                 }
             }
         }
         catch (Exception ex)
         {
             visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            TBLog.Warn("VisitedStore.LoadFromDisk exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("VisitedStore.LoadFromDisk exception: " + ex.Message);
         }
     }
 
@@ -231,11 +231,11 @@ public static class VisitedStore
             catch { /* ignore directory creation errors - write may still fail and be handled below */ }
 
             File.WriteAllText(path, json);
-            TBLog.Info($"VisitedStore: saved {visited.Count} visited entries to '{path}'.");
+            TravelButtonPlugin.LogInfo($"VisitedStore: saved {visited.Count} visited entries to '{path}'.");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("VisitedStore.SaveToDisk exception: " + ex.Message);
+            TravelButtonPlugin.LogWarning("VisitedStore.SaveToDisk exception: " + ex.Message);
         }
     }
 
