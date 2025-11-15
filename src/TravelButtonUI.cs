@@ -27,6 +27,7 @@ using UnityEngine.AI;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using UnityEngine.SceneManagement;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -53,7 +54,7 @@ public class TravelButtonUI : MonoBehaviour
     private bool inventoryParentFound = false;
 
     // The real GameObject we watch for visibility changes (window, panel, or an object with CanvasGroup)
-    private GameObject inventoryVisibilityTarget;
+    private Transform inventoryVisibilityTarget;
 
     // Coroutine that refreshes city button interactability while dialog is open
     private Coroutine refreshButtonsCoroutine;
@@ -69,6 +70,643 @@ public class TravelButtonUI : MonoBehaviour
     private const string CustomIconFilename = "TravelButton_icon.png";
     private const string ResourcesIconPath = "TravelButton/icon"; // Resources/TravelButton/icon.png -> Resources.Load(ResourcesIconPath)
 
+    private Coroutine inventoryVisibilityCoroutine;
+    // Prevent competing placement after final placement is done
+    private volatile bool placementFinalized = false;
+
+    private void StartInventoryVisibilityMonitor()
+    {
+        if (inventoryVisibilityCoroutine != null) return;
+        inventoryVisibilityCoroutine = StartCoroutine(MonitorInventoryContainerVisibilityCoroutine());
+    }
+
+    private void StopInventoryVisibilityMonitor()
+    {
+        if (inventoryVisibilityCoroutine != null)
+        {
+            try { StopCoroutine(inventoryVisibilityCoroutine); } catch { }
+            inventoryVisibilityCoroutine = null;
+        }
+    }
+
+    private IEnumerator MonitorInventoryContainerVisibilityCoroutine(float pollInterval = 0.12f)
+    {
+        if (buttonObject == null) yield break;
+
+        TravelButtonPlugin.LogInfo("MonitorInventoryContainerVisibilityCoroutine: started; monitoring " +
+                                  (inventoryVisibilityTarget != null ? inventoryVisibilityTarget.name : "null"));
+
+        while (buttonObject != null)
+        {
+            bool shouldShow = true;
+
+            if (inventoryVisibilityTarget != null)
+            {
+                var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
+                if (cg != null)
+                {
+                    // Use alpha primarily: show if alpha above threshold. Use OR with interactable to be permissive.
+                    shouldShow = (cg.alpha > 0.05f) || cg.interactable;
+                    TravelButtonPlugin.LogInfo($"Monitor: target '{inventoryVisibilityTarget.name}' CanvasGroup alpha={cg.alpha} interactable={cg.interactable} => shouldShow={shouldShow}");
+                }
+                else
+                {
+                    shouldShow = inventoryVisibilityTarget.gameObject.activeInHierarchy;
+                    TravelButtonPlugin.LogInfo($"Monitor: target '{inventoryVisibilityTarget.name}' no CanvasGroup => activeInHierarchy={shouldShow}");
+                }
+            }
+            else
+            {
+                // No explicit target — keep button visible (safer default)
+                shouldShow = true;
+                TravelButtonPlugin.LogInfo("Monitor: no inventoryVisibilityTarget => default shouldShow=true");
+            }
+
+            try
+            {
+                if (buttonObject.activeSelf != shouldShow)
+                {
+                    buttonObject.SetActive(shouldShow);
+                    TravelButtonPlugin.LogInfo("MonitorInventoryContainerVisibilityCoroutine: set button active=" + shouldShow);
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("MonitorInventoryContainerVisibilityCoroutine: SetActive failed: " + ex);
+            }
+
+            yield return new WaitForSeconds(pollInterval);
+        }
+
+        TravelButtonPlugin.LogInfo("MonitorInventoryContainerVisibilityCoroutine: ended.");
+    }
+
+    // Insert into TravelButtonUI (same class or partial)
+    private void DumpTravelRelevantState(string tag = "")
+    {
+        try
+        {
+            TravelButtonPlugin.LogInfo($"DBG-TRAVEL: DumpTravelRelevantState START {tag}");
+
+            // 1) CityDiscovery / Travel manager instances
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            string[] managerNames = new[] { "CityDiscovery", "TravelButtonVisitedManager", "VisitedManager", "TravelManager", "FastTravelMenu" };
+
+            foreach (var mn in managerNames)
+            {
+                try
+                {
+                    var t = assemblies.Select(a => a.GetType(mn, false)).FirstOrDefault(tt => tt != null);
+                    if (t == null) continue;
+                    var inst = FindObjectOfType(t) as object;
+                    TravelButtonPlugin.LogInfo($"DBG-TRAVEL: managerType='{mn}' typeFound={(t != null)} instanceFound={(inst != null)}");
+                    if (inst != null)
+                    {
+                        // Dump boolean fields/properties and any enumerable fields with city names
+                        var members = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                        foreach (var m in members)
+                        {
+                            try
+                            {
+                                // bool field/property
+                                if (m is FieldInfo fi && fi.FieldType == typeof(bool))
+                                {
+                                    var v = fi.GetValue(inst);
+                                    TravelButtonPlugin.LogInfo($"DBG-TRAVEL: {mn}.{fi.Name} (bool) = {v}");
+                                }
+                                else if (m is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                                {
+                                    var v = pi.GetValue(inst, null);
+                                    TravelButtonPlugin.LogInfo($"DBG-TRAVEL: {mn}.{pi.Name} (bool) = {v}");
+                                }
+
+                                // IEnumerable field (list/dict) - show up to 200 items
+                                if (m is FieldInfo ffi && typeof(System.Collections.IEnumerable).IsAssignableFrom(ffi.FieldType) && ffi.FieldType != typeof(string))
+                                {
+                                    var val = ffi.GetValue(inst) as System.Collections.IEnumerable;
+                                    if (val != null)
+                                    {
+                                        int i = 0;
+                                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL: {mn}.{ffi.Name} enumerable begin");
+                                        foreach (var it in val)
+                                        {
+                                            TravelButtonPlugin.LogInfo($"DBG-TRAVEL:   [{i}] {it}");
+                                            if (++i > 200) { TravelButtonPlugin.LogInfo("DBG-TRAVEL:   ... truncated"); break; }
+                                        }
+                                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL: {mn}.{ffi.Name} enumerable end (count shown {i})");
+                                    }
+                                }
+                            }
+                            catch (Exception exMem) { TravelButtonPlugin.LogWarning($"DBG-TRAVEL: error reading member {mn}.{m.Name}: " + exMem); }
+                        }
+                    }
+                }
+                catch (Exception exType) { TravelButtonPlugin.LogWarning("DBG-TRAVEL: manager probe failed for " + mn + " : " + exType); }
+            }
+
+            // 2) If there's a visible FastTravel UI component, dump its state
+            try
+            {
+                var ftType = assemblies.Select(a => a.GetType("FastTravelMenu", false)).FirstOrDefault(tt => tt != null);
+                if (ftType != null)
+                {
+                    var ftInst = FindObjectOfType(ftType) as object;
+                    if (ftInst != null)
+                    {
+                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL: FastTravelMenu instance found on GO '{(ftInst as MonoBehaviour)?.gameObject?.name}'");
+                        DumpObjectFieldsAndProperties(ftInst, "FastTravelMenu");
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            // 3) City components: find components whose type/name contains "city" or "destination" and log visited booleans
+            try
+            {
+                var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
+                var cityLike = comps.Where(c =>
+                {
+                    var n = c.GetType().Name.ToLowerInvariant();
+                    return n.Contains("city") || n.Contains("destination") || n.Contains("fasttravel") || n.Contains("travel");
+                }).ToArray();
+
+                TravelButtonPlugin.LogInfo($"DBG-TRAVEL: Found {cityLike.Length} city-like components");
+                foreach (var c in cityLike)
+                {
+                    TryLogVisitedishMembers(c, c.GetType().Name);
+                }
+            }
+            catch { /* ignore */ }
+
+            TravelButtonPlugin.LogInfo($"DBG-TRAVEL: DumpTravelRelevantState END {tag}");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG-TRAVEL: DumpTravelRelevantState failed: " + ex);
+        }
+    }
+
+    private void TryLogVisitedishMembers(object instance, string label)
+    {
+        try
+        {
+            var t = instance.GetType();
+            TravelButtonPlugin.LogInfo($"DBG-TRAVEL: Inspecting {label} ({t.FullName}) on GO '{(instance as MonoBehaviour)?.gameObject?.name}'");
+
+            // prefer direct bools/properties named like visited/enabled/available
+            var bools = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(m =>
+                {
+                    string mn = m.Name.ToLowerInvariant();
+                    return mn.Contains("visited") || mn.Contains("isvisited") || mn.Contains("enabled") || mn.Contains("available") || mn.Contains("locked") || mn.Contains("discovered");
+                });
+
+            foreach (var m in bools)
+            {
+                try
+                {
+                    if (m is FieldInfo fi && fi.FieldType == typeof(bool))
+                    {
+                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL:  - Field {fi.Name} = {fi.GetValue(instance)}");
+                    }
+                    else if (m is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                    {
+                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL:  - Prop {pi.Name} = {pi.GetValue(instance, null)}");
+                    }
+                }
+                catch { }
+            }
+
+            // lists and dictionaries also
+            var lists = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(f => typeof(System.Collections.IEnumerable).IsAssignableFrom(f.FieldType) && f.FieldType != typeof(string));
+
+            foreach (var f in lists)
+            {
+                try
+                {
+                    var val = f.GetValue(instance) as System.Collections.IEnumerable;
+                    if (val == null) continue;
+                    int i = 0;
+                    TravelButtonPlugin.LogInfo($"DBG-TRAVEL:  - Enumerable {f.Name} begin");
+                    foreach (var it in val)
+                    {
+                        TravelButtonPlugin.LogInfo($"DBG-TRAVEL:      [{i}] {it}");
+                        if (++i > 100) { TravelButtonPlugin.LogInfo("DBG-TRAVEL:      ... truncated"); break; }
+                    }
+                    TravelButtonPlugin.LogInfo($"DBG-TRAVEL:  - Enumerable {f.Name} end (count shown {i})");
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG-TRAVEL: TryLogVisitedishMembers failed: " + ex);
+        }
+    }
+
+    // Temporary: force the travel button visible and stop visibility monitor
+    private void Debug_ForceShowButton()
+    {
+        try
+        {
+            StopInventoryVisibilityMonitor(); // make sure monitor won't immediately toggle it
+        }
+        catch { }
+
+        if (buttonObject != null && !buttonObject.activeSelf)
+        {
+            try { buttonObject.SetActive(true); } catch { }
+        }
+        TravelButtonPlugin.LogInfo("DEBUG: Forced Travel button visible and stopped visibility monitor.");
+    }
+
+    /// <summary>
+    /// Dump debugging information relevant to travel/teleport availability:
+    /// - city/destination components and visited/enabled flags
+    /// - travel/visited manager fields
+    /// - player money-like fields
+    /// - config/settings flags that mention cities
+    /// Safe to call on button click or after teleport success.
+    /// </summary>
+    public void DumpTravelDebugInfo()
+    {
+        try
+        {
+            TravelButtonPlugin.LogInfo("DBG: ---- Travel debug dump start ----");
+            DumpVisitedManagers();
+            DumpCityComponents();
+            DumpPlayerMoneyCandidates();
+            DumpConfigFlags();
+            TravelButtonPlugin.LogInfo("DBG: ---- Travel debug dump end ----");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpTravelDebugInfo failed: " + ex);
+        }
+    }
+
+    private void DumpVisitedManagers()
+    {
+        try
+        {
+            // Try to find known manager types first, then fallback to heuristics
+            string[] managerTypeNames = new[] { "TravelButtonVisitedManager", "VisitedManager", "CityDiscovery", "TravelManager", "VisitedList" };
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+
+            foreach (var name in managerTypeNames)
+            {
+                var t = assemblies.Select(a => a.GetType(name, false)).FirstOrDefault(tt => tt != null);
+                if (t != null)
+                {
+                    // Try find an instance in scene
+                    var instance = FindObjectOfType(t) as object;
+                    if (instance == null)
+                    {
+                        // Try static Instance property
+                        instance = t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)?.GetValue(null);
+                    }
+
+                    TravelButtonPlugin.LogInfo($"DBG: Found manager type {name}: type={t.FullName}, instance={(instance != null ? "yes" : "no")}");
+                    if (instance != null)
+                    {
+                        DumpObjectFieldsAndProperties(instance, "manager");
+                    }
+                }
+            }
+
+            // Fallback: attempt to locate any type in assemblies with "Visited" or "CityDiscovery" in name
+            var fallbackTypes = assemblies.SelectMany(a =>
+            {
+                try { return a.GetTypes(); } catch { return new Type[0]; }
+            })
+            .Where(tt => tt.Name.IndexOf("Visited", StringComparison.OrdinalIgnoreCase) >= 0
+                      || tt.Name.IndexOf("CityDiscovery", StringComparison.OrdinalIgnoreCase) >= 0)
+            .Distinct();
+
+            foreach (var ft in fallbackTypes)
+            {
+                var instance = FindObjectOfType(ft) as object;
+                if (instance != null)
+                {
+                    TravelButtonPlugin.LogInfo($"DBG: Fallback manager instance found: {ft.FullName} on GameObject {(instance as MonoBehaviour)?.gameObject.name}");
+                    DumpObjectFieldsAndProperties(instance, "manager-fallback");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpVisitedManagers exception: " + ex);
+        }
+    }
+
+    private void DumpCityComponents()
+    {
+        try
+        {
+            // Get all MonoBehaviours (including inactive) and filter by type name
+            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
+            var interesting = comps.Where(c =>
+            {
+                var n = c.GetType().Name.ToLowerInvariant();
+                return n.Contains("city") || n.Contains("destination") || n.Contains("travel") || n.Contains("town");
+            }).ToArray();
+
+            TravelButtonPlugin.LogInfo($"DBG: Found {interesting.Length} city-like components in scene.");
+            foreach (var comp in interesting)
+            {
+                var t = comp.GetType();
+                string goName = comp.gameObject != null ? comp.gameObject.name : "(no-go)";
+                TravelButtonPlugin.LogInfo($"DBG: Component: {t.FullName} on GO '{goName}'");
+
+                // Basic name / display field attempts
+                var nameField = t.GetField("Name", BindingFlags.Public | BindingFlags.Instance)
+                             ?? t.GetField("name", BindingFlags.Public | BindingFlags.Instance);
+                if (nameField != null)
+                {
+                    try { TravelButtonPlugin.LogInfo($"DBG:  - Name field: {nameField.GetValue(comp)}"); } catch { }
+                }
+
+                // Look for visited/enabled boolean fields and properties
+                var boolMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                   .Where(m =>
+                                   {
+                                       string mn = m.Name.ToLowerInvariant();
+                                       return mn.Contains("visited") || mn.Contains("isvisited") || mn.Contains("visitedflag")
+                                           || mn.Contains("enabled") || mn.Contains("isenabled") || mn.Contains("available") || mn.Contains("locked");
+                                   });
+
+                foreach (var mem in boolMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
+                        {
+                            var val = fi.GetValue(comp);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Field {fi.Name} (bool) = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                        {
+                            var val = pi.GetValue(comp, null);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Prop {pi.Name} (bool) = {val}");
+                        }
+                    }
+                    catch { /* ignore per-field errors */ }
+                }
+
+                // Look for cost/price numeric fields
+                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                  .Where(m =>
+                                  {
+                                      string mn = m.Name.ToLowerInvariant();
+                                      return mn.Contains("cost") || mn.Contains("price") || mn.Contains("fee") || mn.Contains("gold") || mn.Contains("coins");
+                                  });
+
+                foreach (var mem in numMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double)))
+                        {
+                            var val = fi.GetValue(comp);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Field {fi.Name} (num) = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double))
+                                 && pi.GetIndexParameters().Length == 0)
+                        {
+                            var val = pi.GetValue(comp, null);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Prop {pi.Name} (num) = {val}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpCityComponents exception: " + ex);
+        }
+    }
+
+    private void DumpPlayerMoneyCandidates()
+    {
+        try
+        {
+            // Find MonoBehaviours with "Player" or "Character" in the type name
+            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
+            var players = comps.Where(c =>
+            {
+                var n = c.GetType().Name.ToLowerInvariant();
+                return n.Contains("player") || n.Contains("character") || n.Contains("wallet") || n.Contains("account");
+            }).ToArray();
+
+            TravelButtonPlugin.LogInfo($"DBG: Found {players.Length} player-like components.");
+
+            foreach (var p in players)
+            {
+                TravelButtonPlugin.LogInfo($"DBG: Player-like component: {p.GetType().FullName} on GO '{p.gameObject.name}'");
+                var t = p.GetType();
+
+                // Numeric candidate fields/properties that might represent money
+                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                  .Where(m =>
+                                  {
+                                      string mn = m.Name.ToLowerInvariant();
+                                      return mn.Contains("money") || mn.Contains("gold") || mn.Contains("coins") || mn.Contains("silver") || mn.Contains("balance") || mn.Contains("wallet");
+                                  });
+
+                foreach (var mem in numMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double) || fi.FieldType == typeof(long)))
+                        {
+                            var val = fi.GetValue(p);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Field {fi.Name} = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && pi.GetIndexParameters().Length == 0 &&
+                                 (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double) || pi.PropertyType == typeof(long)))
+                        {
+                            var val = pi.GetValue(p, null);
+                            TravelButtonPlugin.LogInfo($"DBG:  - Prop {pi.Name} = {val}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // Also try to find a global GameManager-like type that might hold currency
+            var allTypes = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
+            var gmTypes = allTypes.Where(tt => tt.Name.IndexOf("GameManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               tt.Name.IndexOf("Economy", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               tt.Name.IndexOf("Currency", StringComparison.OrdinalIgnoreCase) >= 0);
+            foreach (var gt in gmTypes)
+            {
+                TravelButtonPlugin.LogInfo($"DBG: Found manager type candidate: {gt.FullName}");
+                // try static properties/fields
+                var props = gt.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var pi in props.Where(p => (p.PropertyType == typeof(int) || p.PropertyType == typeof(float) || p.PropertyType == typeof(double) || p.PropertyType == typeof(long)) && p.GetIndexParameters().Length == 0))
+                {
+                    try
+                    {
+                        var val = pi.GetValue(null, null);
+                        TravelButtonPlugin.LogInfo($"DBG:  - Static Prop {gt.Name}.{pi.Name} = {val}");
+                    }
+                    catch { }
+                }
+
+                var fields = gt.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var fi in fields.Where(f => f.FieldType == typeof(int) || f.FieldType == typeof(float) || f.FieldType == typeof(double) || f.FieldType == typeof(long)))
+                {
+                    try
+                    {
+                        var val = fi.GetValue(null);
+                        TravelButtonPlugin.LogInfo($"DBG:  - Static Field {gt.Name}.{fi.Name} = {val}");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpPlayerMoneyCandidates exception: " + ex);
+        }
+    }
+
+    private void DumpConfigFlags()
+    {
+        try
+        {
+            var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
+
+            // look for types that look like config/settings
+            var configTypes = types.Where(t => t.Name.IndexOf("Config", StringComparison.OrdinalIgnoreCase) >= 0
+                                           || t.Name.IndexOf("Settings", StringComparison.OrdinalIgnoreCase) >= 0
+                                           || t.Name.IndexOf("Options", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            foreach (var ct in configTypes)
+            {
+                try
+                {
+                    // look for static instance or static fields/properties with booleans mentioning cities
+                    object instance = null;
+                    var instProp = ct.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                    if (instProp != null)
+                    {
+                        try { instance = instProp.GetValue(null); } catch { }
+                    }
+
+                    // log static boolean fields and properties that reference city or enable
+                    var staticBools = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                        .Where(m =>
+                                        {
+                                            string mn = m.Name.ToLowerInvariant();
+                                            return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
+                                        });
+
+                    TravelButtonPlugin.LogInfo($"DBG: Config/Settings candidate: {ct.FullName}, instance={(instance != null ? "yes" : "no")}");
+                    foreach (var mem in staticBools)
+                    {
+                        try
+                        {
+                            if (mem is FieldInfo sfi && sfi.FieldType == typeof(bool))
+                            {
+                                TravelButtonPlugin.LogInfo($"DBG:  - Static Field {ct.Name}.{sfi.Name} = {sfi.GetValue(null)}");
+                            }
+                            else if (mem is PropertyInfo spi && spi.PropertyType == typeof(bool) && spi.GetIndexParameters().Length == 0)
+                            {
+                                TravelButtonPlugin.LogInfo($"DBG:  - Static Prop {ct.Name}.{spi.Name} = {spi.GetValue(null)}");
+                            }
+                        }
+                        catch { }
+                    }
+
+                    // If instance exists, log instance bool fields/properties that mention city/enable
+                    if (instance != null)
+                    {
+                        var instMembers = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                           .Where(m =>
+                                           {
+                                               string mn = m.Name.ToLowerInvariant();
+                                               return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
+                                           });
+
+                        foreach (var mem in instMembers)
+                        {
+                            try
+                            {
+                                if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
+                                {
+                                    TravelButtonPlugin.LogInfo($"DBG:  - Instance Field {ct.Name}.{fi.Name} = {fi.GetValue(instance)}");
+                                }
+                                else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                                {
+                                    TravelButtonPlugin.LogInfo($"DBG:  - Instance Prop {ct.Name}.{pi.Name} = {pi.GetValue(instance)}");
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpConfigFlags exception: " + ex);
+        }
+    }
+
+    private void DumpObjectFieldsAndProperties(object obj, string prefix = "")
+    {
+        if (obj == null) return;
+        try
+        {
+            var t = obj.GetType();
+            TravelButtonPlugin.LogInfo($"DBG: Dumping fields/properties for {t.FullName} ({prefix})");
+
+            // boolean members
+            var boolFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                              .Where(f => f.FieldType == typeof(bool));
+            foreach (var f in boolFields)
+            {
+                try { TravelButtonPlugin.LogInfo($"DBG:  - Field {f.Name} = {f.GetValue(obj)}"); } catch { }
+            }
+
+            var boolProps = t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                             .Where(p => p.PropertyType == typeof(bool) && p.GetIndexParameters().Length == 0);
+            foreach (var p in boolProps)
+            {
+                try { TravelButtonPlugin.LogInfo($"DBG:  - Prop {p.Name} = {p.GetValue(obj, null)}"); } catch { }
+            }
+
+            // list-like visited containers (IEnumerable of strings or bools or objects)
+            var listFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                              .Where(f => typeof(System.Collections.IEnumerable).IsAssignableFrom(f.FieldType) && f.FieldType != typeof(string));
+            foreach (var f in listFields)
+            {
+                try
+                {
+                    var val = f.GetValue(obj) as System.Collections.IEnumerable;
+                    if (val == null) continue;
+                    TravelButtonPlugin.LogInfo($"DBG:  - Enumerable Field {f.Name}:");
+                    int i = 0;
+                    foreach (var item in val)
+                    {
+                        TravelButtonPlugin.LogInfo($"DBG:     [{i}] {item}");
+                        i++;
+                        if (i > 50) { TravelButtonPlugin.LogInfo("DBG:     ... truncated after 50 items"); break; }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DBG: DumpObjectFieldsAndProperties failed: " + ex);
+        }
+    }
+
     void Start()
     {
         TravelButtonPlugin.LogInfo("TravelButtonUI.Start called.");
@@ -78,34 +716,139 @@ public class TravelButtonUI : MonoBehaviour
         StartCoroutine(PollForInventoryParentImpl());
     }
 
+    // debug helper: press F9 in-game to dump Travel button state
     void Update()
     {
+        TravelButtonPlugin.LogInfo("DBG: TravelButtonUI.Update running");
+
+        // keep existing backquote behaviour if present
         if (Input.GetKeyDown(KeyCode.BackQuote))
         {
             TravelButtonPlugin.LogInfo("BackQuote key pressed - opening travel dialog.");
             OpenTravelDialog();
         }
 
-        // If we have an explicit visibility target, sync the button active state to it
-        if (inventoryParentFound && inventoryVisibilityTarget != null && buttonObject != null)
+        // Press F9 to dump debug info about the Travel button & visibility target
+        if (Input.GetKeyDown(KeyCode.F8))
         {
             try
             {
-                bool visible = inventoryVisibilityTarget.activeInHierarchy;
-                var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
-                if (cg != null)
-                {
-                    visible = cg.alpha > 0.01f && cg.interactable;
-                }
-
-                if (buttonObject.activeSelf != visible)
-                    buttonObject.SetActive(visible);
-            }
-            catch (Exception ex)
+                TravelButtonPlugin.LogWarning("F9 called");
+                DumpTravelDebugInfo();
+            } catch (Exception ex) 
             {
-                TravelButtonPlugin.LogWarning("Visibility sync error: " + ex);
+                TravelButtonPlugin.LogWarning("F9 failed");
             }
         }
+    }
+
+    // Cleanup: stop monitor when this component is disabled/destroyed
+    private void OnDisable()
+    {
+        StopInventoryVisibilityMonitor();
+    }
+
+    private void OnDestroy()
+    {
+        StopInventoryVisibilityMonitor();
+    }
+
+    // Place buttonObject under sectionsRt so it participates in the toolbar layout.
+    private void PlaceButtonInSections(RectTransform sectionsRt)
+    {
+        if (ensureSectionsCoroutine != null)
+        {
+            try { StopCoroutine(ensureSectionsCoroutine); } catch { }
+            ensureSectionsCoroutine = null;
+        }
+
+        if (buttonObject == null || sectionsRt == null) return;
+
+        // If already placed, nothing to do
+        if (IsTransformOrAncestorImpl(buttonObject.transform.parent, sectionsRt)) return;
+
+        // Prefer a named toolbar template (btnInventory), otherwise first active Button
+        var template = sectionsRt.GetComponentsInChildren<UnityEngine.UI.Button>(true)
+                        .FirstOrDefault(b => b != null && b.name.IndexOf("btnInventory", StringComparison.OrdinalIgnoreCase) >= 0)
+                     ?? sectionsRt.GetComponentsInChildren<UnityEngine.UI.Button>(true)
+                        .FirstOrDefault(b => b != null && b.gameObject.activeInHierarchy);
+
+        Transform parentForIcons = sectionsRt;
+        int insertIndex = -1;
+        if (template != null)
+        {
+            parentForIcons = template.transform.parent ?? sectionsRt;
+            insertIndex = template.transform.GetSiblingIndex() + 1;
+        }
+
+        buttonObject.transform.SetParent(parentForIcons, false);
+
+        // copy LayoutElement if template exists
+        var templLayout = template != null ? template.GetComponent<UnityEngine.UI.LayoutElement>() : null;
+        var layout = buttonObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? buttonObject.AddComponent<UnityEngine.UI.LayoutElement>();
+        if (templLayout != null)
+        {
+            layout.preferredWidth = templLayout.preferredWidth;
+            layout.preferredHeight = templLayout.preferredHeight;
+            layout.minWidth = templLayout.minWidth;
+            layout.minHeight = templLayout.minHeight;
+            layout.flexibleWidth = templLayout.flexibleWidth;
+            layout.flexibleHeight = templLayout.flexibleHeight;
+        }
+        else
+        {
+            float size = Mathf.Max(32f, buttonObject.GetComponent<RectTransform>().sizeDelta.x);
+            layout.preferredWidth = size;
+            layout.preferredHeight = size;
+        }
+
+        // copy rect transform anchor/pivot/size from template if possible
+        try
+        {
+            var rt = buttonObject.GetComponent<RectTransform>();
+            if (template != null)
+            {
+                var tRt = template.GetComponent<RectTransform>();
+                rt.localScale = tRt.localScale;
+                rt.localRotation = tRt.localRotation;
+                rt.anchorMin = tRt.anchorMin;
+                rt.anchorMax = tRt.anchorMax;
+                rt.pivot = tRt.pivot;
+                rt.sizeDelta = new Vector2(layout.preferredWidth, layout.preferredHeight);
+            }
+        }
+        catch { }
+
+        // sibling index
+        try
+        {
+            if (insertIndex >= 0 && insertIndex <= parentForIcons.childCount)
+                buttonObject.transform.SetSiblingIndex(insertIndex);
+            else
+                buttonObject.transform.SetAsLastSibling();
+        }
+        catch { buttonObject.transform.SetAsLastSibling(); }
+
+        // force immediate layout update
+        try
+        {
+            var parentRt = parentForIcons as RectTransform;
+            if (parentRt != null) UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(parentRt);
+            Canvas.ForceUpdateCanvases();
+        }
+        catch { }
+
+        buttonObject.SetActive(true);
+        TravelButtonPlugin.LogInfo("PlaceButtonInSections: placed under '" + parentForIcons.name + "'");
+
+        placementFinalized = true;
+        if (ensureSectionsCoroutine != null)
+        {
+            try { StopCoroutine(ensureSectionsCoroutine); } catch { }
+            ensureSectionsCoroutine = null;
+        }
+
+        StopInventoryVisibilityMonitor();
     }
 
     // Replacement helper that loads an image file into a Texture2D robustly.
@@ -267,23 +1010,198 @@ public class TravelButtonUI : MonoBehaviour
     // Use StartCoroutine(PollForInventoryParentImpl()) to run this.
     private IEnumerator PollForInventoryParentImpl()
     {
-        var wait = new WaitForSeconds(0.5f);
+        var wait = new WaitForSeconds(0.25f);
+        const float overallTimeout = 15.0f; // total time to keep polling
+        float overallDeadline = Time.realtimeSinceStartup + overallTimeout;
+
+        TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: started.");
+
+        // If someone already finalized placement, do nothing
+        if (placementFinalized)
+        {
+            TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: placement already finalized; exiting.");
+            yield break;
+        }
+
+        // Known toolbar / inventory button names to prefer
+        var knownToolbarButtonNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "btnInventory", "btnEquipment", "btnVitals", "btnEffects",
+        "btnCrafting", "btnQuickSlot", "btnSkills", "btnJournal"
+    };
+
         while (buttonObject != null)
         {
+            // If placement finalized mid-loop, quit
+            if (placementFinalized)
+            {
+                TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: placement finalized while polling; exiting.");
+                yield break;
+            }
+
+            RectTransform foundInvRoot = null;
+
             try
             {
-                var invRt = FindAllRectTransformsSafeImpl()
-                            .FirstOrDefault(r => string.Equals(r.name, "Inventory", StringComparison.OrdinalIgnoreCase));
-                if (invRt != null)
+                var all = FindAllRectTransformsSafeImpl() ?? new RectTransform[0];
+                RectTransform bestCandidate = null;
+
+                foreach (var rt in all)
                 {
-                    TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: found inventory parent '" + invRt.name + "', reparenting button.");
-                    ReparentButtonToInventory(invRt.transform);
-                    yield break; // stop polling once reparented
+                    if (rt == null) continue;
+                    string path = GetTransformPath(rt) ?? "";
+
+                    // Prefer explicit TopPanel/Sections/CharacterMenus candidates immediately
+                    if (path.IndexOf("TopPanel", StringComparison.OrdinalIgnoreCase) >= 0
+                        || path.IndexOf("Sections", StringComparison.OrdinalIgnoreCase) >= 0
+                        || path.IndexOf("CharacterMenus", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        bestCandidate = rt;
+                        break;
+                    }
+
+                    // Prefer explicit Inventory named nodes
+                    if (path.IndexOf("/Inventory", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        rt.name.IndexOf("Inventory", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        bestCandidate = rt;
+                        break;
+                    }
+
+                    // Heuristic: Content rect with enough children (likely inventory grid)
+                    if (rt.name.Equals("Content", StringComparison.OrdinalIgnoreCase) && rt.childCount >= 6)
+                    {
+                        bestCandidate = rt;
+                        break;
+                    }
+
+                    // Heuristic: a rect that contains many item-like buttons/images; accept as fallback candidate
+                    var buttons = rt.GetComponentsInChildren<UnityEngine.UI.Button>(true);
+                    if (buttons != null && buttons.Length >= 6)
+                    {
+                        // Further prefer if any button has a known toolbar name
+                        if (buttons.Any(b => b != null && knownToolbarButtonNames.Contains(b.name)))
+                        {
+                            bestCandidate = rt;
+                            break;
+                        }
+
+                        if (bestCandidate == null)
+                            bestCandidate = rt;
+                    }
+                }
+
+                if (bestCandidate != null)
+                {
+                    // If it's a "Content" node, prefer the parent container (inventory root)
+                    RectTransform invRoot = bestCandidate;
+                    if (bestCandidate.name.Equals("Content", StringComparison.OrdinalIgnoreCase) && bestCandidate.parent is RectTransform)
+                        invRoot = bestCandidate.parent as RectTransform;
+
+                    // Conservative acceptance test: only accept if invRoot looks like the toolbar/inventory
+                    string invPath = GetTransformPath(invRoot) ?? invRoot.name;
+                    bool acceptCandidate = false;
+
+                    // Accept if path or name explicitly references toolbar-like names
+                    if (invPath.IndexOf("TopPanel", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        invPath.IndexOf("Sections", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        invPath.IndexOf("CharacterMenus", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        invRoot.name.IndexOf("Inventory", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        invRoot.name.Equals("Content", StringComparison.OrdinalIgnoreCase))
+                    {
+                        acceptCandidate = true;
+                    }
+
+                    // Accept if it contains known toolbar buttons
+                    var childButtons = invRoot.GetComponentsInChildren<UnityEngine.UI.Button>(true);
+                    if (!acceptCandidate && childButtons != null && childButtons.Any(b => b != null && knownToolbarButtonNames.Contains(b.name)))
+                        acceptCandidate = true;
+
+                    // Accept if it's clearly an item grid (Content with many children)
+                    if (!acceptCandidate && invRoot.name.Equals("Content", StringComparison.OrdinalIgnoreCase) && invRoot.childCount >= 6)
+                        acceptCandidate = true;
+
+                    if (acceptCandidate)
+                    {
+                        foundInvRoot = invRoot;
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogInfo($"PollForInventoryParentImpl: candidate '{invPath}' rejected (not toolbar/inventory-like).");
+                    }
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("PollForInventoryParentImpl: " + ex);
+                TravelButtonPlugin.LogWarning("PollForInventoryParentImpl: exception during detection: " + ex);
+            }
+
+            // If we found a suitable invRoot, handle reparenting outside the try/catch (no yields inside try)
+            if (foundInvRoot != null)
+            {
+                // If placement finalized while we computed, exit
+                if (placementFinalized)
+                {
+                    TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: placement finalized before reparent; skipping reparent.");
+                    yield break;
+                }
+
+                TravelButtonPlugin.LogInfo($"PollForInventoryParentImpl: accepting inventory candidate '{GetTransformPath(foundInvRoot)}', reparenting button.");
+
+                if (!placementFinalized)
+                {
+                    try
+                    {
+                        ReparentButtonToInventory(foundInvRoot);
+
+                        // Mark placement finalized so other placement flows won't steal the button
+                        placementFinalized = true;
+
+                        // Debug: log parent path for diagnostics
+                        try
+                        {
+                            string parentPath = "(none)";
+                            if (buttonObject != null && buttonObject.transform.parent != null)
+                                parentPath = GetTransformPath(buttonObject.transform.parent as RectTransform) ?? buttonObject.transform.parent.name;
+                            TravelButtonPlugin.LogInfo("Button parent after placement: " + parentPath);
+                        }
+                        catch { }
+
+                        // Start visibility sync so the button hides/shows with the inventory toolbar (if a target can be found)
+                        try
+                        {
+                            StopInventoryVisibilityMonitor();
+                            if (TryFindInventoryVisibilityTarget(foundInvRoot))
+                            {
+                                StartInventoryVisibilityMonitor();
+                                TravelButtonPlugin.LogInfo("Started inventory visibility monitor for travel button.");
+                            }
+                            else
+                            {
+                                TravelButtonPlugin.LogInfo("TryFindInventoryVisibilityTarget: no visibility target found after placement.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            TravelButtonPlugin.LogWarning("Failed to start inventory visibility monitor: " + ex);
+                        }
+
+                        TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: ReparentButtonToInventory called.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("PollForInventoryParentImpl: ReparentButtonToInventory failed: " + ex);
+                    }
+                }
+
+                yield break;
+            }
+
+            // timeout check
+            if (Time.realtimeSinceStartup >= overallDeadline)
+            {
+                TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: overall timeout reached; giving up.");
+                yield break;
             }
 
             yield return wait;
@@ -431,76 +1349,90 @@ public class TravelButtonUI : MonoBehaviour
     // Best-effort: look for the GameObject that is actually toggled when inventory opens:
     // - prefer an object whose name contains "Window" or "Panel",
     // - or any descendant/ancestor that has a CanvasGroup (we treat its alpha/interactable as visibility)
-    private void TryFindInventoryVisibilityTarget(Transform container)
+    private bool TryFindInventoryVisibilityTarget(Transform root)
     {
+        inventoryVisibilityTarget = null;
+        if (root == null) return false;
+
         try
         {
-            // 1) search up the ancestor chain for "Window" or CanvasGroup
-            var t = container;
-            while (t != null)
+            // Helper to check name keywords quickly
+            bool NameLooksLikeToolbar(string name)
             {
-                if (t.name.IndexOf("window", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    t.name.IndexOf("panel", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    inventoryVisibilityTarget = t.gameObject;
-                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using ancestor '{t.name}' as visibility target.");
-                    return;
-                }
-
-                if (t.GetComponent<CanvasGroup>() != null)
-                {
-                    inventoryVisibilityTarget = t.gameObject;
-                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using ancestor with CanvasGroup '{t.name}' as visibility target.");
-                    return;
-                }
-                t = t.parent;
+                if (string.IsNullOrEmpty(name)) return false;
+                name = name.ToLowerInvariant();
+                return name.Contains("toppanel") || name.Contains("sections") || name.Contains("charactermenus")
+                    || name.Contains("inventory") || name.Contains("toolbar") || name.Contains("menumanager") || name.Contains("generalmenus");
             }
 
-            // 2) look for children under container that look like a window/panel (common names)
-            string[] childCandidates = new string[] { "Window", "Panel", "Root", "Background", "Content", "Main" };
-            foreach (Transform child in container)
+            // 1) Prefer a CanvasGroup or Canvas in the parents whose name looks like TopPanel/Sections/etc.
+            var parentCgCandidates = root.GetComponentsInParent<CanvasGroup>(true);
+            foreach (var cg in parentCgCandidates)
             {
-                if (child == null) continue;
-                var cname = child.name;
-                foreach (var cand in childCandidates)
+                if (cg == null) continue;
+                if (NameLooksLikeToolbar(cg.gameObject.name))
                 {
-                    if (cname.IndexOf(cand, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        inventoryVisibilityTarget = child.gameObject;
-                        TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using child '{cname}' as visibility target.");
-                        return;
-                    }
-                }
-
-                var cg = child.GetComponent<CanvasGroup>();
-                if (cg != null)
-                {
-                    inventoryVisibilityTarget = child.gameObject;
-                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using child with CanvasGroup '{child.name}' as visibility target.");
-                    return;
+                    inventoryVisibilityTarget = cg.transform;
+                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using parent CanvasGroup '{cg.gameObject.name}'");
+                    return true;
                 }
             }
 
-            // 3) fallback: try to find a sibling window object named InventoryWindow
-            var sibling = GameObject.Find("InventoryWindow") ?? GameObject.Find("Inventory_Window");
-            if (sibling != null)
+            var parentCanvasCandidates = root.GetComponentsInParent<Canvas>(true);
+            foreach (var cv in parentCanvasCandidates)
             {
-                inventoryVisibilityTarget = sibling;
-                TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using sibling '{sibling.name}' as visibility target.");
-                return;
+                if (cv == null) continue;
+                if (NameLooksLikeToolbar(cv.gameObject.name))
+                {
+                    inventoryVisibilityTarget = cv.transform;
+                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using parent Canvas '{cv.gameObject.name}'");
+                    return true;
+                }
             }
 
-            // If we reach here, no explicit target found
-            TravelButtonPlugin.LogInfo("TryFindInventoryVisibilityTarget: no explicit visibility target found for inventory.");
-            inventoryVisibilityTarget = null;
+            // 2) Then prefer a child CanvasGroup under the root (some UI hierarchies have child groups that control menu visibility)
+            var childCgs = root.GetComponentsInChildren<CanvasGroup>(true);
+            foreach (var cg in childCgs)
+            {
+                if (cg == null) continue;
+                if (NameLooksLikeToolbar(cg.gameObject.name))
+                {
+                    inventoryVisibilityTarget = cg.transform;
+                    TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using child CanvasGroup '{cg.gameObject.name}'");
+                    return true;
+                }
+            }
+
+            // 3) If none matched above, prefer nearest parent CanvasGroup (fallback)
+            var nearestParentCg = root.GetComponentsInParent<CanvasGroup>(true).FirstOrDefault();
+            if (nearestParentCg != null)
+            {
+                inventoryVisibilityTarget = nearestParentCg.transform;
+                TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using nearest parent CanvasGroup '{nearestParentCg.gameObject.name}' (fallback)");
+                return true;
+            }
+
+            // 4) Prefer a Canvas parent as a fallback if no CanvasGroup found
+            var nearestCanvas = root.GetComponentsInParent<Canvas>(true).FirstOrDefault();
+            if (nearestCanvas != null)
+            {
+                inventoryVisibilityTarget = nearestCanvas.transform;
+                TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using nearest Canvas '{nearestCanvas.gameObject.name}' (fallback)");
+                return true;
+            }
+
+            // 5) Last fallback: use the provided root itself
+            inventoryVisibilityTarget = root;
+            TravelButtonPlugin.LogInfo($"TryFindInventoryVisibilityTarget: using fallback root '{root.gameObject.name}'");
+            return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TryFindInventoryVisibilityTarget exception: " + ex);
+            TravelButtonPlugin.LogWarning("TryFindInventoryVisibilityTarget: exception while finding target: " + ex);
             inventoryVisibilityTarget = null;
+            return false;
         }
     }
-
     // Ensure EventSystem + GraphicRaycaster exist
     private void EnsureInputSystems()
     {
@@ -536,6 +1468,57 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
+    // field (add near other fields)
+    private Coroutine ensureSectionsCoroutine;
+
+    // Find first RectTransform whose GetTransformPath contains the fragment (case-insensitive)
+    private RectTransform FindRectTransformByPathFragment(string pathFragment)
+    {
+        if (string.IsNullOrEmpty(pathFragment)) return null;
+        try
+        {
+            var all = FindAllRectTransformsSafeImpl() ?? new RectTransform[0];
+            string frag = pathFragment.ToLowerInvariant();
+            foreach (var rt in all)
+            {
+                if (rt == null) continue;
+                string p = GetTransformPath(rt) ?? "";
+                if (p.ToLowerInvariant().Contains(frag) && rt.gameObject != null && rt.gameObject.activeInHierarchy)
+                    return rt;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    // Coroutine: try exact path match first, then smaller fragments, for up to timeout seconds
+    private IEnumerator EnsurePlacedInTopSectionsCoroutine(float timeoutSeconds = 8f, float pollInterval = 0.25f)
+    {
+        float deadline = Time.realtimeSinceStartup + timeoutSeconds;
+        while (buttonObject != null && Time.realtimeSinceStartup < deadline)
+        {
+            // Try a unique enough path fragment from your DebugLog output
+            var sections = FindRectTransformByPathFragment("MenuManager/CharacterUIs/PlayerChar")
+                        ?? FindRectTransformByPathFragment("TopPanel/Sections")
+                        ?? FindRectTransformByPathFragment("TopPanel");
+
+            if (sections != null)
+            {
+                PlaceButtonInSections(sections);
+                ensureSectionsCoroutine = null;
+                yield break;
+            }
+
+            yield return new WaitForSeconds(pollInterval);
+        }
+
+        // timed out — fall back to your conservative fallback (screen top or inventory fallback)
+        TravelButtonPlugin.LogInfo("EnsurePlacedInTopSectionsCoroutine: timeout, using ForceTopToolbarPlacementImpl fallback.");
+        ForceTopToolbarPlacementImpl(FindAllCanvasesSafeImpl().FirstOrDefault());
+        if (buttonObject != null) buttonObject.SetActive(true);
+        ensureSectionsCoroutine = null;
+    }
+
     void CreateTravelButton()
     {
         TravelButtonPlugin.LogInfo("CreateTravelButton: beginning UI creation.");
@@ -545,6 +1528,42 @@ public class TravelButtonUI : MonoBehaviour
             buttonObject = new GameObject("TravelButton");
             buttonObject.AddComponent<CanvasRenderer>();
 
+            // track whether we successfully placed the button deterministically
+            bool placed = false;
+            RectTransform placedSectionsRt = null;
+
+            // Try a deterministic immediate placement using the exact path fragment(s)
+            try
+            {
+                var sections = FindRectTransformByPathFragment("MenuManager/CharacterUIs/PlayerChar");
+                if (sections == null) sections = FindRectTransformByPathFragment("TopPanel/Sections");
+
+                if (sections != null)
+                {
+                    PlaceButtonInSections(sections);
+                    placed = true;
+                    placementFinalized = true;
+                    placedSectionsRt = sections;
+
+                    // stop any pending placement coroutine (no longer needed)
+                    if (ensureSectionsCoroutine != null)
+                    {
+                        try { StopCoroutine(ensureSectionsCoroutine); } catch { }
+                        ensureSectionsCoroutine = null;
+                    }
+
+                    // start visibility monitoring for the sections we placed under
+                    StopInventoryVisibilityMonitor();
+                    if (TryFindInventoryVisibilityTarget(sections))
+                        StartInventoryVisibilityMonitor();
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("CreateTravelButton: deterministic placement attempt failed: " + ex);
+            }
+
+            // Add UI components (Button/Image) etc.
             travelButton = buttonObject.AddComponent<Button>();
 
             var img = buttonObject.AddComponent<Image>();
@@ -567,58 +1586,85 @@ public class TravelButtonUI : MonoBehaviour
             // keep hidden until we place it
             try { buttonObject.SetActive(false); } catch { }
 
-            // parent to canvas so we exist in UI space
+            // parent to a top-level canvas so we exist in UI space
             var canvas = FindCanvas();
             if (canvas != null)
             {
-                buttonObject.transform.SetParent(canvas.transform, false);
-
-                // Try immediate parent into sections if available, otherwise start waiting coroutine
-                RectTransform sectionsRt = null;
-                try { sectionsRt = FindSectionsGroup(canvas); } catch { sectionsRt = null; }
-                TravelButtonPlugin.LogInfo($"CreateTravelButton: FindSectionsGroup returned = {(sectionsRt != null ? sectionsRt.name : "null")}");
-
-                if (sectionsRt != null && sectionsRt.gameObject.activeInHierarchy)
+                // If we didn't already place it deterministically, attach to canvas and try canvas-local heuristics
+                if (!placed)
                 {
                     try
                     {
-                        ParentButtonIntoSectionsImpl(sectionsRt, smallSize);
-                        TravelButtonPlugin.LogInfo("CreateTravelButton: parented into Sections and activated.");
-                        try { buttonObject.SetActive(true); } catch { }
+                        buttonObject.transform.SetParent(canvas.transform, false);
+
+                        // Try immediate parent into sections if available on this canvas
+                        RectTransform sectionsRt = null;
+                        try { sectionsRt = FindSectionsGroup(canvas); } catch { sectionsRt = null; }
+                        TravelButtonPlugin.LogInfo($"CreateTravelButton: FindSectionsGroup returned = {(sectionsRt != null ? sectionsRt.name : "null")}");
+
+                        if (sectionsRt != null && sectionsRt.gameObject.activeInHierarchy)
+                        {
+                            try
+                            {
+                                ParentButtonIntoSectionsImpl(sectionsRt, smallSize);
+                                TravelButtonPlugin.LogInfo("CreateTravelButton: parented into Sections and activated.");
+                                try { buttonObject.SetActive(true); } catch { }
+
+                                // start visibility monitor for the sections we used
+                                StopInventoryVisibilityMonitor();
+                                if (TryFindInventoryVisibilityTarget(sectionsRt))
+                                    StartInventoryVisibilityMonitor();
+
+                                placed = true;
+                                placedSectionsRt = sectionsRt;
+                            }
+                            catch (Exception ex)
+                            {
+                                TravelButtonPlugin.LogWarning("CreateTravelButton: ParentButtonIntoSectionsImpl failed: " + ex);
+                                // fallback: try PlaceOnToolbarWhenAvailable which waits for toolbar on this canvas
+                                try { StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f)); } catch { ForceTopToolbarPlacementImpl(canvas); }
+                            }
+                        }
+                        else
+                        {
+                            // No sections found on canvas right now: start the coroutine(s) that will keep trying
+                            try
+                            {
+                                if (ensureSectionsCoroutine == null)
+                                    ensureSectionsCoroutine = StartCoroutine(EnsurePlacedInTopSectionsCoroutine());
+                                // also start canvas-scoped waiter that tries to place when this canvas' Sections becomes available
+                                StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f));
+                                TravelButtonPlugin.LogInfo("CreateTravelButton: started PlaceOnToolbarWhenAvailable coroutine to wait for toolbar.");
+                            }
+                            catch (Exception ex)
+                            {
+                                TravelButtonPlugin.LogWarning("CreateTravelButton: failed to start PlaceOnToolbarWhenAvailable: " + ex);
+                                // as a last resort, force a top-of-screen placement
+                                ForceTopToolbarPlacementImpl(canvas);
+                                try { buttonObject.SetActive(true); } catch { }
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning("CreateTravelButton: ParentButtonIntoSectionsImpl failed: " + ex);
-                        try { StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f)); } catch { ForceTopToolbarPlacementImpl(canvas); }
+                        TravelButtonPlugin.LogWarning("CreateTravelButton: canvas parenting/sections logic failed: " + ex);
+                        try { buttonObject.SetActive(true); } catch { }
                     }
                 }
                 else
                 {
-                    // will wait for inventory to open (Sections group to appear)
+                    // Already placed deterministically: ensure it's in a canvas and has high sorting order
                     try
                     {
-                        StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f));
-                        TravelButtonPlugin.LogInfo("CreateTravelButton: started PlaceOnToolbarWhenAvailable coroutine to wait for toolbar.");
+                        var parentCanvas = buttonObject.GetComponentInParent<Canvas>();
+                        if (parentCanvas != null)
+                        {
+                            parentCanvas.sortingOrder = Math.Max(parentCanvas.sortingOrder, 3000);
+                            buttonObject.transform.SetAsLastSibling();
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        TravelButtonPlugin.LogWarning("CreateTravelButton: failed to start PlaceOnToolbarWhenAvailable: " + ex);
-                        ForceTopToolbarPlacementImpl(canvas);
-                        try { buttonObject.SetActive(true); } catch { }
-                    }
+                    catch { }
                 }
-
-                // make sure on top
-                try
-                {
-                    var parentCanvas = buttonObject.GetComponentInParent<Canvas>();
-                    if (parentCanvas != null)
-                    {
-                        parentCanvas.sortingOrder = Math.Max(parentCanvas.sortingOrder, 3000);
-                        buttonObject.transform.SetAsLastSibling();
-                    }
-                }
-                catch { }
             }
             else
             {
@@ -670,12 +1716,28 @@ public class TravelButtonUI : MonoBehaviour
 
             // start persistent monitor to snap back if moved
             try { StartCoroutine(MonitorAndMaintainButtonParentImpl()); } catch (Exception ex) { TravelButtonPlugin.LogWarning("CreateTravelButton: failed to start monitor: " + ex); }
+
+            // If we haven't yet placed the button and it's still inactive, ensure fallback activation
+            if (!placed)
+            {
+                try
+                {
+                    // if PlaceOnToolbarWhenAvailable or EnsurePlacedInTopSectionsCoroutine will handle activation later,
+                    // otherwise ensure the button is visible so user can still interact with it.
+                    if (buttonObject != null && !buttonObject.activeSelf)
+                        buttonObject.SetActive(true);
+                }
+                catch { }
+            }
+
             TravelButtonPlugin.LogInfo("CreateTravelButton: Travel button created, ClickLogger attached, and listener attached.");
         }
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("CreateTravelButton: exception: " + ex);
         }
+
+        Debug_ForceShowButton();
     }
 
     // Improved FindSectionsGroup that looks for the inventory/top-toolbar group when inventory is open.
@@ -962,6 +2024,15 @@ public class TravelButtonUI : MonoBehaviour
         {
             TravelButtonPlugin.LogWarning("ForceTopToolbarPlacementImpl: " + ex);
         }
+        // mark placement final so other coroutines won't reparent it later
+        placementFinalized = true;
+        if (ensureSectionsCoroutine != null)
+        {
+            try { StopCoroutine(ensureSectionsCoroutine); } catch { }
+            ensureSectionsCoroutine = null;
+        }
+
+        StopInventoryVisibilityMonitor();
     }
 
     // Persistent monitor: ensure the button remains parented to Sections while the game runs.
@@ -970,9 +2041,31 @@ public class TravelButtonUI : MonoBehaviour
         var waitShort = new WaitForSeconds(0.5f);
         var waitLong = new WaitForSeconds(0.75f);
 
+        TravelButtonPlugin.LogInfo("MonitorAndMaintainButtonParentImpl: started.");
+
         while (true)
         {
             if (buttonObject == null) yield break;
+
+            // If placement has been finalized, continue to monitor but do not allow inventory reparenting.
+            // We still call TryMaintainParent so the button snaps back to the accepted parent if something else moved it,
+            // but TryMaintainParent must respect placementFinalized (see note below).
+            if (placementFinalized)
+            {
+                // If you want the monitor to keep ensuring the button stays where you placed it, leave TryMaintainParent call here.
+                // If TryMaintainParent may reparent to inventory, ensure TryMaintainParent checks placementFinalized before doing that.
+                try
+                {
+                    TryMaintainParent(FindCanvas());
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("MonitorAndMaintainButtonParentImpl: TryMaintainParent threw (finalized): " + ex);
+                }
+
+                yield return waitLong;
+                continue;
+            }
 
             var canvas = FindCanvas();
             if (canvas == null)
@@ -1820,6 +2913,19 @@ public class TravelButtonUI : MonoBehaviour
                 try
                 {
                     StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
+                    // after the successful teleport log line
+                    TravelButtonPlugin.LogInfo("DBG: Teleport completed, dumping travel debug info now.");
+                    try
+                    {
+                        DumpTravelRelevantState("before-persist-fallback");
+                        TravelButtonMod.PersistCitiesToConfig(); // whatever method you have
+                        TravelButtonPlugin.LogInfo("PersistCitiesToConfig: succeeded.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("PersistCitiesToConfig failed - skipping persistence to avoid corrupting runtime state: " + ex);
+                        // do NOT clear or overwrite visited state here
+                    }
                     return;
                 }
                 catch (Exception ex)
@@ -3513,6 +4619,11 @@ public class TravelButtonUI : MonoBehaviour
     /// Try to detect player's currency amount. Returns -1 if could not determine.
     /// This is a best-effort reflection-based reader scanning MonoBehaviours, fields and properties.
     /// </summary>
+    // replace the existing GetPlayerCurrencyAmountOrMinusOne method with this
+    // Replace the existing GetPlayerCurrencyAmountOrMinusOne method with this improved, aggregate version.
+    // This function first tries the local player's inventory for known currency fields/properties and sums them.
+    // If that fails, it falls back to scanning scene components but excludes obvious UI/display components
+    // to avoid reading color/flag fields from CurrencyDisplay etc. Every candidate read is logged.
     private long GetPlayerCurrencyAmountOrMinusOne()
     {
         try
@@ -3521,12 +4632,10 @@ public class TravelButtonUI : MonoBehaviour
             foreach (var mb in allMono)
             {
                 var t = mb.GetType();
-
-                // Try common property names first (read-only or read/write)
                 string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
                 foreach (var pn in propNames)
                 {
-                    var pi = t.GetProperty(pn, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                    var pi = t.GetProperty(pn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
                     if (pi != null && pi.CanRead)
                     {
                         try
@@ -3537,15 +4646,14 @@ public class TravelButtonUI : MonoBehaviour
                             if (val is float) return (long)((float)val);
                             if (val is double) return (long)((double)val);
                         }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
 
-                // Try methods like GetMoney(), GetSilver()
                 string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
                 foreach (var mn in methodNames)
                 {
-                    var mi = t.GetMethod(mn, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                    var mi = t.GetMethod(mn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
                     if (mi != null && mi.GetParameters().Length == 0)
                     {
                         try
@@ -3556,12 +4664,11 @@ public class TravelButtonUI : MonoBehaviour
                             if (res is float) return (long)((float)res);
                             if (res is double) return (long)((double)res);
                         }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
 
-                // Fields
-                foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
                 {
                     var name = fi.Name.ToLower();
                     if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
@@ -3574,25 +4681,7 @@ public class TravelButtonUI : MonoBehaviour
                             if (val is float) return (long)((float)val);
                             if (val is double) return (long)((double)val);
                         }
-                        catch (Exception) { }
-                    }
-                }
-
-                // Properties (generic scan)
-                foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-                {
-                    var name = pi.Name.ToLower();
-                    if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency")) && pi.CanRead)
-                    {
-                        try
-                        {
-                            var val = pi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
-                        }
-                        catch (Exception) { }
+                        catch { }
                     }
                 }
             }
@@ -3605,6 +4694,17 @@ public class TravelButtonUI : MonoBehaviour
             TravelButtonPlugin.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
             return -1;
         }
+    }
+
+    // helper used above; include in this file if not already present
+    private static string SafeToString(object o)
+    {
+        try
+        {
+            if (o == null) return "null";
+            return o.ToString();
+        }
+        catch { return "<err>"; }
     }
 
     // add inside TravelButtonUI (or a debug MonoBehaviour)
