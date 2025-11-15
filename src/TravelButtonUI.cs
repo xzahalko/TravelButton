@@ -3396,6 +3396,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + exTeleport.Message);
             }
+            yield return new WaitForSecondsRealtime(0.6f);
         }
         finally
         {

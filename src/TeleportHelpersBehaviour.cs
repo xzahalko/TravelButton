@@ -224,6 +224,8 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     // Place this inside TeleportHelpersBehaviour (or add to an existing partial class).
     public IEnumerator ReenableComponentsAfterDelay(GameObject go, List<Behaviour> disabled, List<(Rigidbody rb, bool originalIsKinematic)> changedRigidbodies, float delaySec = 0.25f)
     {
+        TeleportHelpers.ReenableInProgress = true;
+
         if (go == null)
             yield break;
 
@@ -267,6 +269,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: exception while re-enabling: " + ex);
         }
 
+        TeleportHelpers.ReenableInProgress = false;
         yield break;
     }
 

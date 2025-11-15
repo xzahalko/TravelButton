@@ -5,6 +5,13 @@ using UnityEngine.SceneManagement;
 
 public static class TeleportHelpers
 {
+    // How high above the ground we place the player after grounding (meters).
+    // Tune this once (0.5f was original). Lower if you want player closer to ground.
+    public static float TeleportGroundClearance = 0.5f;
+
+    // Flag set while ReenableComponentsAfterDelay is running (used by callers to wait).
+    public static volatile bool ReenableInProgress = false;
+
     // Robust player-finder that prefers the actual player character GameObject.
     public static GameObject FindPlayerRoot()
     {
