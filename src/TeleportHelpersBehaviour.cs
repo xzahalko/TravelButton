@@ -38,7 +38,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             Vector3 cur = moved.transform.position;
             if ((cur - expected).sqrMagnitude > 0.01f && (cur - last).sqrMagnitude > 0.001f)
             {
-                TBLog.Warn($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
+//                TBLog.Warn($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
                 last = cur;
             }
             yield return null;

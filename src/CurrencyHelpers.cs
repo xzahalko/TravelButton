@@ -399,7 +399,7 @@ public static class CurrencyHelpers
                                                 TryRefreshCurrencyDisplay(currencyKeyword);
                                                 return true;
                                             }
-                                            TBLog.Warn($"TryDeductPlayerCurrency: RemoveItem did not change currency as expected (before={before}, after={after}). Will try alternative fallbacks.");
+                                            TBLog.Info($"TryDeductPlayerCurrency: RemoveItem did not change currency as expected (before={before}, after={after}). Will try alternative fallbacks.");
                                         }
                                         else
                                         {

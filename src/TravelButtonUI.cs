@@ -2501,7 +2501,7 @@ public class TravelButtonUI : MonoBehaviour
 
             // read player money once per dialog opening
             long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
-            TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'.");
+//            TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'.");
 
             if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
             {
@@ -2554,7 +2554,7 @@ public class TravelButtonUI : MonoBehaviour
 
                     // determine per-city cost
                     int cost = TravelButtonMod.cfgTravelCost.Value;
-                    TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'. cost= '{cost}'");
+//                    TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'. cost= '{cost}'");
 
                     try
                     {
@@ -2835,7 +2835,7 @@ public class TravelButtonUI : MonoBehaviour
                     }
                     else
                     {
-                        TBLog.Warn($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
+                        TBLog.Info($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
                     }
                 }
             }
