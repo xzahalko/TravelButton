@@ -16,6 +16,7 @@ public class CityConfig
     public float[] coords = null;
     public string targetGameObjectName = null;
     public string note = null;
+    public string sceneName = null;
 
     // Optional descriptive fields used by UI and persisted in the JSON file
     public string desc = null;
@@ -34,7 +35,7 @@ public static class ConfigManager
 {
     // NOTE: keep this path in sync with where you place the mod files.
     // Returns a path like "<GameData>/Mods/TravelButton/config/travel_config.json".
-    private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "travel_config.json");
+    private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "TravelButton_Cities.json");
 
     // Runtime-held config instance
     public static TravelConfig Config { get; set; } = null;
@@ -135,8 +136,9 @@ public static class ConfigManager
             { "Cierzo", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{100.0f, 1.5f, -20.0f},
+                coords = new float[]{ 1205.881f, -17.360f, 1366.486f},
                 targetGameObjectName = "Cierzo_Location",
+                sceneName="CierzoNewTerrain",
                 desc = "Cierzo - example description",
                 visited = false,
                 note = "coords required"
@@ -144,8 +146,9 @@ public static class ConfigManager
             { "Levant", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{200.0f, 2.0f, 50.0f},
+                coords = new float[]{-573f, 90f, -515f},
                 targetGameObjectName = "Levant_Location",
+                sceneName="Levant",
                 desc = "Levant - example description",
                 visited = false,
                 note = "coords required"
@@ -153,8 +156,9 @@ public static class ConfigManager
             { "Monsoon", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{300.0f, 1.0f, -150.0f},
+                coords = new float[]{3f, 1.0f, -5f},
                 targetGameObjectName = "Monsoon_Location",
+                sceneName="Monsoon",
                 desc = "Monsoon - example description",
                 visited = false,
                 note = "coords required"
@@ -162,8 +166,9 @@ public static class ConfigManager
             { "Berg", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{400.0f, 0.0f, -10.0f},
+                coords = new float[]{ 1175.378f, 5.920f, 1376.680f}, 
                 targetGameObjectName = "Berg_Location",
+                sceneName="Berg",
                 desc = "Berg - example description",
                 visited = false,
                 note = "coords required"
@@ -173,6 +178,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{500.0f, 3.0f, 80.0f},
                 targetGameObjectName = "Harmattan_Location",
+                sceneName="Harmattan",
                 desc = "Harmattan - example description",
                 visited = false,
                 note = "coords required"
@@ -182,6 +188,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{600.0f, 1.2f, -300.0f},
                 targetGameObjectName = "Sirocco_Location",
+                sceneName="Sirocco",
                 desc = "Sirocco - example description",
                 visited = false,
                 note = "coords required"
