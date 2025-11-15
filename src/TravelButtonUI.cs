@@ -3101,7 +3101,7 @@ public class TravelButtonUI : MonoBehaviour
         yield return StartCoroutine(LoadSceneAndTeleportCoroutine(cityObj));
     }
 
-    // Main coroutine: loads scene and teleports safely to computed finalPos using TeleportHelpers.AttemptTeleportToPositionSafe
+    // Main coroutine: loads scene and picks a safe final position, with fade-in before activation (Option B)
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj)
     {
         // Extract fields via reflection
@@ -3111,11 +3111,11 @@ public class TravelButtonUI : MonoBehaviour
 
         TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: starting async load for scene '{sceneName}'.");
 
-        // Start async load but DO NOT activate immediately — we'll disable cameras before activation to hide any intermediate spawn
+        // Start async load but DO NOT activate immediately — we'll fade to black and ensure the overlay is visible before activation.
         var loadOp = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
         loadOp.allowSceneActivation = false;
 
-        // Wait until Unity has loaded the scene to the "ready to activate" point
+        // Wait until Unity has loaded the scene to the "ready to activate" point (progress >= 0.9)
         while (loadOp.progress < 0.9f && !loadOp.isDone)
         {
             TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: loading '{sceneName}' progress={loadOp.progress:F2}");
@@ -3123,8 +3123,39 @@ public class TravelButtonUI : MonoBehaviour
         }
         TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: scene '{sceneName}' reached ready-to-activate (progress={loadOp.progress:F2}).");
 
-        // Disable all cameras on the current root before allowing the new scene to activate so the player doesn't see the default spawn.
-        // We store prior enabled state so we can restore it after teleport.
+        // Disable visible rendering via fade-in overlay and ensure at least one rendered frame of the overlay exists
+        // so the GPU has drawn the black frame before scene activation.
+        // Fade-in: obtain enumerator inside try/catch but perform the actual yield outside it
+        IEnumerator fadeInEnumerator = null;
+        try
+        {
+            // This should not throw normally; we only catch in case Instance creation throws
+            fadeInEnumerator = FadeOverlay.Instance.FadeIn(0.12f);
+        }
+        catch (Exception exFade)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: FadeIn initialization failed, falling back to ShowInstant: " + exFade.Message);
+            try { FadeOverlay.Instance.ShowInstant(); } catch { }
+            fadeInEnumerator = null;
+        }
+
+        if (fadeInEnumerator != null)
+        {
+            // perform the yield outside of any try/catch that would include a catch block
+            yield return StartCoroutine(fadeInEnumerator);
+
+            // guarantee a frame rendered with the overlay visible
+            yield return null;
+            yield return new WaitForEndOfFrame();
+        }
+        else
+        {
+            // overlay was shown via ShowInstant() fallback — still guarantee a frame is rendered
+            yield return null;
+            yield return new WaitForEndOfFrame();
+        }
+
+        // We'll collect camera states primarily for safety; overlay already hides visuals.
         Camera[] allCams = null;
         var camStates = new List<(Camera cam, bool enabled)>();
         try
@@ -3139,26 +3170,26 @@ public class TravelButtonUI : MonoBehaviour
             try
             {
                 camStates.Add((cam, cam.enabled));
-                cam.enabled = false;
+                // we won't disable cameras here because overlay hides visuals; we keep states to restore later
             }
             catch { }
         }
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: disabled {camStates.Count} camera(s) to prevent visual flash on scene activation.");
 
-        // Activate the scene now (while cameras are disabled)
+        // We'll ensure final cleanup (restoring cameras/components and running FadeOut) in a finally outside the scene activation/teleport try,
+        // so overlay is always removed even on error. Do not yield inside finally.
+        bool teleportAttempted = false;
         try
         {
+            // Activate the scene while overlay is up (prevents user from seeing default spawn)
             loadOp.allowSceneActivation = true;
 
-            // Wait for the activation to complete
+            // Wait for activation to finish
             while (!loadOp.isDone)
-            {
                 yield return null;
-            }
 
             TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: requested='{sceneName}', loaded.name='{SceneManager.GetActiveScene().name}', isLoaded={SceneManager.GetActiveScene().isLoaded}, isActive={SceneManager.GetActiveScene() == SceneManager.GetActiveScene()}");
 
-            // Small single frame to let scene objects instantiate (we keep cameras disabled until teleport completes)
+            // Small single frame to let scene objects instantiate (we keep overlay up until after teleport)
             yield return null;
 
             // compute finalPos: prefer anchor GameObject if present
@@ -3189,8 +3220,7 @@ public class TravelButtonUI : MonoBehaviour
             string displayName = TryGetStringFieldOrProp(cityObj, new string[] { "name", "Name", "cityName", "CityName" })
                                  ?? (!string.IsNullOrEmpty(targetGameObjectName) ? targetGameObjectName : sceneName);
 
-            // If anchor exists, teleport to it. Otherwise run immediate-probe -> fallback settle-probe logic,
-            // but do NOT re-enable cameras until teleport finished (so the user never sees initial default spawn).
+            // If anchor exists, teleport to it. Otherwise run immediate-probe -> fallback settle-probe logic.
             if (anchor != null)
             {
                 finalPos = anchor.transform.position;
@@ -3200,8 +3230,6 @@ public class TravelButtonUI : MonoBehaviour
                 if (coordsArr == null || coordsArr.Length < 3)
                 {
                     TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: no coords available in city object for '{displayName}' — aborting teleport.");
-                    // restore cameras before exiting
-                    foreach (var (cam, prev) in camStates) try { cam.enabled = prev; } catch { }
                     yield break;
                 }
 
@@ -3342,8 +3370,6 @@ public class TravelButtonUI : MonoBehaviour
                         else
                         {
                             TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: no safe position found for coords [{coordsArr[0]}, {coordsArr[1]}, {coordsArr[2]}]; aborting teleport.");
-                            // restore cameras before exiting
-                            foreach (var (cam, prev) in camStates) try { cam.enabled = prev; } catch { }
                             yield break;
                         }
                     }
@@ -3352,32 +3378,62 @@ public class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            // small final frame to let everything stabilize
+            // small final frame to let everything stabilize (overlay still visible)
             yield return null;
 
             // Perform a single teleport now
             try
             {
                 TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Attempting teleport to {finalPos} using AttemptTeleportToPositionSafe.");
+                teleportAttempted = true;
                 bool ok = TeleportHelpers.AttemptTeleportToPositionSafe(finalPos);
                 if (!ok)
                     TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe returned false (teleport reported failed).");
                 else
                     TravelButtonPlugin.LogInfo("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe reported success.");
             }
-            catch (Exception ex)
+            catch (Exception exTeleport)
             {
-                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + ex.Message);
+                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + exTeleport.Message);
             }
         }
         finally
         {
-            // restore camera states so rendering resumes
+            // restore camera states (no yields)
             foreach (var (cam, prev) in camStates)
             {
                 try { if (cam != null) cam.enabled = prev; } catch { }
             }
             TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: restored {camStates.Count} camera(s) after teleport.");
+
+            // Note: we do not HideInstant here so that the fade-out below is visible.
+            // Keep finally lean and non-yielding.
+        }
+
+        // Fade out overlay now (we are outside finally and can yield). If FadeOut fails, ensure overlay is hidden.
+        // Safe FadeOut: prepare enumerator inside try/catch, but yield it outside (no yields inside try/catch)
+        IEnumerator fadeOutEnum = null;
+        try
+        {
+            // Try to create the FadeOut coroutine enumerator (this shouldn't usually throw).
+            fadeOutEnum = FadeOverlay.Instance.FadeOut(0.12f);
+        }
+        catch (Exception exFadeOutInit)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: FadeOut initialization failed, calling HideInstant as fallback: " + exFadeOutInit.Message);
+            try { FadeOverlay.Instance.HideInstant(); } catch { }
+        }
+
+        // Now yield the fade-out outside of any try/catch that contains yields
+        if (fadeOutEnum != null)
+        {
+            yield return StartCoroutine(fadeOutEnum);
+        }
+        else
+        {
+            // Nothing to yield, ensure overlay hidden and give one frame
+            try { FadeOverlay.Instance.HideInstant(); } catch { }
+            yield return null;
         }
 
         yield break;

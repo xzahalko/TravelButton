@@ -387,7 +387,7 @@ public static class TeleportHelpers
             try
             {
                 const float maxVerticalDelta = 100f;   // adjust to taste (meters)
-                const float extraGroundClearance = 0.5f;
+                const float extraGroundClearance = 0.25f;
 
                 float verticalDelta = Mathf.Abs(target.y - before.y);
                 if (verticalDelta > maxVerticalDelta)
@@ -936,7 +936,7 @@ public static class TeleportHelpers
                 RaycastHit hit;
                 if (Physics.Raycast(origin, Vector3.down, out hit, maxGroundRay, ~0, QueryTriggerInteraction.Ignore))
                 {
-                    Vector3 grounded = new Vector3(desired.x, hit.point.y + 1.0f, desired.z); // clearance 0.5m
+                    Vector3 grounded = new Vector3(desired.x, hit.point.y + 0.5f, desired.z); // clearance 0.5m
                     outPos = grounded;
                     TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: Raycast grounded to {outPos} (hit y={hit.point.y:F3}).");
                     return true;
