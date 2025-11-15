@@ -3104,6 +3104,8 @@ public class TravelButtonUI : MonoBehaviour
     // Main coroutine: loads scene and picks a safe final position, with fade-in before activation (Option B)
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj)
     {
+        TeleportHelpers.TeleportInProgress = true;
+
         // Extract fields via reflection
         string sceneName = TryGetStringFieldOrProp(cityObj, new string[] { "sceneName", "SceneName", "scene", "Scene" }) ?? "(unknown_scene)";
         string targetGameObjectName = TryGetStringFieldOrProp(cityObj, new string[] { "targetGameObjectName", "targetGameObject", "targetName", "target" });
@@ -3407,8 +3409,9 @@ public class TravelButtonUI : MonoBehaviour
             }
             TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: restored {camStates.Count} camera(s) after teleport.");
 
-            // Note: we do not HideInstant here so that the fade-out below is visible.
-            // Keep finally lean and non-yielding.
+            // Ensure teleport flag is cleared (safety: do not yield here)
+            TeleportHelpers.TeleportInProgress = false;
+            isTeleporting = false;
         }
 
         // Fade out overlay now (we are outside finally and can yield). If FadeOut fails, ensure overlay is hidden.

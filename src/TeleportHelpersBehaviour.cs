@@ -10,6 +10,15 @@ using UnityEngine;
 /// </summary>
 public class TeleportHelpersBehaviour : MonoBehaviour
 {
+    private static TeleportHelpersBehaviour _instance;
+    public static TeleportHelpersBehaviour GetOrCreateHost()
+    {
+        if (_instance != null) return _instance;
+        var go = new GameObject("TeleportHelpersHost");
+        DontDestroyOnLoad(go);
+        _instance = go.AddComponent<TeleportHelpersBehaviour>();
+        return _instance;
+    }
     private void Awake()
     {
         try { DontDestroyOnLoad(this.gameObject); } catch { }
@@ -17,37 +26,23 @@ public class TeleportHelpersBehaviour : MonoBehaviour
 
     // Watch a GameObject for post-teleport changes.
     // Logs if the world position changes during 'durationSec' seconds, checking every frame.
-    public IEnumerator WatchPositionAfterTeleport(GameObject go, Vector3 expectedPosition, float durationSec = 2.0f)
+    // Watch the moved object's position for T seconds and log if it changes
+    public IEnumerator WatchPositionAfterTeleport(GameObject moved, Vector3 expected, float watchSeconds)
     {
-        if (go == null)
+        if (moved == null) yield break;
+        float end = Time.realtimeSinceStartup + watchSeconds;
+        Vector3 last = moved.transform.position;
+        while (Time.realtimeSinceStartup < end)
         {
-            TravelButtonPlugin.LogInfo("WatchPositionAfterTeleport: go is null, aborting.");
-            yield break;
-        }
-
-        TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: starting watch for '{go.name}' (id={go.GetInstanceID()}) expecting {expectedPosition} for {durationSec:F2}s.");
-
-        Vector3 last = go.transform.position;
-        float elapsed = 0f;
-        bool changed = false;
-
-        while (elapsed < durationSec)
-        {
-            yield return null;
-            elapsed += Time.deltaTime;
-
-            Vector3 cur = go.transform.position;
-            if (!Mathf.Approximately(cur.x, last.x) || !Mathf.Approximately(cur.y, last.y) || !Mathf.Approximately(cur.z, last.z))
+            if (moved == null) yield break;
+            Vector3 cur = moved.transform.position;
+            if ((cur - expected).sqrMagnitude > 0.01f && (cur - last).sqrMagnitude > 0.001f)
             {
-                changed = true;
+                TravelButtonPlugin.LogWarning($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
+                last = cur;
             }
+            yield return null;
         }
-
-        if (!changed)
-            TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: no position changes detected for '{go.name}' during {durationSec:F2}s. Expected pos was {expectedPosition}.");
-        else
-            TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: finished monitoring '{go.name}' - changes were detected.");
-
         yield break;
     }
 
@@ -222,63 +217,74 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     }
 
     // Place this inside TeleportHelpersBehaviour (or add to an existing partial class).
-    public IEnumerator ReenableComponentsAfterDelay(GameObject go, List<Behaviour> disabled, List<(Rigidbody rb, bool originalIsKinematic)> changedRigidbodies, float delaySec = 0.25f)
+    // Re-enable components and restore rigidbody flags after a short delay.
+    // This coroutine toggles TeleportHelpers.ReenableInProgress for caller synchronization.
+    public IEnumerator ReenableComponentsAfterDelay(GameObject moved, List<Behaviour> disabledBehaviours, List<(Rigidbody rb, bool originalIsKinematic)> changedRigidbodies, float delay)
     {
-        TeleportHelpers.ReenableInProgress = true;
-
-        if (go == null)
-            yield break;
-
-        float waited = 0f;
-        while (waited < delaySec)
-        {
-            yield return null;
-            waited += Time.deltaTime;
-        }
-
         try
         {
-            // Re-enable previously disabled behaviour scripts
-            if (disabled != null)
+            TeleportHelpers.ReenableInProgress = true;
+        }
+        catch { }
+
+        // Wait the configured delay (real time to avoid being paused)
+        if (delay > 0f)
+            yield return new WaitForSecondsRealtime(delay);
+        else
+            yield return null;
+
+        // Re-enable behaviours (reverse order for safety)
+        try
+        {
+            if (disabledBehaviours != null)
             {
-                foreach (var b in disabled)
+                foreach (var b in disabledBehaviours)
                 {
-                    try { if (b != null) b.enabled = true; } catch { }
+                    if (b == null) continue;
+                    try
+                    {
+                        b.enabled = true;
+                        TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
+                    }
+                    catch { }
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error re-enabling behaviours: " + ex.Message);
+        }
 
-            // Restore original isKinematic for rigidbodies
+        // Restore rigidbody isKinematic flags
+        try
+        {
             if (changedRigidbodies != null)
             {
-                foreach (var pair in changedRigidbodies)
+                foreach (var tup in changedRigidbodies)
                 {
                     try
                     {
-                        if (pair.rb != null)
+                        if (tup.rb != null)
                         {
-                            pair.rb.isKinematic = pair.originalIsKinematic;
-                            TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={pair.originalIsKinematic} on '{pair.rb.gameObject.name}'.");
+                            tup.rb.isKinematic = tup.originalIsKinematic;
+                            TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
                         }
                     }
                     catch { }
                 }
             }
         }
-        catch (System.Exception ex)
+        catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: exception while re-enabling: " + ex);
+            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error restoring rigidbodies: " + ex.Message);
         }
 
-        TeleportHelpers.ReenableInProgress = false;
-        yield break;
-    }
+        try
+        {
+            TeleportHelpers.ReenableInProgress = false;
+        }
+        catch { }
 
-    public static TeleportHelpersBehaviour GetOrCreateHost()
-    {
-        var existing = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
-        if (existing != null) return existing;
-        var go = new GameObject("TeleportHelpersHost");
-        UnityEngine.Object.DontDestroyOnLoad(go);
-        return go.AddComponent<TeleportHelpersBehaviour>();
+        yield break;
     }
 }

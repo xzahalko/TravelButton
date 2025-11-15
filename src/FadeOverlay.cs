@@ -4,12 +4,6 @@ using UnityEngine.UI;
 
 /// <summary>
 /// Minimal singleton full-screen black overlay used to hide scene activation/teleport flashes.
-/// Usage:
-///   FadeOverlay.Instance.ShowInstant();    // show black immediately
-///   FadeOverlay.Instance.HideInstant();    // hide immediately
-///   StartCoroutine(FadeOverlay.Instance.FadeIn(0.2f));  // fade to black
-///   StartCoroutine(FadeOverlay.Instance.FadeOut(0.2f)); // fade to transparent
-/// This creates a Canvas in DontDestroyOnLoad so it persists across scene loads.
 /// </summary>
 public class FadeOverlay : MonoBehaviour
 {
@@ -36,15 +30,15 @@ public class FadeOverlay : MonoBehaviour
 
     private void CreateUI()
     {
-        // Canvas
+        if (_canvas != null) return;
+
         _canvas = gameObject.AddComponent<Canvas>();
         _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _canvas.sortingOrder = short.MaxValue; // topmost
+        _canvas.sortingOrder = short.MaxValue;
 
         gameObject.AddComponent<CanvasScaler>();
         gameObject.AddComponent<GraphicRaycaster>();
 
-        // Root panel
         var panelGO = new GameObject("Overlay");
         panelGO.transform.SetParent(transform, false);
         _image = panelGO.AddComponent<Image>();
@@ -60,12 +54,10 @@ public class FadeOverlay : MonoBehaviour
         _group.blocksRaycasts = true;
         _group.interactable = true;
 
-        // start hidden
         _group.alpha = 0f;
         _image.enabled = true;
     }
 
-    // Immediate show (no fade)
     public void ShowInstant()
     {
         EnsureInstance();
@@ -75,7 +67,6 @@ public class FadeOverlay : MonoBehaviour
         _group.interactable = true;
     }
 
-    // Immediate hide (no fade)
     public void HideInstant()
     {
         EnsureInstance();
@@ -85,7 +76,6 @@ public class FadeOverlay : MonoBehaviour
         _group.interactable = false;
     }
 
-    // Fade to black (alpha -> 1)
     public IEnumerator FadeIn(float duration)
     {
         EnsureInstance();
@@ -94,7 +84,6 @@ public class FadeOverlay : MonoBehaviour
         yield return _running;
     }
 
-    // Fade out to transparent (alpha -> 0)
     public IEnumerator FadeOut(float duration)
     {
         EnsureInstance();

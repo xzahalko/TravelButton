@@ -11,6 +11,7 @@ public static class TeleportHelpers
 
     // Flag set while ReenableComponentsAfterDelay is running (used by callers to wait).
     public static volatile bool ReenableInProgress = false;
+    public static volatile bool TeleportInProgress = false;
 
     // Robust player-finder that prefers the actual player character GameObject.
     public static GameObject FindPlayerRoot()
@@ -252,19 +253,19 @@ public static class TeleportHelpers
             // Resolve the actual GameObject that should be moved
             var moveGO = ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
 
+            // --- start replacement block: robustní výbìr autoritativního PlayerChar rootu ---
             try
             {
-                // initialRoot je ten, co našla FindPlayerRoot(); použijeme jeho pozici k selekci
+                // initialRoot is available for proximity selection
                 Vector3 initialPos = Vector3.zero;
                 try { initialPos = initialRoot.transform.position; } catch { initialPos = Vector3.zero; }
 
                 GameObject authoritative = null;
 
-                // Sbìr kandidátù: všechny transformy zaèínající na "PlayerChar"
                 Transform[] allTransforms = null;
                 try { allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>(); } catch { allTransforms = new Transform[0]; }
 
-                var candidates = new System.Collections.Generic.List<GameObject>();
+                var candidates = new List<GameObject>();
                 foreach (var t in allTransforms)
                 {
                     if (t == null || string.IsNullOrEmpty(t.name)) continue;
@@ -272,7 +273,7 @@ public static class TeleportHelpers
                         candidates.Add(t.gameObject);
                 }
 
-                // Priorita 1: najít kandidáta s CharacterInventory / Character componentou (pokud existují)
+                // Priority 1: CharacterInventory / Character component
                 if (candidates.Count > 0)
                 {
                     Type charInvType = ReflectionUtils.SafeGetType("CharacterInventory, Assembly-CSharp") ?? ReflectionUtils.SafeGetType("CharacterInventory");
@@ -285,11 +286,11 @@ public static class TeleportHelpers
                             if (charInvType != null && go.GetComponent(charInvType) != null) { authoritative = go; break; }
                             if (charType != null && go.GetComponent(charType) != null) { authoritative = go; break; }
                         }
-                        catch { /* ignore per-candidate errors */ }
+                        catch { }
                     }
                 }
 
-                // Priorita 2: pokud nic s komponentou, vyber kandidáta s nenulovou pozicí nejblíže initialPos
+                // Priority 2: nearest non-zero-pos candidate
                 if (authoritative == null && candidates.Count > 0)
                 {
                     float bestDist = float.MaxValue;
@@ -299,7 +300,6 @@ public static class TeleportHelpers
                         try
                         {
                             var pos = go.transform.position;
-                            // ignoruj zjevné defaultní rooty na (0,0,0)
                             if (Vector3.SqrMagnitude(pos) < 0.0001f) continue;
                             float d = Vector3.SqrMagnitude(pos - initialPos);
                             if (d < bestDist) { bestDist = d; best = go; }
@@ -309,7 +309,7 @@ public static class TeleportHelpers
                     if (best != null) authoritative = best;
                 }
 
-                // Priorita 3: fallback na moveGO.transform.root, pokud vypadá rozumnì (není Cam/UI/FX)
+                // Priority 3: fallback to moveGO.root if plausible
                 if (authoritative == null)
                 {
                     try
@@ -317,15 +317,14 @@ public static class TeleportHelpers
                         var rc = moveGO.transform.root != null ? moveGO.transform.root.gameObject : null;
                         if (rc != null && rc != moveGO)
                         {
-                            var lname = (rc.name ?? "").ToLowerInvariant();
+                            var lname = rc.name?.ToLowerInvariant() ?? "";
                             if (!lname.Contains("cam") && !lname.Contains("ui") && !lname.Contains("fx"))
                                 authoritative = rc;
                         }
                     }
-                    catch { /* ignore */ }
+                    catch { }
                 }
 
-                // Pokud máme autoritativní root a liší se od souèasného moveGO, použij ho
                 if (authoritative != null && authoritative != moveGO)
                 {
                     TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: switching move target from '{moveGO.name}' to authoritative root '{authoritative.name}'.");
@@ -335,7 +334,7 @@ public static class TeleportHelpers
             catch { /* ignore overall selection errors */ }
             // --- end replacement block ---
 
-            // Diagnostics: hierarchy and player candidates
+            // Diagnostics
             string parentName = "(null)";
             try { parentName = moveGO.transform.parent != null ? moveGO.transform.parent.name : "(null)"; } catch { parentName = "(unknown)"; }
             string rootName = "(unknown)";
@@ -373,7 +372,6 @@ public static class TeleportHelpers
                 }
                 else
                 {
-                    // fallback: at least try normal probe on original
                     if (TryFindNearestNavMeshOrGround(target, out Vector3 safeFinal, navSearchRadius: 15f, maxGroundRay: 400f))
                     {
                         TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Using safe position {safeFinal} (was {target})");
@@ -393,9 +391,7 @@ public static class TeleportHelpers
             // --- Safety: prevent huge vertical jumps (reject or conservative-ground) ---
             try
             {
-                const float maxVerticalDelta = 100f;   // adjust to taste (meters)
-                const float extraGroundClearance = 0.25f;
-
+                const float maxVerticalDelta = 100f;
                 float verticalDelta = Mathf.Abs(target.y - before.y);
                 if (verticalDelta > maxVerticalDelta)
                 {
@@ -404,10 +400,10 @@ public static class TeleportHelpers
                     try
                     {
                         RaycastHit hit;
-                        Vector3 origin = new Vector3(target.x, before.y + 200f, target.z); // raycast from relative height
+                        Vector3 origin = new Vector3(target.x, before.y + 200f, target.z);
                         if (Physics.Raycast(origin, Vector3.down, out hit, 400f, ~0, QueryTriggerInteraction.Ignore))
                         {
-                            float candidateY = hit.point.y + extraGroundClearance;
+                            float candidateY = hit.point.y + TeleportGroundClearance;
                             float candDelta = Mathf.Abs(candidateY - before.y);
                             if (candDelta <= maxVerticalDelta)
                             {
@@ -451,7 +447,7 @@ public static class TeleportHelpers
             }
             catch { }
 
-            // --- Detect NavMeshAgent (reflection) and temporarily disable updates so agent won't fight the warp ---
+            // NavMeshAgent detection & disabling (reflection)
             object navAgentObj = null;
             Type navAgentType = null;
             try
@@ -501,8 +497,8 @@ public static class TeleportHelpers
             // --- Suspend likely movement scripts and make child rigidbodies kinematic ---
             var suspendPatterns = new string[]
             {
-            "LocalCharacterControl","AdvancedMover","CharacterFastTraveling","RigidbodySuspender",
-            "CharacterResting","CharacterMovement","PlayerMovement","PlayerController","Movement","Motor","AI"
+                "LocalCharacterControl","AdvancedMover","CharacterFastTraveling","RigidbodySuspender",
+                "CharacterResting","CharacterMovement","PlayerMovement","PlayerController","Movement","Motor","AI"
             };
 
             var disabledBehaviours = new List<Behaviour>();
@@ -647,7 +643,7 @@ public static class TeleportHelpers
                         Vector3 origin = new Vector3(samplePos.x, samplePos.y + startAbove, samplePos.z);
                         if (Physics.Raycast(origin, Vector3.down, out hit, maxDistance, ~0, QueryTriggerInteraction.Ignore))
                         {
-                            Vector3 g = new Vector3(samplePos.x, hit.point.y + clearance, samplePos.z);
+                            Vector3 g = new Vector3(samplePos.x, hit.point.y + TeleportGroundClearance, samplePos.z);
                             TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Ground raycast hit at y={hit.point.y:F3} for XZ=({samplePos.x:F3},{samplePos.z:F3}), returning grounded pos {g}");
                             return g;
                         }
@@ -660,7 +656,7 @@ public static class TeleportHelpers
                     {
                         TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: Ground raycast failed: " + ex.Message);
                     }
-                    return samplePos; // fallback
+                    return samplePos;
                 }
 
                 try { Physics.SyncTransforms(); } catch { }
@@ -691,7 +687,7 @@ public static class TeleportHelpers
                 }
 
                 var after = moveGO.transform.position;
-                var grounded = FindGroundY(after, startAbove: 200f, maxDistance: 400f, clearance: 0.5f);
+                var grounded = FindGroundY(after, startAbove: 200f, maxDistance: 400f, clearance: TeleportGroundClearance);
 
                 bool usedGrounding = false;
                 if (!Mathf.Approximately(grounded.y, after.y))
@@ -773,12 +769,12 @@ public static class TeleportHelpers
                 TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: grounding/overlap-safety check failed: " + exOverlap.Message);
             }
 
-            // Start monitoring coroutine (logs if anything moves the object after teleport)
+            // Start monitoring coroutine (logs if anything moves the object after teleport) and start the reenable coroutine
             try
             {
                 var host = TeleportHelpersBehaviour.GetOrCreateHost();
                 host.StartCoroutine(host.WatchPositionAfterTeleport(moveGO, moveGO.transform.position, 2.0f));
-                // re-enable suspended components and restore rigidbody kinematic flags after short delay
+                // mark re-enable in progress and let the behaviour coroutine set flag accordingly
                 host.StartCoroutine(host.ReenableComponentsAfterDelay(moveGO, disabledBehaviours, changedRigidbodies, 0.4f));
             }
             catch { }
