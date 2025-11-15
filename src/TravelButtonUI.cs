@@ -13,6 +13,7 @@
 //
 // Use these logs to check travel_config.json coordinates and city.targetGameObjectName values,
 // and to correlate TravelButtonPlugin.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
+using MapMagic;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -26,8 +27,8 @@ using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
-using UnityEngine.UI;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -141,6 +142,36 @@ public class TravelButtonUI : MonoBehaviour
         TravelButtonPlugin.LogInfo("MonitorInventoryContainerVisibilityCoroutine: ended.");
     }
 
+    private object SafeFindInstanceOfType(Type t)
+    {
+        if (t == null) return null;
+        try
+        {
+            // Volat FindObjectOfType pouze pokud typ dìdí z UnityEngine.Object
+            if (!typeof(UnityEngine.Object).IsAssignableFrom(t))
+            {
+                TravelButtonPlugin.LogInfo($"DBG-TRAVEL: manager probe skipping type '{t.FullName}' because it is not a UnityEngine.Object.");
+                return null;
+            }
+
+            try
+            {
+                var inst = UnityEngine.Object.FindObjectOfType(t);
+                return inst;
+            }
+            catch (Exception exFind)
+            {
+                TravelButtonPlugin.LogWarning($"DBG-TRAVEL: FindObjectOfType for '{t.FullName}' threw: {exFind.Message}");
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning($"DBG-TRAVEL: SafeFindInstanceOfType unexpected exception for '{t?.FullName ?? "(null)"}': {ex}");
+            return null;
+        }
+    }
+
     // Insert into TravelButtonUI (same class or partial)
     private void DumpTravelRelevantState(string tag = "")
     {
@@ -158,7 +189,7 @@ public class TravelButtonUI : MonoBehaviour
                 {
                     var t = assemblies.Select(a => a.GetType(mn, false)).FirstOrDefault(tt => tt != null);
                     if (t == null) continue;
-                    var inst = FindObjectOfType(t) as object;
+                    var inst = SafeFindInstanceOfType(t) as object;
                     TravelButtonPlugin.LogInfo($"DBG-TRAVEL: managerType='{mn}' typeFound={(t != null)} instanceFound={(inst != null)}");
                     if (inst != null)
                     {
@@ -2281,6 +2312,18 @@ public class TravelButtonUI : MonoBehaviour
     private void OpenTravelDialog()
     {
         TravelButtonPlugin.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
+
+        GameObject playerRoot = null;
+        try { playerRoot = TeleportHelpers.FindPlayerRoot(); } catch { playerRoot = null; }
+
+        Vector3 before = (playerRoot != null) ? playerRoot.transform.position : Vector3.zero;
+        TravelButtonPlugin.LogInfo($"OpenTravelDialog: hrac pozice: ({before.x:F3}, {before.y:F3}, {before.z:F3})");
+
+        //        InventoryHelpers.SafeAddSilverToPlayer(50);
+        //        InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
+//        var rescuePos = new Vector3(1204.881f, -12.5f, 1372.639f);
+//        TeleportHelpers.AttemptTeleportToPositionSafe(rescuePos);
+
         //DumpDetectedPositionsForActiveScene();
         //        LogLoadedScenes();
         //DebugLogCanvasHierarchy();
@@ -2758,6 +2801,8 @@ public class TravelButtonUI : MonoBehaviour
     // This mirrors the TravelDialog behavior: do not deduct before teleport.
     private void TryTeleportThenCharge(TravelButtonMod.City city, int cost)
     {
+        LogCityConfig(city.name);
+
         if (city == null)
         {
             TravelButtonPlugin.LogWarning("TryTeleportThenCharge: city is null.");
@@ -3029,282 +3074,407 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // Coroutine to load a target scene (map) and teleport the player there.
-    // This version avoids yielding inside try/catch blocks (C# restriction).
-    //podle souradnic
-
-    // Replace the existing LoadSceneAndTeleportCoroutine with the version below.
-    // Added robust fallback grounding logic (TryFindSafePosition) that attempts:
-    //  - TeleportHelpers.GetGroundedPosition (existing)
-    //  - A downward Physics.Raycast from a high altitude
-    //  - A spiral search of nearby XZ samples with downward raycasts
-    // This increases the chance of landing on valid ground when the configured coords are inaccurate.
-
-    private IEnumerator LoadSceneAndTeleportCoroutine(TravelButtonMod.City city, int cost, Vector3 coordsHint, bool haveCoordsHint)
+    /// <summary>
+    /// Scene loader + teleport coroutine that reliably teleports the player to a chosen finalPos
+    /// after the requested scene is loaded and settled. To avoid a visible brief spawn at the
+    /// scene's default location, this version disables all active Cameras right after the
+    /// scene is ready to activate, activates the scene, performs the immediate probe/teleport,
+    /// then restores cameras. This hides the intermediate wrong spawn (no blink).
+    /// </summary>
+    // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
+    public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
-        if (city == null)
+        if (haveCoordsHint && cityObj != null)
         {
-            isTeleporting = false;
-            yield break;
-        }
-
-        // display inline message to inform user
-        ShowInlineDialogMessage("Loading map...");
-
-        AsyncOperation op = null;
-        bool loadFailed = false;
-
-        // Start the async load - keep try/catch that does not contain any yields
-        try
-        {
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: starting async load for scene '{city.sceneName}'.");
-            op = UnityEngine.SceneManagement.SceneManager.LoadSceneAsync(city.sceneName, UnityEngine.SceneManagement.LoadSceneMode.Single);
-            if (op == null)
+            try
             {
-                TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: LoadSceneAsync returned null for '{city.sceneName}'.");
-                loadFailed = true;
+                TrySetFloatArrayFieldOrProp(cityObj, new string[] { "coords", "Coords", "position", "Position" }, new float[] { coordsHint.x, coordsHint.y, coordsHint.z });
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine(wrapper): applied coordsHint [{coordsHint.x}, {coordsHint.y}, {coordsHint.z}] via reflection (if target field existed).");
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine(wrapper): could not apply coordsHint to city (reflection): " + ex.Message);
             }
         }
-        catch (Exception exLoad)
-        {
-            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: exception while initiating scene load: " + exLoad);
-            loadFailed = true;
-        }
 
-        // If we successfully obtained an AsyncOperation, wait for it (yields are not inside a try/catch here)
-        if (!loadFailed && op != null)
+        // Delegate to main coroutine
+        yield return StartCoroutine(LoadSceneAndTeleportCoroutine(cityObj));
+    }
+
+    // Main coroutine: loads scene and teleports safely to computed finalPos using TeleportHelpers.AttemptTeleportToPositionSafe
+    public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj)
+    {
+        // Extract fields via reflection
+        string sceneName = TryGetStringFieldOrProp(cityObj, new string[] { "sceneName", "SceneName", "scene", "Scene" }) ?? "(unknown_scene)";
+        string targetGameObjectName = TryGetStringFieldOrProp(cityObj, new string[] { "targetGameObjectName", "targetGameObject", "targetName", "target" });
+        float[] coordsArr = TryGetFloatArrayFieldOrProp(cityObj, new string[] { "coords", "Coords", "position", "Position" });
+
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: starting async load for scene '{sceneName}'.");
+
+        // Start async load but DO NOT activate immediately — we'll disable cameras before activation to hide any intermediate spawn
+        var loadOp = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
+        loadOp.allowSceneActivation = false;
+
+        // Wait until Unity has loaded the scene to the "ready to activate" point
+        while (loadOp.progress < 0.9f && !loadOp.isDone)
         {
-            while (!op.isDone)
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: loading '{sceneName}' progress={loadOp.progress:F2}");
+            yield return null;
+        }
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: scene '{sceneName}' reached ready-to-activate (progress={loadOp.progress:F2}).");
+
+        // Disable all cameras on the current root before allowing the new scene to activate so the player doesn't see the default spawn.
+        // We store prior enabled state so we can restore it after teleport.
+        Camera[] allCams = null;
+        var camStates = new List<(Camera cam, bool enabled)>();
+        try
+        {
+            allCams = Camera.allCameras;
+        }
+        catch { allCams = new Camera[0]; }
+
+        foreach (var cam in allCams)
+        {
+            if (cam == null) continue;
+            try
+            {
+                camStates.Add((cam, cam.enabled));
+                cam.enabled = false;
+            }
+            catch { }
+        }
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: disabled {camStates.Count} camera(s) to prevent visual flash on scene activation.");
+
+        // Activate the scene now (while cameras are disabled)
+        try
+        {
+            loadOp.allowSceneActivation = true;
+
+            // Wait for the activation to complete
+            while (!loadOp.isDone)
             {
                 yield return null;
             }
 
-            // Give a couple frames for scene initialization
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: requested='{sceneName}', loaded.name='{SceneManager.GetActiveScene().name}', isLoaded={SceneManager.GetActiveScene().isLoaded}, isActive={SceneManager.GetActiveScene() == SceneManager.GetActiveScene()}");
+
+            // Small single frame to let scene objects instantiate (we keep cameras disabled until teleport completes)
             yield return null;
-            yield return null;
-        }
 
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after test op != null.");
-
-        if (loadFailed)
-        {
-            ShowInlineDialogMessage("Map load failed");
-            isTeleporting = false;
-            // re-enable buttons
-            try
-            {
-                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
-                if (contentParent != null)
-                {
-                    for (int ci = 0; ci < contentParent.childCount; ci++)
-                    {
-                        var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
-                        if (childBtn != null) childBtn.interactable = true;
-                    }
-                }
-            }
-            catch { }
-            yield break;
-        }
-
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after test loadFailed.");
-
-        // Resolve final desired position as before (prefer city.coords, then coordsHint, then named GameObject, then heuristic)
-        Vector3 finalPos = Vector3.zero;
-        bool haveFinalPos = false;
-
-        try
-        {
-            // 1) Prefer configured coords in the city entry
-            if (city.coords != null && city.coords.Length >= 3)
-            {
-                finalPos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-                haveFinalPos = true;
-                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using configured city.coords for '{city.name}' -> {finalPos}");
-            }
-
-            // 2) If no city.coords, fall back to coordsHint passed by caller (if present)
-            if (!haveFinalPos && haveCoordsHint)
-            {
-                finalPos = coordsHint;
-                haveFinalPos = true;
-                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using coordsHint for '{city.name}' -> {finalPos}");
-            }
-
-            // 3) If still no final pos, try to find a target GameObject by name (legacy fallback)
-            if (!haveFinalPos && !string.IsNullOrEmpty(city.targetGameObjectName))
+            // compute finalPos: prefer anchor GameObject if present
+            Vector3 finalPos = Vector3.zero;
+            GameObject anchor = null;
+            if (!string.IsNullOrEmpty(targetGameObjectName))
             {
                 try
                 {
-                    var tgo = GameObject.Find(city.targetGameObjectName);
-                    if (tgo != null)
+                    anchor = GameObject.Find(targetGameObjectName);
+                    if (anchor != null)
                     {
-                        finalPos = tgo.transform.position;
-                        haveFinalPos = true;
-                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: found target GameObject '{city.targetGameObjectName}' at {finalPos} after load (fallback).");
+                        finalPos = anchor.transform.position;
+                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: found anchor GameObject '{targetGameObjectName}' at {finalPos} - using it for teleport.");
                     }
                     else
                     {
-                        TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: target GameObject '{city.targetGameObjectName}' not found after scene load (fallback).");
+                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: anchor '{targetGameObjectName}' not found in scene.");
                     }
                 }
-                catch (Exception ex)
+                catch (Exception exAnchor)
                 {
-                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: error searching for target GameObject after load: " + ex);
+                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: anchor lookup failed: " + exAnchor.Message);
                 }
             }
 
-            // 4) Final heuristic: look for any transform whose name contains the city name
-            if (!haveFinalPos)
+            // displayName for logs
+            string displayName = TryGetStringFieldOrProp(cityObj, new string[] { "name", "Name", "cityName", "CityName" })
+                                 ?? (!string.IsNullOrEmpty(targetGameObjectName) ? targetGameObjectName : sceneName);
+
+            // If anchor exists, teleport to it. Otherwise run immediate-probe -> fallback settle-probe logic,
+            // but do NOT re-enable cameras until teleport finished (so the user never sees initial default spawn).
+            if (anchor != null)
             {
-                try
+                finalPos = anchor.transform.position;
+            }
+            else
+            {
+                if (coordsArr == null || coordsArr.Length < 3)
                 {
-                    var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-                    foreach (var tr in allTransforms)
+                    TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: no coords available in city object for '{displayName}' — aborting teleport.");
+                    // restore cameras before exiting
+                    foreach (var (cam, prev) in camStates) try { cam.enabled = prev; } catch { }
+                    yield break;
+                }
+
+                Vector3 raw_xyz = new Vector3(coordsArr[0], coordsArr[1], coordsArr[2]);
+                Vector3 raw_xzy = new Vector3(coordsArr[0], coordsArr[2], coordsArr[1]);
+
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: attempting immediate probe for config coords as XYZ={raw_xyz} and XZY={raw_xzy}");
+
+                // Helper for single-shot grounding attempt (raycast then navmesh fallback)
+                bool TryComputeSafeImmediate(Vector3 raw, out Vector3 outSafe)
+                {
+                    outSafe = raw;
+                    try
                     {
-                        if (tr == null) continue;
-                        if (!string.IsNullOrEmpty(tr.name) && !string.IsNullOrEmpty(city.name) &&
-                            tr.name.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        // 1) quick raycast-from-above (may succeed immediately)
+                        RaycastHit hit;
+                        Vector3 origin = new Vector3(raw.x, raw.y + 200f, raw.z);
+                        if (Physics.Raycast(origin, Vector3.down, out hit, 1000f, ~0, QueryTriggerInteraction.Ignore))
                         {
-                            finalPos = tr.position;
-                            haveFinalPos = true;
-                            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: heuristic found scene object '{tr.name}' for city '{city.name}' at {finalPos}");
-                            break;
+                            outSafe = new Vector3(raw.x, hit.point.y + 0.5f, raw.z);
+                            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: immediate raycast grounded to {outSafe} for raw {raw}.");
+                            return true;
+                        }
+
+                        // 2) try NavMesh-based fallback
+                        if (TeleportHelpers.TryFindNearestNavMeshOrGround(raw, out Vector3 nmSafe, navSearchRadius: 15f, maxGroundRay: 400f))
+                        {
+                            outSafe = nmSafe;
+                            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: immediate NavMesh/ground probe found {outSafe} for raw {raw}.");
+                            return true;
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: immediate probe threw: " + ex.Message);
+                    }
+                    return false;
                 }
-                catch (Exception ex)
+
+                // Try immediate probes for both permutations
+                bool immediateOk = false;
+                Vector3 candidateSafe = Vector3.zero;
+
+                if (TryComputeSafeImmediate(raw_xyz, out Vector3 s1))
                 {
-                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: heuristic search failed: " + ex);
+                    immediateOk = true;
+                    candidateSafe = s1;
                 }
-            }
-        }
-        catch (Exception exOuter)
-        {
-            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: unexpected error while resolving final position: " + exOuter);
-        }
-
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after resolving finalPos; haveFinalPos={haveFinalPos}");
-
-        if (!haveFinalPos)
-        {
-            TravelButtonPlugin.LogError($"LoadSceneAndTeleportCoroutine: could not determine a teleport target for '{city.name}' after loading scene '{city.sceneName}'.");
-            ShowInlineDialogMessage("Teleport target not found in map");
-            isTeleporting = false;
-            yield break;
-        }
-
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: before teleporting to {finalPos}");
-
-        // Enhanced grounding/fallback procedure:
-        // Try a best-effort to find a safe grounded point close to finalPos.
-        bool foundSafe = TryFindSafePosition(finalPos, out Vector3 safePos);
-
-        // If we couldn't find a good ground at the chosen coords, but the coords were user-provided (city.coords),
-        // try swapping Y/Z interpretation as a last resort (handles mis-ordered coords).
-        if (!foundSafe && city.coords != null && city.coords.Length >= 3)
-        {
-            var swapped = new Vector3(city.coords[0], city.coords[2], city.coords[1]);
-            TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: primary grounding failed for '{city.name}', trying swapped coords interpretation {swapped}.");
-            foundSafe = TryFindSafePosition(swapped, out safePos);
-
-            if (foundSafe)
-            {
-                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: swapped coords interpretation succeeded for '{city.name}' -> {safePos}. Updating in-memory coords.");
-                try { city.coords = new float[] { safePos.x, safePos.y, safePos.z }; } catch { }
-            }
-        }
-
-        if (!foundSafe)
-        {
-            TravelButtonPlugin.LogError($"LoadSceneAndTeleportCoroutine: could not find a safe ground position near {finalPos} for '{city.name}' after attempts.");
-            ShowInlineDialogMessage("Could not find safe teleport position");
-            isTeleporting = false;
-            yield break;
-        }
-
-        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleporting to safe position {safePos}");
-
-        // Do the actual teleport
-        bool teleported = false;
-        try
-        {
-            teleported = AttemptTeleportToPositionSafe(safePos);
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + ex);
-            teleported = false;
-        }
-
-        if (teleported)
-        {
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleported player to '{city.name}' at {safePos}.");
-
-            try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
-
-            try
-            {
-                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
-                if (!charged)
+                else if (TryComputeSafeImmediate(raw_xzy, out Vector3 s2))
                 {
-                    TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: Teleported to {city.name} but failed to deduct {cost} silver.");
-                    ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                    immediateOk = true;
+                    candidateSafe = s2;
+                }
+
+                if (immediateOk)
+                {
+                    finalPos = candidateSafe;
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: immediate finalPos resolved to {finalPos} — teleporting now.");
                 }
                 else
                 {
-                    ShowInlineDialogMessage($"Teleported to {city.name}");
+                    // fallback: wait a bit for colliders/NavMesh then retry heavier probing
+                    TravelButtonPlugin.LogInfo("LoadSceneAndTeleportCoroutine: immediate probes failed -- entering settle wait and retry logic.");
+
+                    const int framesToWait = 20;
+                    for (int i = 0; i < framesToWait; ++i)
+                        yield return null;
+
+                    Vector3 raw1 = raw_xyz;
+                    Vector3 raw2 = raw_xzy;
+
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: probing config coords as XYZ={raw1} and XZY={raw2}");
+
+                    // Wait up to waitTimeout for colliders to appear
+                    float waitTimeout = 1.2f;
+                    float waited = 0f;
+                    bool foundCollider = false;
+                    while (waited < waitTimeout && !foundCollider)
+                    {
+                        Vector3 probeCenter1 = new Vector3(raw1.x, (TeleportHelpers.FindPlayerRoot()?.transform.position.y ?? raw1.y) + 1.0f, raw1.z);
+                        Vector3 probeCenter2 = new Vector3(raw2.x, (TeleportHelpers.FindPlayerRoot()?.transform.position.y ?? raw2.y) + 1.0f, raw2.z);
+                        Collider[] cols1 = Physics.OverlapSphere(probeCenter1, 1.0f, ~0, QueryTriggerInteraction.Ignore);
+                        Collider[] cols2 = Physics.OverlapSphere(probeCenter2, 1.0f, ~0, QueryTriggerInteraction.Ignore);
+                        if ((cols1 != null && cols1.Length > 0) || (cols2 != null && cols2.Length > 0))
+                            foundCollider = true;
+                        else
+                        {
+                            waited += Time.deltaTime;
+                            yield return null;
+                        }
+                    }
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: waited {framesToWait} frames and {waited:F2}s for scene to settle; foundCollider={foundCollider}");
+
+                    // Raycast-ground both interpretations
+                    bool TryGround(Vector3 sampleXZ, out Vector3 grounded)
+                    {
+                        grounded = sampleXZ;
+                        try
+                        {
+                            RaycastHit hit;
+                            Vector3 origin = new Vector3(sampleXZ.x, (TeleportHelpers.FindPlayerRoot()?.transform.position.y ?? sampleXZ.y) + 200f, sampleXZ.z);
+                            if (Physics.Raycast(origin, Vector3.down, out hit, 1000f, ~0, QueryTriggerInteraction.Ignore))
+                            {
+                                grounded = new Vector3(sampleXZ.x, hit.point.y + 0.5f, sampleXZ.z);
+                                return true;
+                            }
+                        }
+                        catch { }
+                        return false;
+                    }
+
+                    bool gotGround_xyz = TryGround(raw1, out Vector3 g1);
+                    bool gotGround_xzy = TryGround(raw2, out Vector3 g2);
+
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: grounding probe results: XYZ_hit={gotGround_xyz} y={(gotGround_xyz ? g1.y : float.NaN):F3} | XZY_hit={gotGround_xzy} y={(gotGround_xzy ? g2.y : float.NaN):F3}");
+
+                    if (gotGround_xyz && !gotGround_xzy)
+                    {
+                        finalPos = g1;
+                    }
+                    else if (!gotGround_xyz && gotGround_xzy)
+                    {
+                        finalPos = g2;
+                    }
+                    else if (gotGround_xyz && gotGround_xzy)
+                    {
+                        var before = TeleportHelpers.FindPlayerRoot()?.transform.position ?? Vector3.zero;
+                        float d1 = Mathf.Abs(g1.y - before.y);
+                        float d2 = Mathf.Abs(g2.y - before.y);
+                        finalPos = (d1 <= d2) ? g1 : g2;
+                    }
+                    else
+                    {
+                        if (TeleportHelpers.TryFindNearestNavMeshOrGround(raw1, out Vector3 safeA, navSearchRadius: 15f, maxGroundRay: 400f))
+                            finalPos = safeA;
+                        else if (TeleportHelpers.TryFindNearestNavMeshOrGround(raw2, out Vector3 safeB, navSearchRadius: 15f, maxGroundRay: 400f))
+                            finalPos = safeB;
+                        else
+                        {
+                            TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: no safe position found for coords [{coordsArr[0]}, {coordsArr[1]}, {coordsArr[2]}]; aborting teleport.");
+                            // restore cameras before exiting
+                            foreach (var (cam, prev) in camStates) try { cam.enabled = prev; } catch { }
+                            yield break;
+                        }
+                    }
+
+                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: selected finalPos {finalPos} after grounding/permute logic (post-wait).");
                 }
             }
-            catch (Exception exCharge)
-            {
-                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: charge attempt threw: " + exCharge);
-                ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
-            }
 
-            try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+            // small final frame to let everything stabilize
+            yield return null;
 
+            // Perform a single teleport now
             try
             {
-                isTeleporting = false;
-                if (dialogRoot != null) dialogRoot.SetActive(false);
-                if (refreshButtonsCoroutine != null)
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Attempting teleport to {finalPos} using AttemptTeleportToPositionSafe.");
+                bool ok = TeleportHelpers.AttemptTeleportToPositionSafe(finalPos);
+                if (!ok)
+                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe returned false (teleport reported failed).");
+                else
+                    TravelButtonPlugin.LogInfo("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe reported success.");
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + ex.Message);
+            }
+        }
+        finally
+        {
+            // restore camera states so rendering resumes
+            foreach (var (cam, prev) in camStates)
+            {
+                try { if (cam != null) cam.enabled = prev; } catch { }
+            }
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: restored {camStates.Count} camera(s) after teleport.");
+        }
+
+        yield break;
+    }
+
+    // ---- Reflection helpers ----
+    private static string TryGetStringFieldOrProp(object obj, string[] candidateNames)
+    {
+        if (obj == null) return null;
+        Type t = obj.GetType();
+        foreach (var n in candidateNames)
+        {
+            try
+            {
+                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (f != null)
                 {
-                    StopCoroutine(refreshButtonsCoroutine);
-                    refreshButtonsCoroutine = null;
+                    var v = f.GetValue(obj);
+                    if (v != null) return v.ToString();
+                }
+                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p != null && p.CanRead)
+                {
+                    var v = p.GetValue(obj, null);
+                    if (v != null) return v.ToString();
                 }
             }
             catch { }
         }
-        else
-        {
-            TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: teleport to '{city.name}' failed after scene load.");
-            ShowInlineDialogMessage("Teleport failed");
-            isTeleporting = false;
+        return null;
+    }
 
-            // Re-enable buttons
+    private static float[] TryGetFloatArrayFieldOrProp(object obj, string[] candidateNames)
+    {
+        if (obj == null) return null;
+        Type t = obj.GetType();
+        foreach (var n in candidateNames)
+        {
             try
             {
-                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
-                if (contentParent != null)
+                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (f != null)
                 {
-                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                    var v = f.GetValue(obj);
+                    if (v is float[] fa) return fa;
+                    if (v is Vector3 vv) return new float[] { vv.x, vv.y, vv.z };
+                }
+                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p != null && p.CanRead)
+                {
+                    var v = p.GetValue(obj, null);
+                    if (v is float[] pa) return pa;
+                    if (v is Vector3 pv) return new float[] { pv.x, pv.y, pv.z };
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static bool TrySetFloatArrayFieldOrProp(object obj, string[] candidateNames, float[] value)
+    {
+        if (obj == null || value == null || value.Length < 3) return false;
+        Type t = obj.GetType();
+        foreach (var n in candidateNames)
+        {
+            try
+            {
+                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (f != null && f.FieldType == typeof(float[]))
+                {
+                    f.SetValue(obj, new float[] { value[0], value[1], value[2] });
+                    return true;
+                }
+                if (f != null && f.FieldType == typeof(Vector3))
+                {
+                    f.SetValue(obj, new Vector3(value[0], value[1], value[2]));
+                    return true;
+                }
+                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (p != null && p.CanWrite)
+                {
+                    if (p.PropertyType == typeof(float[]))
                     {
-                        var child = contentParent.GetChild(ci);
-                        var childBtn = child.GetComponent<Button>();
-                        var childImg = child.GetComponent<Image>();
-                        if (childBtn != null)
-                        {
-                            childBtn.interactable = true;
-                            if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
-                        }
+                        p.SetValue(obj, new float[] { value[0], value[1], value[2] }, null);
+                        return true;
+                    }
+                    if (p.PropertyType == typeof(Vector3))
+                    {
+                        p.SetValue(obj, new Vector3(value[0], value[1], value[2]), null);
+                        return true;
                     }
                 }
             }
             catch { }
         }
-
-        yield break;
+        return false;
     }
 
     /// <summary>
@@ -4036,8 +4206,26 @@ public class TravelButtonUI : MonoBehaviour
 
         return null;
     }
+    public static void LogCityConfig(string cityName)
+    {
+        try
+        {
+            var c = TravelButtonMod.Cities?.Find(x => string.Equals(x.name, cityName, StringComparison.OrdinalIgnoreCase));
+            if (c == null)
+            {
+                TravelButtonPlugin.LogInfo($"LogCityConfig: city '{cityName}' not found in in-memory Cities.");
+                return;
+            }
+            TravelButtonPlugin.LogInfo($"LogCityConfig: '{c.name}' scene='{c.sceneName ?? "(null)"}' target='{c.targetGameObjectName ?? "(null)"}' coords={(c.coords != null ? $"[{string.Join(", ", c.coords)}]" : "(null)")} price={(c.price.HasValue ? c.price.Value.ToString() : "(global)")}");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("LogCityConfig exception: " + ex);
+        }
+    }
 
     // In TeleportHelpers static class - update AttemptTeleportToPositionSafe or the method you use to teleport
+    // AttemptTeleportToPositionSafe + helper TryFindNearestNavMeshOrGround
     public static bool AttemptTeleportToPositionSafe(Vector3 target)
     {
         try
@@ -4049,142 +4237,614 @@ public class TravelButtonUI : MonoBehaviour
                 return false;
             }
 
-            var playerGO = TeleportHelpers.ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
+            // Resolve the actual GameObject that should be moved
+            var moveGO = TeleportHelpers.ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
 
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: chosen player object = '{playerGO.name}' (root id={playerGO.GetInstanceID()})");
-
-            var before = playerGO.transform.position;
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
-
-            // Ensure target is reasonably above -100 and not obviously underground
-            Vector3 candidate = target;
-
-            // If target y is extremely low, try to find ground by raycasting down from a high point above target
-            bool adjusted = false;
-            if (candidate.y < -5f)
-            {
-                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: target.y {candidate.y:F3} looks suspiciously low - trying raycast-ground fallback.");
-                if (TryFindGroundAt(candidate, out Vector3 grounded))
-                {
-                    candidate = grounded;
-                    adjusted = true;
-                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: raycast-ground found at {candidate}");
-                }
-                else
-                {
-                    // if no ground found, lift up to a safe nominal height to avoid being under level geometry
-                    candidate.y = 2.0f;
-                    adjusted = true;
-                    TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: no ground found - raising target to y={candidate.y:F3}");
-                }
-            }
-            else
-            {
-                // normal path: still try a short raycast downward from a small height above candidate to ensure we are not inside geometry
-                if (TryFindGroundAt(candidate, out Vector3 grounded2))
-                {
-                    // If ground is reasonably different from candidate, use it (helps with small offsets)
-                    if (Mathf.Abs(grounded2.y - candidate.y) > 0.5f)
-                    {
-                        candidate = grounded2;
-                        adjusted = true;
-                        TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: adjusted target to nearest ground {candidate}");
-                    }
-                }
-            }
-
-            if (adjusted)
-                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: final teleport target = ({candidate.x:F3}, {candidate.y:F3}, {candidate.z:F3})");
-
-            // Clear any moving rigidbody to reduce physics teleport quirks
+            // Prefer authoritative root if we accidentally selected a camera child
             try
             {
-                var rb = playerGO.GetComponentInChildren<Rigidbody>();
-                if (rb != null)
+                GameObject rootCandidate = null;
+                try { rootCandidate = moveGO.transform.root != null ? moveGO.transform.root.gameObject : null; } catch { rootCandidate = null; }
+
+                bool switched = false;
+                if (rootCandidate != null && rootCandidate != moveGO)
                 {
-                    rb.velocity = Vector3.zero;
-                    rb.angularVelocity = Vector3.zero;
+                    if (rootCandidate.name != null && rootCandidate.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase))
+                    {
+                        moveGO = rootCandidate;
+                        switched = true;
+                    }
+                    else
+                    {
+                        var charType = ReflectionUtils.SafeGetType("Character, Assembly-CSharp") ?? ReflectionUtils.SafeGetType("Character");
+                        if (charType != null)
+                        {
+                            try
+                            {
+                                var comp = moveGO.GetComponent(charType);
+                                var rootComp = rootCandidate.GetComponent(charType);
+                                if (rootComp != null && comp == null)
+                                {
+                                    moveGO = rootCandidate;
+                                    switched = true;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
                 }
+
+                if (switched)
+                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: preferred root '{moveGO.name}' for movement (was camera/child).");
             }
             catch { /* ignore */ }
 
-            // Perform the move
+            // Diagnostics: hierarchy and player candidates
+            string parentName = "(null)";
+            try { parentName = moveGO.transform.parent != null ? moveGO.transform.parent.name : "(null)"; } catch { parentName = "(unknown)"; }
+            string rootName = "(unknown)";
+            try { rootName = moveGO.transform.root != null ? moveGO.transform.root.name : "(unknown)"; } catch { }
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: moving object '{moveGO.name}' (instance id={moveGO.GetInstanceID()}) parent='{parentName}' root='{rootName}'");
+            TravelButtonPlugin.LogInfo($"  localPos={moveGO.transform.localPosition}, worldPos={moveGO.transform.position}");
+
             try
             {
-                playerGO.transform.position = candidate;
-            }
-            catch (Exception exMove)
-            {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception while setting position: " + exMove);
-                return false;
-            }
-
-            var after = playerGO.transform.position;
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: AFTER pos = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
-
-            // Move camera by the same delta so the view follows the player (non-invasive)
-            try
-            {
-                var cam = Camera.main;
-                if (cam != null)
+                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                foreach (var t in allTransforms)
                 {
-                    Vector3 delta = after - before;
-                    cam.transform.position = cam.transform.position + delta;
-                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Camera moved by delta ({delta.x:F3}, {delta.y:F3}, {delta.z:F3}) to ({cam.transform.position.x:F3}, {cam.transform.position.y:F3}, {cam.transform.position.z:F3})");
+                    if (t == null) continue;
+                    var n = t.name ?? "";
+                    if (n.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string p = "(null)";
+                        try { p = t.parent != null ? t.parent.name : "(null)"; } catch { p = "(unknown)"; }
+                        TravelButtonPlugin.LogInfo($"  Detected PlayerChar candidate: '{t.name}' pos={t.position} parent='{p}'");
+                    }
+                }
+            }
+            catch { /* ignore diagnostics errors */ }
+
+            var before = moveGO.transform.position;
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
+
+            // --- Permutation / NavMesh/Ground probe to pick a safe target ---
+            try
+            {
+                if (TeleportHelpers.TryPickBestCoordsPermutation(target, out Vector3 permSafe))
+                {
+                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation selected {permSafe} (original {target}).");
+                    target = permSafe;
                 }
                 else
                 {
-                    TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Camera.main is null - skipping camera move.");
+                    // fallback: at least try normal probe on original
+                    if (TryFindNearestNavMeshOrGround(target, out Vector3 safeFinal, navSearchRadius: 15f, maxGroundRay: 400f))
+                    {
+                        TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Using safe position {safeFinal} (was {target})");
+                        target = safeFinal;
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: Could not find a nearby NavMesh or ground for target {target}. Proceeding with original target (may be unsafe).");
+                    }
                 }
             }
-            catch (Exception exCam)
+            catch (Exception exSafe)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: camera reposition failed: " + exCam.Message);
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation/TryFindNearestNavMeshOrGround threw: " + exSafe.Message);
             }
 
-            // If after teleport the player is still obviously below reasonable level, try a backup relocation
-            if (after.y < -10f)
+            // --- Safety: prevent huge vertical jumps (reject or conservative-ground) ---
+            try
             {
-                TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: AFTER.y ({after.y:F3}) still very low - attempting backup raise.");
-                Vector3 backup = new Vector3(after.x, 2.0f, after.z);
-                try
+                const float maxVerticalDelta = 100f;   // adjust to taste (meters)
+                const float extraGroundClearance = 0.5f;
+
+                float verticalDelta = Mathf.Abs(target.y - before.y);
+                if (verticalDelta > maxVerticalDelta)
                 {
-                    playerGO.transform.position = backup;
-                    var after2 = playerGO.transform.position;
-                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: AFTER backup pos = ({after2.x:F3}, {after2.y:F3}, {after2.z:F3})");
-                }
-                catch (Exception exb)
-                {
-                    TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: backup reposition failed: " + exb.Message);
+                    TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: rejected target.y {target.y:F3} because it differs from current player.y {before.y:F3} by {verticalDelta:F3}m (max {maxVerticalDelta}). Trying conservative grounding...");
+
+                    try
+                    {
+                        RaycastHit hit;
+                        Vector3 origin = new Vector3(target.x, before.y + 200f, target.z); // raycast from relative height
+                        if (Physics.Raycast(origin, Vector3.down, out hit, 400f, ~0, QueryTriggerInteraction.Ignore))
+                        {
+                            float candidateY = hit.point.y + extraGroundClearance;
+                            float candDelta = Mathf.Abs(candidateY - before.y);
+                            if (candDelta <= maxVerticalDelta)
+                            {
+                                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: conservative grounding succeeded: hit.y={hit.point.y:F3}, using y={candidateY:F3} (delta {candDelta:F3}).");
+                                target = new Vector3(target.x, candidateY, target.z);
+                            }
+                            else
+                            {
+                                TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: grounding hit at y={hit.point.y:F3} but delta {candDelta:F3} still > maxVerticalDelta. Aborting teleport.");
+                                return false;
+                            }
+                        }
+                        else
+                        {
+                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: conservative grounding found NO hit. Aborting teleport to avoid sending player into sky.");
+                            return false;
+                        }
+                    }
+                    catch (Exception exGround)
+                    {
+                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: conservative grounding failed: " + exGround);
+                        return false;
+                    }
                 }
             }
+            catch (Exception exSafety)
+            {
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: safety-check exception: " + exSafety);
+                return false;
+            }
+
+            // Zero any rigidbody velocities (child rigidbody)
+            try
+            {
+                var rb0 = moveGO.GetComponentInChildren<Rigidbody>(true);
+                if (rb0 != null)
+                {
+                    rb0.velocity = Vector3.zero;
+                    rb0.angularVelocity = Vector3.zero;
+                }
+            }
+            catch { }
+
+            // --- Detect NavMeshAgent (reflection) and temporarily disable updates so agent won't fight the warp ---
+            object navAgentObj = null;
+            Type navAgentType = null;
+            try
+            {
+                navAgentType = ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshAgent, UnityEngine.AIModule") ?? ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshAgent");
+                if (navAgentType != null)
+                {
+                    var getAgent = typeof(GameObject).GetMethod("GetComponentInChildren", new Type[] { typeof(Type), typeof(bool) });
+                    if (getAgent != null)
+                    {
+                        try { navAgentObj = getAgent.Invoke(moveGO, new object[] { navAgentType, true }); } catch { navAgentObj = null; }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            var objs = UnityEngine.Object.FindObjectsOfType(navAgentType);
+                            foreach (var o in objs)
+                            {
+                                var comp = o as Component;
+                                if (comp != null && comp.gameObject != null && comp.gameObject.transform.IsChildOf(moveGO.transform))
+                                {
+                                    navAgentObj = comp;
+                                    break;
+                                }
+                            }
+                        }
+                        catch { navAgentObj = null; }
+                    }
+
+                    if (navAgentObj != null)
+                    {
+                        try
+                        {
+                            var updatePosProp = navAgentType.GetProperty("updatePosition");
+                            var updateRotProp = navAgentType.GetProperty("updateRotation");
+                            if (updatePosProp != null && updatePosProp.CanWrite) updatePosProp.SetValue(navAgentObj, false);
+                            if (updateRotProp != null && updateRotProp.CanWrite) updateRotProp.SetValue(navAgentObj, false);
+                            TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Temporarily disabled NavMeshAgent.updatePosition/updateRotation.");
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { navAgentObj = null; navAgentType = null; }
+
+            // --- Suspend likely movement scripts and make child rigidbodies kinematic ---
+            var suspendPatterns = new string[]
+            {
+            "LocalCharacterControl","AdvancedMover","CharacterFastTraveling","RigidbodySuspender",
+            "CharacterResting","CharacterMovement","PlayerMovement","PlayerController","Movement","Motor","AI"
+            };
+
+            var disabledBehaviours = new List<Behaviour>();
+            var changedRigidbodies = new List<(Rigidbody rb, bool originalIsKinematic)>();
+
+            try
+            {
+                var comps = moveGO.GetComponentsInChildren<Component>(true);
+                foreach (var c in comps)
+                {
+                    if (c == null) continue;
+                    try
+                    {
+                        if (c is Rigidbody rb)
+                        {
+                            try
+                            {
+                                changedRigidbodies.Add((rb, rb.isKinematic));
+                                rb.isKinematic = true;
+                                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
+                            }
+                            catch { }
+                        }
+
+                        if (c is Behaviour b)
+                        {
+                            var tname = b.GetType().Name ?? "";
+                            foreach (var p in suspendPatterns)
+                            {
+                                if (tname.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    try
+                                    {
+                                        if (b.enabled)
+                                        {
+                                            b.enabled = false;
+                                            disabledBehaviours.Add(b);
+                                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
+                                        }
+                                    }
+                                    catch { }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception exSuspend)
+            {
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: error while suspending components: " + exSuspend.Message);
+            }
+
+            // --- Perform the move (prefer NavMeshAgent.Warp if available) ---
+            bool moveSucceeded = false;
+            try
+            {
+                if (navAgentObj != null && navAgentType != null)
+                {
+                    try
+                    {
+                        var warpMethod = navAgentType.GetMethod("Warp", new Type[] { typeof(Vector3) });
+                        if (warpMethod != null)
+                        {
+                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: warping NavMeshAgent to {target}.");
+                            var warped = (bool)warpMethod.Invoke(navAgentObj, new object[] { target });
+                            moveSucceeded = warped;
+                            try { moveGO.transform.position = target; } catch { }
+                        }
+                        else
+                        {
+                            moveGO.transform.position = target;
+                            moveSucceeded = true;
+                        }
+                    }
+                    catch (Exception exWarp)
+                    {
+                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: NavMeshAgent.Warp failed: " + exWarp.Message);
+                        try { moveGO.transform.position = target; moveSucceeded = true; } catch { moveSucceeded = false; }
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            var updatePosProp = navAgentType.GetProperty("updatePosition");
+                            var updateRotProp = navAgentType.GetProperty("updateRotation");
+                            if (updatePosProp != null && updatePosProp.CanWrite) updatePosProp.SetValue(navAgentObj, true);
+                            if (updateRotProp != null && updateRotProp.CanWrite) updateRotProp.SetValue(navAgentObj, true);
+                        }
+                        catch { }
+                    }
+                }
+                else
+                {
+                    var localCC = moveGO.GetComponent<CharacterController>();
+                    if (localCC != null)
+                    {
+                        try
+                        {
+                            localCC.enabled = false;
+                            moveGO.transform.position = target;
+                            localCC.enabled = true;
+                            moveSucceeded = true;
+                            TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Teleported using CharacterController on moved GameObject.");
+                        }
+                        catch (Exception exCC)
+                        {
+                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: CharacterController move failed: " + exCC.Message);
+                            try { moveGO.transform.position = target; moveSucceeded = true; } catch { moveSucceeded = false; }
+                        }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            moveGO.transform.position = target;
+                            moveSucceeded = true;
+                        }
+                        catch (Exception exMove)
+                        {
+                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: direct transform set failed: " + exMove.Message);
+                            moveSucceeded = false;
+                        }
+                    }
+                }
+            }
+            catch (Exception exAll)
+            {
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: unexpected move exception: " + exAll.Message);
+                moveSucceeded = false;
+            }
+
+            // --- Ground-first + overlap-safety (raycast then small raises) ---
+            try
+            {
+                Vector3 FindGroundY(Vector3 samplePos, float startAbove = 200f, float maxDistance = 400f, float clearance = 0.5f)
+                {
+                    try
+                    {
+                        RaycastHit hit;
+                        Vector3 origin = new Vector3(samplePos.x, samplePos.y + startAbove, samplePos.z);
+                        if (Physics.Raycast(origin, Vector3.down, out hit, maxDistance, ~0, QueryTriggerInteraction.Ignore))
+                        {
+                            Vector3 g = new Vector3(samplePos.x, hit.point.y + clearance, samplePos.z);
+                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Ground raycast hit at y={hit.point.y:F3} for XZ=({samplePos.x:F3},{samplePos.z:F3}), returning grounded pos {g}");
+                            return g;
+                        }
+                        else
+                        {
+                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Ground raycast found NO hit for XZ=({samplePos.x:F3},{samplePos.z:F3}) (origin Y={samplePos.y + startAbove:F3}).");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: Ground raycast failed: " + ex.Message);
+                    }
+                    return samplePos; // fallback
+                }
+
+                try { Physics.SyncTransforms(); } catch { }
+
+                const float overlapCheckRadius = 0.4f;
+                const float raiseStep = 0.25f;
+                const float maxRaiseFallback = 2.0f;
+                const float maxAllowedRaise = 12.0f;
+
+                bool CheckOverlapsAt(Vector3 pos)
+                {
+                    try
+                    {
+                        Collider[] cols = Physics.OverlapSphere(pos, overlapCheckRadius, ~0, QueryTriggerInteraction.Ignore);
+                        if (cols != null && cols.Length > 0)
+                        {
+                            foreach (var c in cols)
+                            {
+                                if (c == null) continue;
+                                if (c.isTrigger) continue;
+                                if (c.transform.IsChildOf(moveGO.transform)) continue;
+                                return true;
+                            }
+                        }
+                    }
+                    catch { }
+                    return false;
+                }
+
+                var after = moveGO.transform.position;
+                var grounded = FindGroundY(after, startAbove: 200f, maxDistance: 400f, clearance: 0.5f);
+
+                bool usedGrounding = false;
+                if (!Mathf.Approximately(grounded.y, after.y))
+                {
+                    float deltaY = grounded.y - after.y;
+                    if (Mathf.Abs(deltaY) <= maxAllowedRaise)
+                    {
+                        try
+                        {
+                            moveGO.transform.position = grounded;
+                            try { Physics.SyncTransforms(); } catch { }
+                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Applied grounding: moved from y={after.y:F3} to grounded y={grounded.y:F3}");
+                            usedGrounding = true;
+                            after = moveGO.transform.position;
+                        }
+                        catch (Exception exG) { TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: failed to apply grounding: " + exG.Message); }
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: grounding would move by {deltaY:F3}m which exceeds maxAllowedRaise={maxAllowedRaise}. Skipping auto-grounding.");
+                    }
+                }
+                else
+                {
+                    TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: grounding did not change Y (no reliable hit).");
+                }
+
+                // overlap checking and conservative raising
+                after = moveGO.transform.position;
+                bool isOverlapping = CheckOverlapsAt(after);
+                if (isOverlapping)
+                {
+                    TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: detected overlap at pos {after}. usedGrounding={usedGrounding}. Attempting incremental raise.");
+                    bool foundFree = false;
+                    float maxRaise = usedGrounding ? 3.0f : maxRaiseFallback;
+                    for (float raise = raiseStep; raise <= maxRaise; raise += raiseStep)
+                    {
+                        Vector3 check = new Vector3(after.x, after.y + raise, after.z);
+                        if (!CheckOverlapsAt(check))
+                        {
+                            try
+                            {
+                                moveGO.transform.position = check;
+                                try { Physics.SyncTransforms(); } catch { }
+                            }
+                            catch { }
+                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: raised player by {raise:F2}m to avoid overlap -> {check}");
+                            foundFree = true;
+                            after = check;
+                            break;
+                        }
+                    }
+                    if (!foundFree)
+                    {
+                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: could not find non-overlapping spot within {maxRaise}m above {after}. Player may still be embedded or in open air.");
+                    }
+                }
+
+                // Clamp extreme heights relative to requested target
+                after = moveGO.transform.position;
+                float allowedDeltaFromTarget = 20.0f;
+                if (Mathf.Abs(after.y - target.y) > allowedDeltaFromTarget)
+                {
+                    Vector3 clampPos = new Vector3(after.x, target.y + 1.0f, after.z);
+                    try
+                    {
+                        moveGO.transform.position = clampPos;
+                        try { Physics.SyncTransforms(); } catch { }
+                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: final pos was {after.y:F3} which is >{allowedDeltaFromTarget}m from target.y={target.y:F3}; clamped to {clampPos}.");
+                        after = moveGO.transform.position;
+                    }
+                    catch { }
+                }
+
+                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: final verified pos after grounding/overlap checks = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
+            }
+            catch (Exception exOverlap)
+            {
+                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: grounding/overlap-safety check failed: " + exOverlap.Message);
+            }
+
+            // Start monitoring coroutine (logs if anything moves the object after teleport)
+            try
+            {
+                var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                host.StartCoroutine(host.WatchPositionAfterTeleport(moveGO, moveGO.transform.position, 2.0f));
+                // re-enable suspended components and restore rigidbody kinematic flags after short delay
+                host.StartCoroutine(host.ReenableComponentsAfterDelay(moveGO, disabledBehaviours, changedRigidbodies, 0.4f));
+            }
+            catch { }
+
+            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: completed teleport (moveSucceeded={moveSucceeded}).");
 
             return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception: " + ex);
+            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception: " + ex.Message);
             return false;
         }
     }
 
-    // Helper: raycast down from above 'pos' to find nearest ground point. Returns grounded point (with a small offset).
-    private static bool TryFindGroundAt(Vector3 pos, out Vector3 grounded)
+    // Helper: find safe nearby position using NavMesh.SamplePosition (reflection) or grounding raycast, fallback to small raises.
+    // returns true + outPos when found safe candidate.
+    public static bool TryFindNearestNavMeshOrGround(Vector3 desired, out Vector3 outPos, float navSearchRadius = 10f, float maxGroundRay = 400f)
     {
-        grounded = pos;
+        outPos = desired;
         try
         {
-            // Raycast from high above the target downwards to find ground
-            Vector3 origin = pos + Vector3.up * 50f;
-            RaycastHit hit;
-            if (Physics.Raycast(origin, Vector3.down, out hit, 200f, ~0, QueryTriggerInteraction.Ignore))
+            // 1) NavMesh.SamplePosition (reflection-safe)
+            try
             {
-                grounded = new Vector3(pos.x, hit.point.y + 0.5f, pos.z);
-                return true;
+                var navMeshType = ReflectionUtils.SafeGetType("UnityEngine.AI.NavMesh, UnityEngine.AIModule")
+                                  ?? ReflectionUtils.SafeGetType("UnityEngine.AI.NavMesh");
+                var navMeshHitType = ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshHit, UnityEngine.AIModule")
+                                  ?? ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshHit");
+                if (navMeshType != null && navMeshHitType != null)
+                {
+                    var sampleMethod = navMeshType.GetMethod("SamplePosition", new Type[] { typeof(Vector3), navMeshHitType, typeof(float), typeof(int) });
+                    if (sampleMethod != null)
+                    {
+                        object hitBox = Activator.CreateInstance(navMeshHitType);
+                        object[] args = new object[] { desired, hitBox, navSearchRadius, -1 };
+                        bool found = false;
+                        try { found = (bool)sampleMethod.Invoke(null, args); } catch { found = false; }
+                        if (found)
+                        {
+                            var posField = navMeshHitType.GetField("position");
+                            if (posField != null)
+                            {
+                                outPos = (Vector3)posField.GetValue(args[1]);
+                                TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
+                                return true;
+                            }
+                            var posProp = navMeshHitType.GetProperty("position");
+                            if (posProp != null)
+                            {
+                                outPos = (Vector3)posProp.GetValue(args[1], null);
+                                TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
+            catch (Exception exNav)
+            {
+                TravelButtonPlugin.LogInfo("TryFindNearestNavMeshOrGround: NavMesh probe failed or not present: " + exNav.Message);
+            }
+
+            // 2) Raycast z výšky dolù (grounding)
+            try
+            {
+                Vector3 origin = new Vector3(desired.x, desired.y + 200f, desired.z);
+                if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, maxGroundRay, ~0, QueryTriggerInteraction.Ignore))
+                {
+                    outPos = new Vector3(desired.x, hit.point.y + 0.5f, desired.z); // clearance
+                    TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: Raycast grounded to {outPos} (hit y={hit.point.y:F3}).");
+                    return true;
+                }
+                else
+                {
+                    TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: Ground raycast found NO hit for XZ=({desired.x:F3},{desired.z:F3}).");
+                }
+            }
+            catch (Exception exRay)
+            {
+                TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: ground raycast failed: " + exRay.Message);
+            }
+
+            // 3) Konzervativní fallback: jen malé zvednutí (max 1m). Pokud nic nenalezeno, vrátíme false.
+            try
+            {
+                const float step = 0.25f;
+                const float maxUp = 1.0f; // konzervativní
+                for (float yoff = step; yoff <= maxUp; yoff += step)
+                {
+                    var cand = new Vector3(desired.x, desired.y + yoff, desired.z);
+                    Collider[] cols = Physics.OverlapSphere(cand, 0.4f, ~0, QueryTriggerInteraction.Ignore);
+                    bool blocked = false;
+                    if (cols != null && cols.Length > 0)
+                    {
+                        foreach (var c in cols)
+                        {
+                            if (c == null) continue;
+                            if (c.isTrigger) continue;
+                            blocked = true;
+                            break;
+                        }
+                    }
+                    if (!blocked)
+                    {
+                        outPos = cand;
+                        TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: small-fallback free spot at {outPos}.");
+                        return true;
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: no safe pos found near desired position (navmesh/raycast/small-fallback all failed).");
+            return false;
         }
-        catch { }
-        return false;
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: unexpected: " + ex);
+            outPos = desired;
+            return false;
+        }
     }
 
     private void TryPayAndTeleport(TravelButtonMod.City city)

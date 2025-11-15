@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -12,6 +13,42 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     private void Awake()
     {
         try { DontDestroyOnLoad(this.gameObject); } catch { }
+    }
+
+    // Watch a GameObject for post-teleport changes.
+    // Logs if the world position changes during 'durationSec' seconds, checking every frame.
+    public IEnumerator WatchPositionAfterTeleport(GameObject go, Vector3 expectedPosition, float durationSec = 2.0f)
+    {
+        if (go == null)
+        {
+            TravelButtonPlugin.LogInfo("WatchPositionAfterTeleport: go is null, aborting.");
+            yield break;
+        }
+
+        TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: starting watch for '{go.name}' (id={go.GetInstanceID()}) expecting {expectedPosition} for {durationSec:F2}s.");
+
+        Vector3 last = go.transform.position;
+        float elapsed = 0f;
+        bool changed = false;
+
+        while (elapsed < durationSec)
+        {
+            yield return null;
+            elapsed += Time.deltaTime;
+
+            Vector3 cur = go.transform.position;
+            if (!Mathf.Approximately(cur.x, last.x) || !Mathf.Approximately(cur.y, last.y) || !Mathf.Approximately(cur.z, last.z))
+            {
+                changed = true;
+            }
+        }
+
+        if (!changed)
+            TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: no position changes detected for '{go.name}' during {durationSec:F2}s. Expected pos was {expectedPosition}.");
+        else
+            TravelButtonPlugin.LogInfo($"WatchPositionAfterTeleport: finished monitoring '{go.name}' - changes were detected.");
+
+        yield break;
     }
 
     /// <summary>
@@ -182,6 +219,55 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         }
 
         callback?.Invoke(relocated);
+    }
+
+    // Place this inside TeleportHelpersBehaviour (or add to an existing partial class).
+    public IEnumerator ReenableComponentsAfterDelay(GameObject go, List<Behaviour> disabled, List<(Rigidbody rb, bool originalIsKinematic)> changedRigidbodies, float delaySec = 0.25f)
+    {
+        if (go == null)
+            yield break;
+
+        float waited = 0f;
+        while (waited < delaySec)
+        {
+            yield return null;
+            waited += Time.deltaTime;
+        }
+
+        try
+        {
+            // Re-enable previously disabled behaviour scripts
+            if (disabled != null)
+            {
+                foreach (var b in disabled)
+                {
+                    try { if (b != null) b.enabled = true; } catch { }
+                }
+            }
+
+            // Restore original isKinematic for rigidbodies
+            if (changedRigidbodies != null)
+            {
+                foreach (var pair in changedRigidbodies)
+                {
+                    try
+                    {
+                        if (pair.rb != null)
+                        {
+                            pair.rb.isKinematic = pair.originalIsKinematic;
+                            TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={pair.originalIsKinematic} on '{pair.rb.gameObject.name}'.");
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (System.Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: exception while re-enabling: " + ex);
+        }
+
+        yield break;
     }
 
     public static TeleportHelpersBehaviour GetOrCreateHost()
