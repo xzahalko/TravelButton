@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -38,7 +38,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             Vector3 cur = moved.transform.position;
             if ((cur - expected).sqrMagnitude > 0.01f && (cur - last).sqrMagnitude > 0.001f)
             {
-                TravelButtonPlugin.LogWarning($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
+//                TBLog.Warn($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
                 last = cur;
             }
             yield return null;
@@ -54,7 +54,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     {
         if (cityLike == null)
         {
-            TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: cityLike is null.");
+            TBLog.Warn("EnsureSceneAndTeleport: cityLike is null.");
             callback?.Invoke(false);
             yield break;
         }
@@ -97,7 +97,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: reflection read failed: " + ex);
+            TBLog.Warn("EnsureSceneAndTeleport: reflection read failed: " + ex);
         }
 
         Vector3 targetPos = Vector3.zero;
@@ -128,11 +128,11 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             {
                 targetPos = foundGO.transform.position;
                 found = true;
-                TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}'");
+                TBLog.Info($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}'");
             }
             else
             {
-                TravelButtonPlugin.LogWarning($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' - will try coords fallback.");
+                TBLog.Warn($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' - will try coords fallback.");
             }
         }
 
@@ -141,13 +141,13 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         {
             targetPos = coordsHint;
             found = true;
-            TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: using coordsHint for '{cityName}' = {targetPos}");
+            TBLog.Info($"EnsureSceneAndTeleport: using coordsHint for '{cityName}' = {targetPos}");
         }
         else if (!found && coordsArray != null && coordsArray.Length >= 3)
         {
             targetPos = new Vector3(coordsArray[0], coordsArray[1], coordsArray[2]);
             found = true;
-            TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: using explicit coords for '{cityName}' = {targetPos}");
+            TBLog.Info($"EnsureSceneAndTeleport: using explicit coords for '{cityName}' = {targetPos}");
         }
 
         // Fallback: search transforms
@@ -163,14 +163,14 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     {
                         targetPos = tr.position;
                         found = true;
-                        TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
+                        TBLog.Info($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
                         break;
                     }
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("EnsureSceneAndTeleport: transform search failed: " + ex);
+                TBLog.Warn("EnsureSceneAndTeleport: transform search failed: " + ex);
             }
         }
 
@@ -200,11 +200,11 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             relocated = TeleportHelpers.AttemptTeleportToPositionSafe(targetPos);
             if (relocated)
             {
-                TravelButtonPlugin.LogInfo($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
+                TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
             }
             else
             {
-                TravelButtonPlugin.LogWarning($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
+                TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
             }
         }
         catch (Exception ex)
@@ -244,7 +244,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     try
                     {
                         b.enabled = true;
-                        TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
+                        TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
                     }
                     catch { }
                 }
@@ -252,7 +252,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error re-enabling behaviours: " + ex.Message);
+            TBLog.Warn("ReenableComponentsAfterDelay: error re-enabling behaviours: " + ex.Message);
         }
 
         // Restore rigidbody isKinematic flags
@@ -267,7 +267,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                         if (tup.rb != null)
                         {
                             tup.rb.isKinematic = tup.originalIsKinematic;
-                            TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
+                            TBLog.Info($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
                         }
                     }
                     catch { }
@@ -276,7 +276,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error restoring rigidbodies: " + ex.Message);
+            TBLog.Warn("ReenableComponentsAfterDelay: error restoring rigidbodies: " + ex.Message);
         }
 
         try

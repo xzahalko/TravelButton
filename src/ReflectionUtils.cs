@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -70,7 +70,7 @@ public static class ReflectionUtils
                     // Use TravelButtonPlugin if available (it is safe), otherwise fallback to UnityEngine.Debug
                     try
                     {
-                        TravelButtonPlugin.LogWarning($"Reflection: could not resolve type '{assemblyQualifiedTypeName}'. Some optional features may be disabled.");
+                        TBLog.Warn($"Reflection: could not resolve type '{assemblyQualifiedTypeName}'. Some optional features may be disabled.");
                     }
                     catch
                     {

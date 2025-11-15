@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -24,7 +24,7 @@ public class CityDiscovery : MonoBehaviour
 
     void Start()
     {
-        TravelButtonPlugin.LogInfo("CityDiscovery.Start: initializing city discovery system.");
+        TBLog.Info("CityDiscovery.Start: initializing city discovery system.");
         // Diagnostic: try to print potential built-in visited fields
         try { TravelButtonVisitedManager.LogPlayerCandidateVisitedFields(); } catch { }
     }
@@ -53,7 +53,7 @@ public class CityDiscovery : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery.Update failed: " + ex);
+            TBLog.Warn("CityDiscovery.Update failed: " + ex);
         }
     }
 
@@ -64,7 +64,7 @@ public class CityDiscovery : MonoBehaviour
             var pt = FindPlayerTransform();
             if (pt == null)
             {
-                TravelButtonPlugin.LogWarning("CityDiscovery: PollForNearbyCities - player transform not found.");
+                TBLog.Warn("CityDiscovery: PollForNearbyCities - player transform not found.");
                 return;
             }
 
@@ -72,7 +72,7 @@ public class CityDiscovery : MonoBehaviour
             var cities = GetCitiesList();
             if (cities == null)
             {
-                TravelButtonPlugin.LogWarning("CityDiscovery: PollForNearbyCities - could not locate TravelButtonMod.Cities.");
+                TBLog.Warn("CityDiscovery: PollForNearbyCities - could not locate TravelButtonMod.Cities.");
                 return;
             }
 
@@ -94,36 +94,36 @@ public class CityDiscovery : MonoBehaviour
                     {
                         if (!string.IsNullOrEmpty(sceneName) && sceneName.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
                         {
-                            TravelButtonPlugin.LogInfo($"CityDiscovery: Scene '{sceneName}' matches city '{city.name}' - using player position as candidate.");
+                            TBLog.Info($"CityDiscovery: Scene '{sceneName}' matches city '{city.name}' - using player position as candidate.");
                             candidate = ppos;
                         }
                     }
 
                     if (candidate == null)
                     {
-                        TravelButtonPlugin.LogInfo($"CityDiscovery: No candidate position for city '{city.name}' (skipping).");
+                        TBLog.Info($"CityDiscovery: No candidate position for city '{city.name}' (skipping).");
                         continue;
                     }
 
                     float dist = Vector3.Distance(ppos, candidate.Value);
-                    TravelButtonPlugin.LogInfo($"CityDiscovery: Dist to '{city.name}' = {dist:F1} (threshold {DiscoverRadius}).");
+                    TBLog.Info($"CityDiscovery: Dist to '{city.name}' = {dist:F1} (threshold {DiscoverRadius}).");
 
                     if (dist <= DiscoverRadius)
                     {
                         // pass the discovered world position so it can be saved
                         TravelButtonVisitedManager.MarkVisited(city.name, candidate.Value);
-                        TravelButtonPlugin.LogInfo($"CityDiscovery: Auto-discovered city '{city.name}' at distance {dist:F1}.");
+                        TBLog.Info($"CityDiscovery: Auto-discovered city '{city.name}' at distance {dist:F1}.");
                     }
                 }
                 catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning("CityDiscovery.PollForNearbyCities failed for a city: " + ex);
+                    TBLog.Warn("CityDiscovery.PollForNearbyCities failed for a city: " + ex);
                 }
             }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery.PollForNearbyCities failed: " + ex);
+            TBLog.Warn("CityDiscovery.PollForNearbyCities failed: " + ex);
         }
     }
 
@@ -132,7 +132,7 @@ public class CityDiscovery : MonoBehaviour
         var pt = FindPlayerTransform();
         if (pt == null)
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery: ForceMarkNearestCity - player transform not found.");
+            TBLog.Warn("CityDiscovery: ForceMarkNearestCity - player transform not found.");
             return;
         }
 
@@ -140,7 +140,7 @@ public class CityDiscovery : MonoBehaviour
         var cities = GetCitiesList();
         if (cities == null)
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery: ForceMarkNearestCity - could not locate TravelButtonMod.Cities.");
+            TBLog.Warn("CityDiscovery: ForceMarkNearestCity - could not locate TravelButtonMod.Cities.");
             return;
         }
 
@@ -175,11 +175,11 @@ public class CityDiscovery : MonoBehaviour
         if (bestCity != null)
         {
             TravelButtonVisitedManager.MarkVisited(bestCity.name, bestPos);
-            TravelButtonPlugin.LogInfo($"CityDiscovery: Force-marked nearest city '{bestCity.name}' (dist {bestDist:F1}).");
+            TBLog.Info($"CityDiscovery: Force-marked nearest city '{bestCity.name}' (dist {bestDist:F1}).");
         }
         else
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery: ForceMarkNearestCity - no city positions available to mark.");
+            TBLog.Warn("CityDiscovery: ForceMarkNearestCity - no city positions available to mark.");
         }
     }
 
@@ -222,7 +222,7 @@ public class CityDiscovery : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("CityDiscovery.EnforceVisitedGating failed: " + ex);
+            TBLog.Warn("CityDiscovery.EnforceVisitedGating failed: " + ex);
         }
     }
 
@@ -343,7 +343,7 @@ public class CityDiscovery : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("GetCityPosition exception: " + ex);
+            TBLog.Warn("GetCityPosition exception: " + ex);
             return null;
         }
     }
@@ -351,7 +351,7 @@ public class CityDiscovery : MonoBehaviour
     private void LogPlayerPosition()
     {
         var pt = FindPlayerTransform();
-        if (pt == null) TravelButtonPlugin.LogInfo("CityDiscovery: player transform not found for LogPlayerPosition.");
-        else TravelButtonPlugin.LogInfo($"CityDiscovery: Player pos = {pt.position}");
+        if (pt == null) TBLog.Info("CityDiscovery: player transform not found for LogPlayerPosition.");
+        else TBLog.Info($"CityDiscovery: Player pos = {pt.position}");
     }
 }

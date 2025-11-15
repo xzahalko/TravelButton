@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -47,7 +47,7 @@ public static class TravelButtonVisitedManager
         {
             if (!File.Exists(visitedFilePath))
             {
-                TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: No visited file at {visitedFilePath}, starting with empty visited set.");
+                TBLog.Info($"TravelButtonVisitedManager: No visited file at {visitedFilePath}, starting with empty visited set.");
                 visited.Clear();
                 loaded = true;
                 return;
@@ -73,14 +73,14 @@ public static class TravelButtonVisitedManager
                         if (string.IsNullOrEmpty(v.name)) continue;
                         visited[v.name] = v;
                     }
-                    TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Loaded {visited.Count} visited entries (with metadata) from {visitedFilePath}.");
+                    TBLog.Info($"TravelButtonVisitedManager: Loaded {visited.Count} visited entries (with metadata) from {visitedFilePath}.");
                     loaded = true;
                     return;
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("TravelButtonVisitedManager: parse as object-array failed: " + ex);
+                TBLog.Warn("TravelButtonVisitedManager: parse as object-array failed: " + ex);
             }
 
             // Fallback: try legacy array of strings: wrap and parse
@@ -98,7 +98,7 @@ public static class TravelButtonVisitedManager
                             if (string.IsNullOrEmpty(n)) continue;
                             visited[n] = new VisitedInfo { name = n, coords = null };
                         }
-                        TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Loaded {visited.Count} legacy visited entries (names-only) from {visitedFilePath}.");
+                        TBLog.Info($"TravelButtonVisitedManager: Loaded {visited.Count} legacy visited entries (names-only) from {visitedFilePath}.");
                         loaded = true;
                         return;
                     }
@@ -106,13 +106,13 @@ public static class TravelButtonVisitedManager
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("TravelButtonVisitedManager: legacy parse failed: " + ex);
+                TBLog.Warn("TravelButtonVisitedManager: legacy parse failed: " + ex);
             }
 
             // Nothing parsed -> empty set
             visited.Clear();
             loaded = true;
-            TravelButtonPlugin.LogWarning($"TravelButtonVisitedManager: No valid visited data parsed from {visitedFilePath}; starting empty.");
+            TBLog.Warn($"TravelButtonVisitedManager: No valid visited data parsed from {visitedFilePath}; starting empty.");
         }
         catch (Exception ex)
         {
@@ -186,7 +186,7 @@ public static class TravelButtonVisitedManager
             {
                 info = new VisitedInfo { name = cityName, coords = null };
                 visited[cityName] = info;
-                TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Marked visited: {cityName}");
+                TBLog.Info($"TravelButtonVisitedManager: Marked visited: {cityName}");
             }
             else
             {
@@ -197,7 +197,7 @@ public static class TravelButtonVisitedManager
             {
                 var v = position.Value;
                 info.coords = new float[] { v.x, v.y, v.z };
-                TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Stored coords for {cityName} = ({v.x:F2},{v.y:F2},{v.z:F2})");
+                TBLog.Info($"TravelButtonVisitedManager: Stored coords for {cityName} = ({v.x:F2},{v.y:F2},{v.z:F2})");
             }
 
             // Update in-memory TravelButtonMod.Cities if available so UI/teleport code sees the visit immediately
@@ -219,7 +219,7 @@ public static class TravelButtonVisitedManager
                                 if ((city.coords == null || city.coords.Length < 3) && info.coords != null && info.coords.Length >= 3)
                                 {
                                     city.coords = new float[] { info.coords[0], info.coords[1], info.coords[2] };
-                                    TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Applied saved coords to in-memory city '{city.name}'");
+                                    TBLog.Info($"TravelButtonVisitedManager: Applied saved coords to in-memory city '{city.name}'");
                                 }
                                 break;
                             }
@@ -229,7 +229,7 @@ public static class TravelButtonVisitedManager
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("TravelButtonVisitedManager: failed to update in-memory Cities entry: " + ex);
+                TBLog.Warn("TravelButtonVisitedManager: failed to update in-memory Cities entry: " + ex);
             }
 
             Save();
@@ -255,7 +255,7 @@ public static class TravelButtonVisitedManager
 
             var json = JsonUtility.ToJson(wrapper, true);
             File.WriteAllText(GetVisitedFilePath(), json);
-            TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Saved {wrapper.visited.Count} visited entries to {GetVisitedFilePath()}");
+            TBLog.Info($"TravelButtonVisitedManager: Saved {wrapper.visited.Count} visited entries to {GetVisitedFilePath()}");
         }
         catch (Exception ex)
         {
@@ -276,14 +276,14 @@ public static class TravelButtonVisitedManager
             var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
             if (citiesField == null)
             {
-                TravelButtonPlugin.LogWarning("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities field not found.");
+                TBLog.Warn("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities field not found.");
                 return;
             }
 
             var cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
             if (cities == null)
             {
-                TravelButtonPlugin.LogWarning("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities is null.");
+                TBLog.Warn("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities is null.");
                 return;
             }
 
@@ -298,13 +298,13 @@ public static class TravelButtonVisitedManager
                     if ((city.coords == null || city.coords.Length < 3) && info.coords != null && info.coords.Length >= 3)
                     {
                         city.coords = new float[] { info.coords[0], info.coords[1], info.coords[2] };
-                        TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Applied saved coords to city '{city.name}'");
+                        TBLog.Info($"TravelButtonVisitedManager: Applied saved coords to city '{city.name}'");
                     }
                     applied++;
                 }
             }
 
-            TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: Merged visited flags into Cities list. Applied={applied}");
+            TBLog.Info($"TravelButtonVisitedManager: Merged visited flags into Cities list. Applied={applied}");
         }
         catch (Exception ex)
         {
@@ -318,7 +318,7 @@ public static class TravelButtonVisitedManager
     {
         try
         {
-            TravelButtonPlugin.LogInfo("TravelButtonVisitedManager: Scanning scene for potential visited-like fields/properties...");
+            TBLog.Info("TravelButtonVisitedManager: Scanning scene for potential visited-like fields/properties...");
 
             var roots = SceneManager.GetActiveScene().GetRootGameObjects();
             foreach (var root in roots)
@@ -340,7 +340,7 @@ public static class TravelButtonVisitedManager
                         {
                             object val = null;
                             try { val = f.GetValue(c); } catch (Exception ex) { val = $"<err:{ex.Message}>"; }
-                            TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: field: {f.FieldType.Name} {t.Name}.{f.Name} = {SafeToString(val)}");
+                            TBLog.Info($"TravelButtonVisitedManager: field: {f.FieldType.Name} {t.Name}.{f.Name} = {SafeToString(val)}");
                         }
                     }
 
@@ -352,17 +352,17 @@ public static class TravelButtonVisitedManager
                         {
                             object val = null;
                             try { val = p.GetValue(c, null); } catch (Exception ex) { val = $"<err:{ex.Message}>"; }
-                            TravelButtonPlugin.LogInfo($"TravelButtonVisitedManager: prop: {p.PropertyType.Name} {t.Name}.{p.Name} = {SafeToString(val)}");
+                            TBLog.Info($"TravelButtonVisitedManager: prop: {p.PropertyType.Name} {t.Name}.{p.Name} = {SafeToString(val)}");
                         }
                     }
                 }
             }
 
-            TravelButtonPlugin.LogInfo("TravelButtonVisitedManager: Scan complete.");
+            TBLog.Info("TravelButtonVisitedManager: Scan complete.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TravelButtonVisitedManager.LogPlayerCandidateVisitedFields failed: " + ex);
+            TBLog.Warn("TravelButtonVisitedManager.LogPlayerCandidateVisitedFields failed: " + ex);
         }
     }
 
