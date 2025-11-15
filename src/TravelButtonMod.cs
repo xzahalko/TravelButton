@@ -567,6 +567,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
+        DebugConfig.IsDebug = true;
+
         try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
         }
 
