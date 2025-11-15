@@ -188,7 +188,7 @@ public static class TeleportHelpers
                         float score = Mathf.Abs(safe.y - cand.y);
                         bool withinWorld = safe.y >= minAllowedY && safe.y <= maxAllowedY;
 
-                        TravelButtonPlugin.LogInfo($"TryAutoFixCoordsPermutations: perm candidate {cand} -> safe {safe} (score={score:F3}, withinWorld={withinWorld})");
+                        TBLog.Info($"TryAutoFixCoordsPermutations: perm candidate {cand} -> safe {safe} (score={score:F3}, withinWorld={withinWorld})");
 
                         if (withinWorld)
                         {
@@ -210,29 +210,29 @@ public static class TeleportHelpers
                     }
                     else
                     {
-                        TravelButtonPlugin.LogInfo($"TryAutoFixCoordsPermutations: perm candidate {cand} -> TryFindNearestNavMeshOrGround returned false");
+                        TBLog.Info($"TryAutoFixCoordsPermutations: perm candidate {cand} -> TryFindNearestNavMeshOrGround returned false");
                     }
                 }
                 catch (Exception exCand)
                 {
-                    TravelButtonPlugin.LogWarning("TryAutoFixCoordsPermutations: probe exception: " + exCand.Message);
+                    TBLog.Warn("TryAutoFixCoordsPermutations: probe exception: " + exCand.Message);
                 }
             }
 
             if (!Mathf.Approximately(bestSafe.x, original.x) || !Mathf.Approximately(bestSafe.y, original.y) || !Mathf.Approximately(bestSafe.z, original.z))
             {
-                TravelButtonPlugin.LogInfo($"TryAutoFixCoordsPermutations: picked corrected safe pos {bestSafe} (original {original})");
+                TBLog.Info($"TryAutoFixCoordsPermutations: picked corrected safe pos {bestSafe} (original {original})");
             }
             else
             {
-                TravelButtonPlugin.LogInfo($"TryAutoFixCoordsPermutations: no better permutation found for {original}");
+                TBLog.Info($"TryAutoFixCoordsPermutations: no better permutation found for {original}");
             }
 
             return bestSafe;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TryAutoFixCoordsPermutations: unexpected error: " + ex);
+            TBLog.Warn("TryAutoFixCoordsPermutations: unexpected error: " + ex);
             return original;
         }
     }
@@ -246,7 +246,7 @@ public static class TeleportHelpers
             var initialRoot = FindPlayerRoot();
             if (initialRoot == null)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: player root not found.");
+                TBLog.Warn("AttemptTeleportToPositionSafe: player root not found.");
                 return false;
             }
 
@@ -327,7 +327,7 @@ public static class TeleportHelpers
 
                 if (authoritative != null && authoritative != moveGO)
                 {
-                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: switching move target from '{moveGO.name}' to authoritative root '{authoritative.name}'.");
+                    TBLog.Info($"AttemptTeleportToPositionSafe: switching move target from '{moveGO.name}' to authoritative root '{authoritative.name}'.");
                     moveGO = authoritative;
                 }
             }
@@ -339,8 +339,8 @@ public static class TeleportHelpers
             try { parentName = moveGO.transform.parent != null ? moveGO.transform.parent.name : "(null)"; } catch { parentName = "(unknown)"; }
             string rootName = "(unknown)";
             try { rootName = moveGO.transform.root != null ? moveGO.transform.root.name : "(unknown)"; } catch { }
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: moving object '{moveGO.name}' (instance id={moveGO.GetInstanceID()}) parent='{parentName}' root='{rootName}'");
-            TravelButtonPlugin.LogInfo($"  localPos={moveGO.transform.localPosition}, worldPos={moveGO.transform.position}");
+            TBLog.Info($"AttemptTeleportToPositionSafe: moving object '{moveGO.name}' (instance id={moveGO.GetInstanceID()}) parent='{parentName}' root='{rootName}'");
+            TBLog.Info($"  localPos={moveGO.transform.localPosition}, worldPos={moveGO.transform.position}");
 
             try
             {
@@ -353,39 +353,39 @@ public static class TeleportHelpers
                     {
                         string p = "(null)";
                         try { p = t.parent != null ? t.parent.name : "(null)"; } catch { p = "(unknown)"; }
-                        TravelButtonPlugin.LogInfo($"  Detected PlayerChar candidate: '{t.name}' pos={t.position} parent='{p}'");
+                        TBLog.Info($"  Detected PlayerChar candidate: '{t.name}' pos={t.position} parent='{p}'");
                     }
                 }
             }
             catch { /* ignore diagnostics errors */ }
 
             var before = moveGO.transform.position;
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
+            TBLog.Info($"AttemptTeleportToPositionSafe: BEFORE pos = ({before.x:F3}, {before.y:F3}, {before.z:F3})");
 
             // --- Permutation / NavMesh/Ground probe to pick a safe target ---
             try
             {
                 if (TryPickBestCoordsPermutation(target, out Vector3 permSafe))
                 {
-                    TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation selected {permSafe} (original {target}).");
+                    TBLog.Info($"AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation selected {permSafe} (original {target}).");
                     target = permSafe;
                 }
                 else
                 {
                     if (TryFindNearestNavMeshOrGround(target, out Vector3 safeFinal, navSearchRadius: 15f, maxGroundRay: 400f))
                     {
-                        TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Using safe position {safeFinal} (was {target})");
+                        TBLog.Info($"AttemptTeleportToPositionSafe: Using safe position {safeFinal} (was {target})");
                         target = safeFinal;
                     }
                     else
                     {
-                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: Could not find a nearby NavMesh or ground for target {target}. Proceeding with original target (may be unsafe).");
+                        TBLog.Warn($"AttemptTeleportToPositionSafe: Could not find a nearby NavMesh or ground for target {target}. Proceeding with original target (may be unsafe).");
                     }
                 }
             }
             catch (Exception exSafe)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation/TryFindNearestNavMeshOrGround threw: " + exSafe.Message);
+                TBLog.Warn("AttemptTeleportToPositionSafe: TryPickBestCoordsPermutation/TryFindNearestNavMeshOrGround threw: " + exSafe.Message);
             }
 
             // --- Safety: prevent huge vertical jumps (reject or conservative-ground) ---
@@ -395,7 +395,7 @@ public static class TeleportHelpers
                 float verticalDelta = Mathf.Abs(target.y - before.y);
                 if (verticalDelta > maxVerticalDelta)
                 {
-                    TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: rejected target.y {target.y:F3} because it differs from current player.y {before.y:F3} by {verticalDelta:F3}m (max {maxVerticalDelta}). Trying conservative grounding...");
+                    TBLog.Warn($"AttemptTeleportToPositionSafe: rejected target.y {target.y:F3} because it differs from current player.y {before.y:F3} by {verticalDelta:F3}m (max {maxVerticalDelta}). Trying conservative grounding...");
 
                     try
                     {
@@ -407,31 +407,31 @@ public static class TeleportHelpers
                             float candDelta = Mathf.Abs(candidateY - before.y);
                             if (candDelta <= maxVerticalDelta)
                             {
-                                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: conservative grounding succeeded: hit.y={hit.point.y:F3}, using y={candidateY:F3} (delta {candDelta:F3}).");
+                                TBLog.Info($"AttemptTeleportToPositionSafe: conservative grounding succeeded: hit.y={hit.point.y:F3}, using y={candidateY:F3} (delta {candDelta:F3}).");
                                 target = new Vector3(target.x, candidateY, target.z);
                             }
                             else
                             {
-                                TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: grounding hit at y={hit.point.y:F3} but delta {candDelta:F3} still > maxVerticalDelta. Aborting teleport.");
+                                TBLog.Warn($"AttemptTeleportToPositionSafe: grounding hit at y={hit.point.y:F3} but delta {candDelta:F3} still > maxVerticalDelta. Aborting teleport.");
                                 return false;
                             }
                         }
                         else
                         {
-                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: conservative grounding found NO hit. Aborting teleport to avoid sending player into sky.");
+                            TBLog.Warn("AttemptTeleportToPositionSafe: conservative grounding found NO hit. Aborting teleport to avoid sending player into sky.");
                             return false;
                         }
                     }
                     catch (Exception exGround)
                     {
-                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: conservative grounding failed: " + exGround);
+                        TBLog.Warn("AttemptTeleportToPositionSafe: conservative grounding failed: " + exGround);
                         return false;
                     }
                 }
             }
             catch (Exception exSafety)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: safety-check exception: " + exSafety);
+                TBLog.Warn("AttemptTeleportToPositionSafe: safety-check exception: " + exSafety);
                 return false;
             }
 
@@ -486,7 +486,7 @@ public static class TeleportHelpers
                             var updateRotProp = navAgentType.GetProperty("updateRotation");
                             if (updatePosProp != null && updatePosProp.CanWrite) updatePosProp.SetValue(navAgentObj, false);
                             if (updateRotProp != null && updateRotProp.CanWrite) updateRotProp.SetValue(navAgentObj, false);
-                            TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Temporarily disabled NavMeshAgent.updatePosition/updateRotation.");
+                            TBLog.Info("AttemptTeleportToPositionSafe: Temporarily disabled NavMeshAgent.updatePosition/updateRotation.");
                         }
                         catch { }
                     }
@@ -518,7 +518,7 @@ public static class TeleportHelpers
                             {
                                 changedRigidbodies.Add((rb, rb.isKinematic));
                                 rb.isKinematic = true;
-                                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
+                                TBLog.Info($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
                             }
                             catch { }
                         }
@@ -536,7 +536,7 @@ public static class TeleportHelpers
                                         {
                                             b.enabled = false;
                                             disabledBehaviours.Add(b);
-                                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
+                                            TBLog.Info($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
                                         }
                                     }
                                     catch { }
@@ -550,7 +550,7 @@ public static class TeleportHelpers
             }
             catch (Exception exSuspend)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: error while suspending components: " + exSuspend.Message);
+                TBLog.Warn("AttemptTeleportToPositionSafe: error while suspending components: " + exSuspend.Message);
             }
 
             // --- Perform the move (prefer NavMeshAgent.Warp if available) ---
@@ -564,7 +564,7 @@ public static class TeleportHelpers
                         var warpMethod = navAgentType.GetMethod("Warp", new Type[] { typeof(Vector3) });
                         if (warpMethod != null)
                         {
-                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: warping NavMeshAgent to {target}.");
+                            TBLog.Info($"AttemptTeleportToPositionSafe: warping NavMeshAgent to {target}.");
                             var warped = (bool)warpMethod.Invoke(navAgentObj, new object[] { target });
                             moveSucceeded = warped;
                             try { moveGO.transform.position = target; } catch { }
@@ -577,7 +577,7 @@ public static class TeleportHelpers
                     }
                     catch (Exception exWarp)
                     {
-                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: NavMeshAgent.Warp failed: " + exWarp.Message);
+                        TBLog.Warn("AttemptTeleportToPositionSafe: NavMeshAgent.Warp failed: " + exWarp.Message);
                         try { moveGO.transform.position = target; moveSucceeded = true; } catch { moveSucceeded = false; }
                     }
                     finally
@@ -603,11 +603,11 @@ public static class TeleportHelpers
                             moveGO.transform.position = target;
                             localCC.enabled = true;
                             moveSucceeded = true;
-                            TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: Teleported using CharacterController on moved GameObject.");
+                            TBLog.Info("AttemptTeleportToPositionSafe: Teleported using CharacterController on moved GameObject.");
                         }
                         catch (Exception exCC)
                         {
-                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: CharacterController move failed: " + exCC.Message);
+                            TBLog.Warn("AttemptTeleportToPositionSafe: CharacterController move failed: " + exCC.Message);
                             try { moveGO.transform.position = target; moveSucceeded = true; } catch { moveSucceeded = false; }
                         }
                     }
@@ -620,7 +620,7 @@ public static class TeleportHelpers
                         }
                         catch (Exception exMove)
                         {
-                            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: direct transform set failed: " + exMove.Message);
+                            TBLog.Warn("AttemptTeleportToPositionSafe: direct transform set failed: " + exMove.Message);
                             moveSucceeded = false;
                         }
                     }
@@ -628,7 +628,7 @@ public static class TeleportHelpers
             }
             catch (Exception exAll)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: unexpected move exception: " + exAll.Message);
+                TBLog.Warn("AttemptTeleportToPositionSafe: unexpected move exception: " + exAll.Message);
                 moveSucceeded = false;
             }
 
@@ -644,17 +644,17 @@ public static class TeleportHelpers
                         if (Physics.Raycast(origin, Vector3.down, out hit, maxDistance, ~0, QueryTriggerInteraction.Ignore))
                         {
                             Vector3 g = new Vector3(samplePos.x, hit.point.y + TeleportGroundClearance, samplePos.z);
-                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Ground raycast hit at y={hit.point.y:F3} for XZ=({samplePos.x:F3},{samplePos.z:F3}), returning grounded pos {g}");
+                            TBLog.Info($"AttemptTeleportToPositionSafe: Ground raycast hit at y={hit.point.y:F3} for XZ=({samplePos.x:F3},{samplePos.z:F3}), returning grounded pos {g}");
                             return g;
                         }
                         else
                         {
-                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Ground raycast found NO hit for XZ=({samplePos.x:F3},{samplePos.z:F3}) (origin Y={samplePos.y + startAbove:F3}).");
+                            TBLog.Info($"AttemptTeleportToPositionSafe: Ground raycast found NO hit for XZ=({samplePos.x:F3},{samplePos.z:F3}) (origin Y={samplePos.y + startAbove:F3}).");
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: Ground raycast failed: " + ex.Message);
+                        TBLog.Warn("AttemptTeleportToPositionSafe: Ground raycast failed: " + ex.Message);
                     }
                     return samplePos;
                 }
@@ -699,20 +699,20 @@ public static class TeleportHelpers
                         {
                             moveGO.transform.position = grounded;
                             try { Physics.SyncTransforms(); } catch { }
-                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: Applied grounding: moved from y={after.y:F3} to grounded y={grounded.y:F3}");
+                            TBLog.Info($"AttemptTeleportToPositionSafe: Applied grounding: moved from y={after.y:F3} to grounded y={grounded.y:F3}");
                             usedGrounding = true;
                             after = moveGO.transform.position;
                         }
-                        catch (Exception exG) { TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: failed to apply grounding: " + exG.Message); }
+                        catch (Exception exG) { TBLog.Warn("AttemptTeleportToPositionSafe: failed to apply grounding: " + exG.Message); }
                     }
                     else
                     {
-                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: grounding would move by {deltaY:F3}m which exceeds maxAllowedRaise={maxAllowedRaise}. Skipping auto-grounding.");
+                        TBLog.Warn($"AttemptTeleportToPositionSafe: grounding would move by {deltaY:F3}m which exceeds maxAllowedRaise={maxAllowedRaise}. Skipping auto-grounding.");
                     }
                 }
                 else
                 {
-                    TravelButtonPlugin.LogInfo("AttemptTeleportToPositionSafe: grounding did not change Y (no reliable hit).");
+                    TBLog.Info("AttemptTeleportToPositionSafe: grounding did not change Y (no reliable hit).");
                 }
 
                 // overlap checking and conservative raising
@@ -720,7 +720,7 @@ public static class TeleportHelpers
                 bool isOverlapping = CheckOverlapsAt(after);
                 if (isOverlapping)
                 {
-                    TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: detected overlap at pos {after}. usedGrounding={usedGrounding}. Attempting incremental raise.");
+                    TBLog.Warn($"AttemptTeleportToPositionSafe: detected overlap at pos {after}. usedGrounding={usedGrounding}. Attempting incremental raise.");
                     bool foundFree = false;
                     float maxRaise = usedGrounding ? 3.0f : maxRaiseFallback;
                     for (float raise = raiseStep; raise <= maxRaise; raise += raiseStep)
@@ -734,7 +734,7 @@ public static class TeleportHelpers
                                 try { Physics.SyncTransforms(); } catch { }
                             }
                             catch { }
-                            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: raised player by {raise:F2}m to avoid overlap -> {check}");
+                            TBLog.Info($"AttemptTeleportToPositionSafe: raised player by {raise:F2}m to avoid overlap -> {check}");
                             foundFree = true;
                             after = check;
                             break;
@@ -742,7 +742,7 @@ public static class TeleportHelpers
                     }
                     if (!foundFree)
                     {
-                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: could not find non-overlapping spot within {maxRaise}m above {after}. Player may still be embedded or in open air.");
+                        TBLog.Warn($"AttemptTeleportToPositionSafe: could not find non-overlapping spot within {maxRaise}m above {after}. Player may still be embedded or in open air.");
                     }
                 }
 
@@ -756,17 +756,17 @@ public static class TeleportHelpers
                     {
                         moveGO.transform.position = clampPos;
                         try { Physics.SyncTransforms(); } catch { }
-                        TravelButtonPlugin.LogWarning($"AttemptTeleportToPositionSafe: final pos was {after.y:F3} which is >{allowedDeltaFromTarget}m from target.y={target.y:F3}; clamped to {clampPos}.");
+                        TBLog.Warn($"AttemptTeleportToPositionSafe: final pos was {after.y:F3} which is >{allowedDeltaFromTarget}m from target.y={target.y:F3}; clamped to {clampPos}.");
                         after = moveGO.transform.position;
                     }
                     catch { }
                 }
 
-                TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: final verified pos after grounding/overlap checks = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
+                TBLog.Info($"AttemptTeleportToPositionSafe: final verified pos after grounding/overlap checks = ({after.x:F3}, {after.y:F3}, {after.z:F3})");
             }
             catch (Exception exOverlap)
             {
-                TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: grounding/overlap-safety check failed: " + exOverlap.Message);
+                TBLog.Warn("AttemptTeleportToPositionSafe: grounding/overlap-safety check failed: " + exOverlap.Message);
             }
 
             // Start monitoring coroutine (logs if anything moves the object after teleport) and start the reenable coroutine
@@ -779,13 +779,13 @@ public static class TeleportHelpers
             }
             catch { }
 
-            TravelButtonPlugin.LogInfo($"AttemptTeleportToPositionSafe: completed teleport (moveSucceeded={moveSucceeded}).");
+            TBLog.Info($"AttemptTeleportToPositionSafe: completed teleport (moveSucceeded={moveSucceeded}).");
 
             return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AttemptTeleportToPositionSafe: exception: " + ex.Message);
+            TBLog.Warn("AttemptTeleportToPositionSafe: exception: " + ex.Message);
             return false;
         }
     }
@@ -818,14 +818,14 @@ public static class TeleportHelpers
                 {
                     if (!TryFindNearestNavMeshOrGround(cand, out Vector3 safe, navSearchRadius: 15f, maxGroundRay: 400f))
                     {
-                        TravelButtonPlugin.LogInfo($"TryPickBestCoordsPermutation: TryFindNearestNavMeshOrGround returned false for candidate {cand}");
+                        TBLog.Info($"TryPickBestCoordsPermutation: TryFindNearestNavMeshOrGround returned false for candidate {cand}");
                         continue;
                     }
 
                     bool withinWorld = safe.y >= minReasonableY && safe.y <= maxReasonableY;
                     float score = Mathf.Abs(safe.y - cand.y);
 
-                    TravelButtonPlugin.LogInfo($"TryPickBestCoordsPermutation: candidate {cand} -> safe {safe} (withinWorld={withinWorld}, score={score:F3})");
+                    TBLog.Info($"TryPickBestCoordsPermutation: candidate {cand} -> safe {safe} (withinWorld={withinWorld}, score={score:F3})");
 
                     if (withinWorld)
                     {
@@ -847,24 +847,24 @@ public static class TeleportHelpers
                 }
                 catch (Exception exCand)
                 {
-                    TravelButtonPlugin.LogWarning("TryPickBestCoordsPermutation: probe exception: " + exCand.Message);
+                    TBLog.Warn("TryPickBestCoordsPermutation: probe exception: " + exCand.Message);
                 }
             }
 
             if (bestScore < float.MaxValue)
             {
                 chosenSafe = best;
-                TravelButtonPlugin.LogInfo($"TryPickBestCoordsPermutation: selected safe pos {chosenSafe} for original {original}");
+                TBLog.Info($"TryPickBestCoordsPermutation: selected safe pos {chosenSafe} for original {original}");
                 return true;
             }
 
-            TravelButtonPlugin.LogWarning($"TryPickBestCoordsPermutation: no acceptable permutation for {original} — leaving original");
+            TBLog.Warn($"TryPickBestCoordsPermutation: no acceptable permutation for {original} — leaving original");
             chosenSafe = original;
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TryPickBestCoordsPermutation: unexpected: " + ex.Message);
+            TBLog.Warn("TryPickBestCoordsPermutation: unexpected: " + ex.Message);
             chosenSafe = original;
             return false;
         }
@@ -912,7 +912,7 @@ public static class TeleportHelpers
                             {
                                 var posVal = (Vector3)posField.GetValue(args[1]);
                                 outPos = posVal;
-                                TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
+                                TBLog.Info($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
                                 return true;
                             }
                             var posProp = navMeshHitType.GetProperty("position");
@@ -920,7 +920,7 @@ public static class TeleportHelpers
                             {
                                 var posVal = (Vector3)posProp.GetValue(args[1], null);
                                 outPos = posVal;
-                                TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
+                                TBLog.Info($"TryFindNearestNavMeshOrGround: NavMesh.SamplePosition found {outPos} (radius={navSearchRadius}).");
                                 return true;
                             }
                         }
@@ -929,7 +929,7 @@ public static class TeleportHelpers
             }
             catch (Exception exNav)
             {
-                TravelButtonPlugin.LogInfo("TryFindNearestNavMeshOrGround: NavMesh probe failed or not present: " + exNav.Message);
+                TBLog.Info("TryFindNearestNavMeshOrGround: NavMesh probe failed or not present: " + exNav.Message);
             }
 
             // 2) Ground raycast shora dolù - pokud navmesh nenalezen
@@ -941,17 +941,17 @@ public static class TeleportHelpers
                 {
                     Vector3 grounded = new Vector3(desired.x, hit.point.y + 0.5f, desired.z); // clearance 0.5m
                     outPos = grounded;
-                    TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: Raycast grounded to {outPos} (hit y={hit.point.y:F3}).");
+                    TBLog.Info($"TryFindNearestNavMeshOrGround: Raycast grounded to {outPos} (hit y={hit.point.y:F3}).");
                     return true;
                 }
                 else
                 {
-                    TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: Ground raycast found NO hit for XZ=({desired.x:F3},{desired.z:F3}).");
+                    TBLog.Info($"TryFindNearestNavMeshOrGround: Ground raycast found NO hit for XZ=({desired.x:F3},{desired.z:F3}).");
                 }
             }
             catch (Exception exRay)
             {
-                TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: ground raycast failed: " + exRay.Message);
+                TBLog.Warn("TryFindNearestNavMeshOrGround: ground raycast failed: " + exRay.Message);
             }
 
             // 3) Fallback: zkusíme malé zvednutí a hledání nezapadajících pozic (minimální záchrana)
@@ -977,19 +977,19 @@ public static class TeleportHelpers
                     if (!blocked)
                     {
                         outPos = cand;
-                        TravelButtonPlugin.LogInfo($"TryFindNearestNavMeshOrGround: fallback free spot at {outPos}.");
+                        TBLog.Info($"TryFindNearestNavMeshOrGround: fallback free spot at {outPos}.");
                         return true;
                     }
                 }
             }
             catch { /* ignore */ }
 
-            TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: no safe pos found near desired position.");
+            TBLog.Warn("TryFindNearestNavMeshOrGround: no safe pos found near desired position.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TryFindNearestNavMeshOrGround: unexpected: " + ex);
+            TBLog.Warn("TryFindNearestNavMeshOrGround: unexpected: " + ex);
             outPos = desired;
             return false;
         }
@@ -1055,7 +1055,7 @@ public static class TeleportHelpers
                 }
 
                 // If we couldn't find a non-overlapping spot after raising, return the slightly cleared point
-                TravelButtonPlugin.LogWarning($"GetGroundedPosition: ground found at {hit.point.y:F3} but candidate positions up to {maxRaise}m remain overlapping. Returning base candidate {candidate} (may be unsafe).");
+                TBLog.Warn($"GetGroundedPosition: ground found at {hit.point.y:F3} but candidate positions up to {maxRaise}m remain overlapping. Returning base candidate {candidate} (may be unsafe).");
                 return candidate;
             }
 
@@ -1090,16 +1090,16 @@ public static class TeleportHelpers
                     }
                 }
 
-                TravelButtonPlugin.LogWarning($"GetGroundedPosition: sphere-ground found at {hit.point.y:F3} but candidate positions up to {maxRaise}m remain overlapping. Returning base candidate {candidate} (may be unsafe).");
+                TBLog.Warn($"GetGroundedPosition: sphere-ground found at {hit.point.y:F3} but candidate positions up to {maxRaise}m remain overlapping. Returning base candidate {candidate} (may be unsafe).");
                 return candidate;
             }
 
             // If we reach here, no ground was found. Log a warning.
-            TravelButtonPlugin.LogWarning($"GetGroundedPosition: Could not find ground for position {pos}. Teleport may be unsafe.");
+            TBLog.Warn($"GetGroundedPosition: Could not find ground for position {pos}. Teleport may be unsafe.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning($"GetGroundedPosition: Exception while finding ground for {pos}: {ex.Message}");
+            TBLog.Warn($"GetGroundedPosition: Exception while finding ground for {pos}: {ex.Message}");
         }
 
         return pos; // Return original position as a last resort

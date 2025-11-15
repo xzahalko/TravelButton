@@ -573,10 +573,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
 
         this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
-        TravelButtonPlugin.LogInfo("TravelButtonPlugin test (should appear in LogOutput.log)");
+        TBLog.Info("TravelButtonPlugin test (should appear in LogOutput.log)");
 
         // sanity checks to confirm BepInEx receives logs:
-        TravelButtonPlugin.LogInfo("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
+        TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
         
         // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
@@ -592,15 +592,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
         
         try
         {
-            TravelButtonPlugin.LogInfo("TravelButton: startup - loaded cities:");
-            if (TravelButtonMod.Cities == null) TravelButtonPlugin.LogInfo(" - Cities == null");
+            TBLog.Info("TravelButton: startup - loaded cities:");
+            if (TravelButtonMod.Cities == null) TBLog.Info(" - Cities == null");
             else
             {
                 foreach (var c in TravelButtonMod.Cities)
                 {
                     try
                     {
-                        TravelButtonPlugin.LogInfo($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
+                        TBLog.Info($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
                     }
                     catch { }
                 }
@@ -608,20 +608,20 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("Startup city log failed: " + ex);
+            TBLog.Warn("Startup city log failed: " + ex);
         }
 
         try
         {
-            TravelButtonPlugin.LogInfo("TravelButtonPlugin.Awake: plugin initializing.");
+            TBLog.Info("TravelButtonPlugin.Awake: plugin initializing.");
             TravelButtonMod.InitFromConfig();
             if (TravelButtonMod.Cities != null && TravelButtonMod.Cities.Count > 0)
             {
-                TravelButtonPlugin.LogInfo($"Successfully loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json.");
+                TBLog.Info($"Successfully loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json.");
             }
             else
             {
-                TravelButtonPlugin.LogWarning("Failed to load cities from TravelButton_Cities.json or the file is empty.");
+                TBLog.Warn("Failed to load cities from TravelButton_Cities.json or the file is empty.");
             }
             // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
             StartCoroutine(TryInitConfigCoroutine());
@@ -641,14 +641,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
         while (attempt < maxAttempts && !initialized)
         {
             attempt++;
-            TravelButtonPlugin.LogInfo($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
+            TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
             try
             {
                 initialized = TravelButtonMod.InitFromConfig();
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: InitFromConfig threw: " + ex.Message);
+                TBLog.Warn("TryInitConfigCoroutine: InitFromConfig threw: " + ex.Message);
                 initialized = false;
             }
 
@@ -658,7 +658,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         if (!initialized)
         {
-            TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
+            TBLog.Warn("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
             if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
             {
                 // Try local Default() again as a deterministic fallback
@@ -671,14 +671,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         if (def != null)
                         {
                             TravelButtonMod.MapConfigInstanceToLocal(def);
-                            TravelButtonPlugin.LogInfo("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
+                            TBLog.Info("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
                             initialized = true;
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning("TryInitConfigCoroutine: fallback Default() failed: " + ex.Message);
+                    TBLog.Warn("TryInitConfigCoroutine: fallback Default() failed: " + ex.Message);
                 }
             }
         }
@@ -687,11 +687,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             EnsureBepInExConfigBindings();
-            TravelButtonPlugin.LogInfo("BepInEx config bindings created.");
+            TBLog.Info("BepInEx config bindings created.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("Failed to create BepInEx config bindings: " + ex);
+            TBLog.Warn("Failed to create BepInEx config bindings: " + ex);
         }
 
         // Bind any cities that were added after initial bind (defensive)
@@ -701,7 +701,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("BindCityConfigsForNewCities failed: " + ex);
+            TBLog.Warn("BindCityConfigsForNewCities failed: " + ex);
         }
 
         // Finally ensure UI exists so the player can interact
@@ -714,22 +714,22 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             if (string.IsNullOrEmpty(cityName))
             {
-                TravelButtonPlugin.LogWarning("LogCitySceneName: cityName is null/empty.");
+                TBLog.Warn("LogCitySceneName: cityName is null/empty.");
                 return;
             }
 
             var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
             if (city == null)
             {
-                TravelButtonPlugin.LogWarning($"LogCitySceneName: city '{cityName}' not found in TravelButtonMod.Cities.");
+                TBLog.Warn($"LogCitySceneName: city '{cityName}' not found in TravelButtonMod.Cities.");
                 return;
             }
 
-            TravelButtonPlugin.LogInfo($"LogCitySceneName: city='{city.name}', sceneName='{city.sceneName ?? "(null)"}', coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}, targetGameObjectName='{city.targetGameObjectName ?? "(null)"}'");
+            TBLog.Info($"LogCitySceneName: city='{city.name}', sceneName='{city.sceneName ?? "(null)"}', coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}, targetGameObjectName='{city.targetGameObjectName ?? "(null)"}'");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("LogCitySceneName exception: " + ex);
+            TBLog.Warn("LogCitySceneName exception: " + ex);
         }
     }
 
@@ -741,7 +741,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             var existing = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
             if (existing != null)
             {
-                TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI already present in scene.");
+                TBLog.Info("EnsureTravelButtonUI: TravelButtonUI already present in scene.");
                 // Ensure DontDestroyOnLoad is set on the existing GameObject
                 UnityEngine.Object.DontDestroyOnLoad(existing.gameObject);
                 return;
@@ -751,7 +751,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<TravelButtonUI>();
             go.AddComponent<CityDiscovery>(); // Add CityDiscovery to the same persistent GameObject
-            TravelButtonPlugin.LogInfo("EnsureTravelButtonUI: TravelButtonUI and CityDiscovery components created and DontDestroyOnLoad applied.");
+            TBLog.Info("EnsureTravelButtonUI: TravelButtonUI and CityDiscovery components created and DontDestroyOnLoad applied.");
         }
         catch (Exception ex)
         {
@@ -782,12 +782,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 TravelButtonMod.cfgEnableMod.Value = bex_enableMod.Value;
                 TravelButtonMod.PersistCitiesToConfig();
-                TravelButtonPlugin.LogInfo($"BepInEx config changed: EnableMod = {bex_enableMod.Value}");
+                TBLog.Info($"BepInEx config changed: EnableMod = {bex_enableMod.Value}");
             };
             bex_globalPrice.SettingChanged += (s, e) =>
             {
                 TravelButtonMod.cfgTravelCost.Value = bex_globalPrice.Value;
-                TravelButtonPlugin.LogInfo($"BepInEx config changed: GlobalTravelPrice = {bex_globalPrice.Value}");
+                TBLog.Info($"BepInEx config changed: GlobalTravelPrice = {bex_globalPrice.Value}");
             };
             bex_currencyItem.SettingChanged += (s, e) =>
             {
@@ -817,20 +817,20 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 enabledKey.SettingChanged += (s, e) =>
                 {
                     city.enabled = enabledKey.Value;
-                    TravelButtonPlugin.LogInfo($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
+                    TBLog.Info($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
                 };
                 priceKey.SettingChanged += (s, e) =>
                 {
                     city.price = priceKey.Value;
-                    TravelButtonPlugin.LogInfo($"Config changed: {city.name}.Price = {priceKey.Value}");
+                    TBLog.Info($"Config changed: {city.name}.Price = {priceKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
                 };
             }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("EnsureBepInExConfigBindings failed: " + ex);
+            TBLog.Warn("EnsureBepInExConfigBindings failed: " + ex);
         }
     }
 
@@ -870,7 +870,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("BindCityConfigsForNewCities failed: " + ex);
+            TBLog.Warn("BindCityConfigsForNewCities failed: " + ex);
         }
     }
 
@@ -899,21 +899,21 @@ public static class TravelButtonMod
         try
         {
             int sceneCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
-            TravelButtonPlugin.LogInfo($"LogLoadedScenesAndRootObjects: {sceneCount} loaded scene(s).");
+            TBLog.Info($"LogLoadedScenesAndRootObjects: {sceneCount} loaded scene(s).");
             for (int i = 0; i < sceneCount; i++)
             {
                 var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
                 if (!scene.IsValid()) continue;
-                TravelButtonPlugin.LogInfo($" Scene #{i}: name='{scene.name}', isLoaded={scene.isLoaded}, isDirty={scene.isDirty}");
+                TBLog.Info($" Scene #{i}: name='{scene.name}', isLoaded={scene.isLoaded}, isDirty={scene.isDirty}");
                 var roots = scene.GetRootGameObjects();
                 foreach (var r in roots)
                 {
                     if (r == null) continue;
-                    TravelButtonPlugin.LogInfo($"  root: '{r.name}' (children count approx: {r.transform.childCount})");
+                    TBLog.Info($"  root: '{r.name}' (children count approx: {r.transform.childCount})");
                 }
             }
         }
-        catch (Exception ex) { TravelButtonPlugin.LogWarning("LogLoadedScenesAndRootObjects exception: " + ex.Message); }
+        catch (Exception ex) { TBLog.Warn("LogLoadedScenesAndRootObjects exception: " + ex.Message); }
     }
 
     public static void LogCityAnchorsFromLoadedScenes()
@@ -922,11 +922,11 @@ public static class TravelButtonMod
         {
             if (Cities == null || Cities.Count == 0)
             {
-                TravelButtonPlugin.LogWarning("LogCityAnchorsFromLoadedScenes: no cities available.");
+                TBLog.Warn("LogCityAnchorsFromLoadedScenes: no cities available.");
                 return;
             }
 
-            TravelButtonPlugin.LogInfo($"LogCityAnchorsFromLoadedScenes: scanning {UnityEngine.SceneManagement.SceneManager.sceneCount} loaded scene(s) for city anchors...");
+            TBLog.Info($"LogCityAnchorsFromLoadedScenes: scanning {UnityEngine.SceneManagement.SceneManager.sceneCount} loaded scene(s) for city anchors...");
 
             // For each loaded scene, scan root objects and children once and build a lookup of names -> (scene, transform)
             var lookup = new Dictionary<string, List<(string sceneName, Transform t)>>(StringComparer.OrdinalIgnoreCase);
@@ -964,7 +964,7 @@ public static class TravelButtonMod
                     string cname = city.name ?? "(null)";
                     string target = city.targetGameObjectName ?? "";
 
-                    TravelButtonPlugin.LogInfo($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}");
+                    TBLog.Info($"CityScan: --- {cname} --- targetGameObjectName='{target}' (existing sceneName='{city.sceneName ?? ""}'), coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}");
 
                     bool foundAny = false;
 
@@ -975,7 +975,7 @@ public static class TravelButtonMod
                             foreach (var (sceneName, tr) in exacts)
                             {
                                 var pos = tr.position;
-                                TravelButtonPlugin.LogInfo($"CityScan: FOUND exact '{target}' in scene '{sceneName}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{GetFullPath(tr)}'");
+                                TBLog.Info($"CityScan: FOUND exact '{target}' in scene '{sceneName}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{GetFullPath(tr)}'");
                                 foundAny = true;
                             }
                         }
@@ -987,7 +987,7 @@ public static class TravelButtonMod
                             {
                                 var s = go.scene.IsValid() ? go.scene.name : "(unknown)";
                                 var p = go.transform.position;
-                                TravelButtonPlugin.LogInfo($"CityScan: FOUND active exact '{target}' in scene '{s}' at ({p.x:F3}, {p.y:F3}, {p.z:F3})");
+                                TBLog.Info($"CityScan: FOUND active exact '{target}' in scene '{s}' at ({p.x:F3}, {p.y:F3}, {p.z:F3})");
                                 foundAny = true;
                             }
                         }
@@ -1031,25 +1031,25 @@ public static class TravelButtonMod
                         var pos = m.tr.position;
                         string sceneN = m.scene ?? "(unknown)";
                         string path = GetFullPath(m.tr);
-                        TravelButtonPlugin.LogInfo($"CityScan: SUBSTRING match '{m.tr.name}' in scene '{sceneN}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{path}'");
+                        TBLog.Info($"CityScan: SUBSTRING match '{m.tr.name}' in scene '{sceneN}' at ({pos.x:F3}, {pos.y:F3}, {pos.z:F3}) path='{path}'");
                         reportedCount++;
                         if (reportedCount >= 20) break;
                     }
 
                     if (!foundAny && reportedCount == 0)
-                        TravelButtonPlugin.LogInfo($"CityScan: no matches found in loaded scenes for city '{cname}'. Consider loading the map or using in-game travel to that map, then run this again.");
+                        TBLog.Info($"CityScan: no matches found in loaded scenes for city '{cname}'. Consider loading the map or using in-game travel to that map, then run this again.");
                 }
                 catch (Exception exCity)
                 {
-                    TravelButtonPlugin.LogWarning("CityScan: error scanning city: " + exCity.Message);
+                    TBLog.Warn("CityScan: error scanning city: " + exCity.Message);
                 }
             }
 
-            TravelButtonPlugin.LogInfo("LogCityAnchorsFromLoadedScenes: scan complete.");
+            TBLog.Info("LogCityAnchorsFromLoadedScenes: scan complete.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("LogCityAnchorsFromLoadedScenes exception: " + ex.Message);
+            TBLog.Warn("LogCityAnchorsFromLoadedScenes exception: " + ex.Message);
         }
     }
 
@@ -1057,10 +1057,10 @@ public static class TravelButtonMod
     {
         try
         {
-            TravelButtonPlugin.LogInfo("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
+            TBLog.Info("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
             if (Cities == null || Cities.Count == 0)
             {
-                TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
+                TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
                 return;
             }
 
@@ -1092,7 +1092,7 @@ public static class TravelButtonMod
                                     if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
                                     {
                                         city.sceneName = scene.name;
-                                        TravelButtonPlugin.LogInfo($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        TBLog.Info($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
                                         assigned++;
                                     }
                                 }
@@ -1101,7 +1101,7 @@ public static class TravelButtonMod
                                     if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
                                     {
                                         city.sceneName = scene.name;
-                                        TravelButtonPlugin.LogInfo($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
+                                        TBLog.Info($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
                                         assigned++;
                                     }
                                 }
@@ -1114,17 +1114,17 @@ public static class TravelButtonMod
 
             if (assigned > 0)
             {
-                TravelButtonPlugin.LogInfo($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
-                try { PersistCitiesToConfig(); } catch { TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
+                TBLog.Info($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
+                try { PersistCitiesToConfig(); } catch { TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
             }
             else
             {
-                TravelButtonPlugin.LogInfo("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
+                TBLog.Info("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
             }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
+            TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
         }
     }
 
@@ -1212,7 +1212,7 @@ public static class TravelButtonMod
     {
         try
         {
-            TravelButtonPlugin.LogInfo("InitFromConfig: attempting to obtain ConfigManager.Config (safe, no unconditional Load).");
+            TBLog.Info("InitFromConfig: attempting to obtain ConfigManager.Config (safe, no unconditional Load).");
 
             // Try to locate a type named ConfigManager in loaded assemblies
             Type cfgMgrType = null;
@@ -1240,7 +1240,7 @@ public static class TravelButtonMod
                 }
                 catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning("InitFromConfig: reading ConfigManager.Config threw: " + ex.Message);
+                    TBLog.Warn("InitFromConfig: reading ConfigManager.Config threw: " + ex.Message);
                     cfgInstance = null;
                 }
             }
@@ -1262,14 +1262,14 @@ public static class TravelButtonMod
                             if (def != null)
                             {
                                 MapConfigInstanceToLocal(def);
-                                TravelButtonPlugin.LogInfo("InitFromConfig: used local ConfigManager.Default() to populate config.");
+                                TBLog.Info("InitFromConfig: used local ConfigManager.Default() to populate config.");
                                 return true;
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning("InitFromConfig: calling local ConfigManager.Default() failed: " + ex.Message);
+                        TBLog.Warn("InitFromConfig: calling local ConfigManager.Default() failed: " + ex.Message);
                         // continue to try safer external Load path below
                     }
                 }
@@ -1285,7 +1285,7 @@ public static class TravelButtonMod
                 if (isLocalConfigMgr)
                 {
                     callLoad = true;
-                    TravelButtonPlugin.LogInfo("InitFromConfig: calling Load() on local ConfigManager type.");
+                    TBLog.Info("InitFromConfig: calling Load() on local ConfigManager type.");
                 }
                 else
                 {
@@ -1298,11 +1298,11 @@ public static class TravelButtonMod
                     if (hasNewtonsoft)
                     {
                         callLoad = true;
-                        TravelButtonPlugin.LogInfo("InitFromConfig: external ConfigManager found and Newtonsoft present; will call Load() via reflection.");
+                        TBLog.Info("InitFromConfig: external ConfigManager found and Newtonsoft present; will call Load() via reflection.");
                     }
                     else
                     {
-                        TravelButtonPlugin.LogWarning("InitFromConfig: external ConfigManager found but Newtonsoft not present; skipping Load() to avoid assembly load errors.");
+                        TBLog.Warn("InitFromConfig: external ConfigManager found but Newtonsoft not present; skipping Load() to avoid assembly load errors.");
                     }
                 }
 
@@ -1321,17 +1321,17 @@ public static class TravelButtonMod
                         }
                         else
                         {
-                            TravelButtonPlugin.LogWarning("InitFromConfig: ConfigManager.Load method not found.");
+                            TBLog.Warn("InitFromConfig: ConfigManager.Load method not found.");
                         }
                     }
                     catch (TargetInvocationException tie)
                     {
-                        TravelButtonPlugin.LogWarning("InitFromConfig: ConfigManager.Load failed via reflection: " + (tie.InnerException?.Message ?? tie.Message));
+                        TBLog.Warn("InitFromConfig: ConfigManager.Load failed via reflection: " + (tie.InnerException?.Message ?? tie.Message));
                         return false; // allow retry from coroutine
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning("InitFromConfig: exception invoking ConfigManager.Load: " + ex.Message);
+                        TBLog.Warn("InitFromConfig: exception invoking ConfigManager.Load: " + ex.Message);
                         return false;
                     }
                 }
@@ -1341,12 +1341,12 @@ public static class TravelButtonMod
             if (cfgInstance != null)
             {
                 MapConfigInstanceToLocal(cfgInstance);
-                TravelButtonPlugin.LogInfo($"InitFromConfig: Loaded {Cities?.Count ?? 0} cities from ConfigManager.");
+                TBLog.Info($"InitFromConfig: Loaded {Cities?.Count ?? 0} cities from ConfigManager.");
                 return true;
             }
 
             // No config available (and we failed to get a local default); signal caller to retry / fallback.
-            TravelButtonPlugin.LogInfo("InitFromConfig: no config instance available (will retry or fallback).");
+            TBLog.Info("InitFromConfig: no config instance available (will retry or fallback).");
             return false;
         }
         catch (Exception ex)
@@ -1379,7 +1379,7 @@ public static class TravelButtonMod
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: top-level map failed: " + ex.Message);
+                TBLog.Warn("MapConfigInstanceToLocal: top-level map failed: " + ex.Message);
             }
 
             // cities
@@ -1406,7 +1406,7 @@ public static class TravelButtonMod
                             }
                             catch (Exception inner)
                             {
-                                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: error mapping city entry: " + inner.Message);
+                                TBLog.Warn("MapConfigInstanceToLocal: error mapping city entry: " + inner.Message);
                             }
                         }
                     }
@@ -1433,23 +1433,23 @@ public static class TravelButtonMod
                         }
                         else
                         {
-                            TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cfg.cities is not enumerable.");
+                            TBLog.Warn("MapConfigInstanceToLocal: cfg.cities is not enumerable.");
                         }
                     }
                 }
                 else
                 {
-                    TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cfg.cities is null.");
+                    TBLog.Warn("MapConfigInstanceToLocal: cfg.cities is null.");
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: cities mapping failed: " + ex.Message);
+                TBLog.Warn("MapConfigInstanceToLocal: cities mapping failed: " + ex.Message);
             }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("MapConfigInstanceToLocal: unexpected: " + ex.Message);
+            TBLog.Warn("MapConfigInstanceToLocal: unexpected: " + ex.Message);
         }
     }
 
@@ -1494,7 +1494,7 @@ public static class TravelButtonMod
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("MapSingleCityFromObject: " + ex.Message);
+            TBLog.Warn("MapSingleCityFromObject: " + ex.Message);
             return null;
         }
     }
@@ -1581,12 +1581,12 @@ public static class TravelButtonMod
                     if (!IsUiGameObject(go) && go.scene.IsValid() && go.scene.isLoaded)
                     {
                         outPos = go.transform.position;
-                        TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                        TBLog.Info($"TryGetTargetPosition: found active GameObject '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                         return true;
                     }
                     else
                     {
-                        TravelButtonPlugin.LogWarning($"TryGetTargetPosition: found '{targetGameObjectName}' but it's a UI/invalid-scene object (ignored).");
+                        TBLog.Warn($"TryGetTargetPosition: found '{targetGameObjectName}' but it's a UI/invalid-scene object (ignored).");
                     }
                 }
 
@@ -1605,7 +1605,7 @@ public static class TravelButtonMod
                     // If city.sceneName set, require scene match
                     if (string.IsNullOrEmpty(cityName) || string.IsNullOrEmpty(exactSceneObj.scene.name) || true) { /* keep logging below */ }
                     outPos = exactSceneObj.transform.position;
-                    TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found scene GameObject by exact match '{exactSceneObj.name}' at {outPos} for city '{cityName}'.");
+                    TBLog.Info($"TryGetTargetPosition: found scene GameObject by exact match '{exactSceneObj.name}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
@@ -1625,7 +1625,7 @@ public static class TravelButtonMod
                 if (containsSceneObj != null)
                 {
                     outPos = containsSceneObj.transform.position;
-                    TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found scene GameObject by substring match '{containsSceneObj.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                    TBLog.Info($"TryGetTargetPosition: found scene GameObject by substring match '{containsSceneObj.name}' -> '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                     return true;
                 }
 
@@ -1636,17 +1636,17 @@ public static class TravelButtonMod
                     if (byTag != null && byTag.scene.IsValid() && byTag.scene.isLoaded && !IsUiGameObject(byTag))
                     {
                         outPos = byTag.transform.position;
-                        TravelButtonPlugin.LogInfo($"TryGetTargetPosition: found GameObject by tag '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
+                        TBLog.Info($"TryGetTargetPosition: found GameObject by tag '{targetGameObjectName}' at {outPos} for city '{cityName}'.");
                         return true;
                     }
                 }
                 catch { /* ignore tag errors */ }
 
-                TravelButtonPlugin.LogWarning($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found in any loaded scene for city '{cityName}'.");
+                TBLog.Warn($"TryGetTargetPosition: target GameObject '{targetGameObjectName}' not found in any loaded scene for city '{cityName}'.");
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogWarning($"TryGetTargetPosition: error while searching for '{targetGameObjectName}' for city '{cityName}': {ex.Message}");
+                TBLog.Warn($"TryGetTargetPosition: error while searching for '{targetGameObjectName}' for city '{cityName}': {ex.Message}");
             }
 
             // Optionally emit diagnostic candidates for debugging
@@ -1657,11 +1657,11 @@ public static class TravelButtonMod
         if (coordsFallback != null && coordsFallback.Length >= 3)
         {
             outPos = new Vector3(coordsFallback[0], coordsFallback[1], coordsFallback[2]);
-            TravelButtonPlugin.LogInfo($"TryGetTargetPosition: using explicit coords ({outPos.x}, {outPos.y}, {outPos.z}) for city '{cityName}'.");
+            TBLog.Info($"TryGetTargetPosition: using explicit coords ({outPos.x}, {outPos.y}, {outPos.z}) for city '{cityName}'.");
             return true;
         }
 
-        TravelButtonPlugin.LogWarning($"TryGetTargetPosition: no GameObject and no explicit coords available for city '{cityName}'.");
+        TBLog.Warn($"TryGetTargetPosition: no GameObject and no explicit coords available for city '{cityName}'.");
         return false;
     }
 
@@ -1688,7 +1688,7 @@ public static class TravelButtonMod
     {
         try
         {
-            TravelButtonPlugin.LogInfo($"Anchor diagnostic: searching for candidates for city '{cityName}'...");
+            TBLog.Info($"Anchor diagnostic: searching for candidates for city '{cityName}'...");
 
             var all = Resources.FindObjectsOfTypeAll<GameObject>();
             int count = 0;
@@ -1705,17 +1705,17 @@ public static class TravelButtonMod
                     count++;
                     string path = GetFullPath(go.transform);
                     string scene = (go.scene.IsValid() ? go.scene.name : "(asset)");
-                    TravelButtonPlugin.LogInfo($"Anchor candidate #{count}: name='{name}' scene='{scene}' path='{path}'");
+                    TBLog.Info($"Anchor candidate #{count}: name='{name}' scene='{scene}' path='{path}'");
                     if (count >= maxResults) break;
                 }
             }
 
             if (count == 0)
-                TravelButtonPlugin.LogInfo($"Anchor diagnostic: no candidates found for '{cityName}' (tried substrings). Consider checking scene objects or config targetGameObjectName.");
+                TBLog.Info($"Anchor diagnostic: no candidates found for '{cityName}' (tried substrings). Consider checking scene objects or config targetGameObjectName.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("Anchor diagnostic failed: " + ex.Message);
+            TBLog.Warn("Anchor diagnostic failed: " + ex.Message);
         }
     }
 
@@ -1783,7 +1783,7 @@ public static class TravelButtonMod
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("IsCityEnabled: reading external config failed: " + ex.Message);
+            TBLog.Warn("IsCityEnabled: reading external config failed: " + ex.Message);
         }
 
         var local = Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
@@ -1860,7 +1860,7 @@ public static class TravelButtonMod
                         var saveMethod = cfgMgrType.GetMethod("Save", BindingFlags.Public | BindingFlags.Static);
                         saveMethod?.Invoke(null, null);
                         persisted = true;
-                        TravelButtonPlugin.LogInfo("PersistCitiesToConfig: persisted cities into external ConfigManager.Config and called Save().");
+                        TBLog.Info("PersistCitiesToConfig: persisted cities into external ConfigManager.Config and called Save().");
                         break;
                     }
                 }
@@ -1869,7 +1869,7 @@ public static class TravelButtonMod
 
             if (!persisted)
             {
-                TravelButtonPlugin.LogWarning("PersistCitiesToConfig: Could not persist cities because external ConfigManager not found or not writable.");
+                TBLog.Warn("PersistCitiesToConfig: Could not persist cities because external ConfigManager not found or not writable.");
             }
         }
         catch (Exception ex)
@@ -1913,7 +1913,7 @@ public static class TravelButtonMod
             var tb = GameObject.Find("TravelButton");
             if (tb == null)
             {
-                TravelButtonPlugin.LogWarning("DumpTravelButtonState: TravelButton GameObject not found.");
+                TBLog.Warn("DumpTravelButtonState: TravelButton GameObject not found.");
                 return;
             }
 
@@ -1922,19 +1922,19 @@ public static class TravelButtonMod
             var img = tb.GetComponent<Image>();
             var cg = tb.GetComponent<CanvasGroup>();
             var root = tb.transform.root;
-            TravelButtonPlugin.LogInfo($"DumpTravelButtonState: name='{tb.name}', activeSelf={tb.activeSelf}, activeInHierarchy={tb.activeInHierarchy}");
-            TravelButtonPlugin.LogInfo($"DumpTravelButtonState: parent='{tb.transform.parent?.name}', root='{root?.name}'");
-            if (rt != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}, pivot={rt.pivot}");
-            if (btn != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Button.interactable={btn.interactable}");
-            if (img != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Image.color={img.color}, raycastTarget={img.raycastTarget}");
-            if (cg != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: CanvasGroup alpha={cg.alpha}, interactable={cg.interactable}, blocksRaycasts={cg.blocksRaycasts}");
+            TBLog.Info($"DumpTravelButtonState: name='{tb.name}', activeSelf={tb.activeSelf}, activeInHierarchy={tb.activeInHierarchy}");
+            TBLog.Info($"DumpTravelButtonState: parent='{tb.transform.parent?.name}', root='{root?.name}'");
+            if (rt != null) TBLog.Info($"DumpTravelButtonState: anchoredPosition={rt.anchoredPosition}, sizeDelta={rt.sizeDelta}, anchorMin={rt.anchorMin}, anchorMax={rt.anchorMax}, pivot={rt.pivot}");
+            if (btn != null) TBLog.Info($"DumpTravelButtonState: Button.interactable={btn.interactable}");
+            if (img != null) TBLog.Info($"DumpTravelButtonState: Image.color={img.color}, raycastTarget={img.raycastTarget}");
+            if (cg != null) TBLog.Info($"DumpTravelButtonState: CanvasGroup alpha={cg.alpha}, interactable={cg.interactable}, blocksRaycasts={cg.blocksRaycasts}");
             var canvas = tb.GetComponentInParent<Canvas>();
-            if (canvas != null) TravelButtonPlugin.LogInfo($"DumpTravelButtonState: Canvas name={canvas.gameObject.name}, sortingOrder={canvas.sortingOrder}, renderMode={canvas.renderMode}");
-            else TravelButtonPlugin.LogWarning("DumpTravelButtonState: No parent Canvas found.");
+            if (canvas != null) TBLog.Info($"DumpTravelButtonState: Canvas name={canvas.gameObject.name}, sortingOrder={canvas.sortingOrder}, renderMode={canvas.renderMode}");
+            else TBLog.Warn("DumpTravelButtonState: No parent Canvas found.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("DumpTravelButtonState exception: " + ex.Message);
+            TBLog.Warn("DumpTravelButtonState exception: " + ex.Message);
         }
     }
 

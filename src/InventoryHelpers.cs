@@ -14,7 +14,7 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("TryAddItemToPlayerInventory: could not locate any inventory instance/type.");
+                TBLog.Warn("TryAddItemToPlayerInventory: could not locate any inventory instance/type.");
                 return false;
             }
 
@@ -33,21 +33,21 @@ public static class InventoryHelpers
                     if (pr.Length == 2 && IsIntegerParam(pr[0]) && IsIntegerParam(pr[1]))
                     {
                         mi.Invoke(invInstance, new object[] { itemId, amount });
-                        TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked {name}({itemId},{amount})");
+                        TBLog.Info($"TryAddItemToPlayerInventory: invoked {name}({itemId},{amount})");
                         TryInvokeRefresh(invInstance);
                         return true;
                     }
                     if (pr.Length == 1 && IsIntegerParam(pr[0]))
                     {
                         for (int i = 0; i < amount; ++i) mi.Invoke(invInstance, new object[] { itemId });
-                        TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked {name}({itemId}) x{amount}");
+                        TBLog.Info($"TryAddItemToPlayerInventory: invoked {name}({itemId}) x{amount}");
                         TryInvokeRefresh(invInstance);
                         return true;
                     }
                 }
                 catch (Exception ex)
                 {
-                    TravelButtonPlugin.LogWarning($"TryAddItemToPlayerInventory: invocation {name} failed: {ex.Message}");
+                    TBLog.Warn($"TryAddItemToPlayerInventory: invocation {name} failed: {ex.Message}");
                 }
             }
 
@@ -65,14 +65,14 @@ public static class InventoryHelpers
                         if (pr.Length == 2 && IsIntegerParam(pr[0]) && IsIntegerParam(pr[1]))
                         {
                             mi.Invoke(invInstance, new object[] { itemId, amount });
-                            TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked {mn}({itemId},{amount})");
+                            TBLog.Info($"TryAddItemToPlayerInventory: invoked {mn}({itemId},{amount})");
                             TryInvokeRefresh(invInstance);
                             return true;
                         }
                         if (pr.Length == 1 && IsIntegerParam(pr[0]))
                         {
                             for (int i = 0; i < amount; ++i) mi.Invoke(invInstance, new object[] { itemId });
-                            TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked {mn}({itemId}) x{amount}");
+                            TBLog.Info($"TryAddItemToPlayerInventory: invoked {mn}({itemId}) x{amount}");
                             TryInvokeRefresh(invInstance);
                             return true;
                         }
@@ -82,7 +82,7 @@ public static class InventoryHelpers
                             if (itemObj != null)
                             {
                                 mi.Invoke(invInstance, new object[] { itemObj, amount });
-                                TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked {mn}(Item,int) with created object -> {itemId} x{amount}");
+                                TBLog.Info($"TryAddItemToPlayerInventory: invoked {mn}(Item,int) with created object -> {itemId} x{amount}");
                                 TryInvokeRefresh(invInstance);
                                 return true;
                             }
@@ -90,7 +90,7 @@ public static class InventoryHelpers
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"TryAddItemToPlayerInventory: invocation of {mi.Name} failed: {ex.Message}");
+                        TBLog.Warn($"TryAddItemToPlayerInventory: invocation of {mi.Name} failed: {ex.Message}");
                     }
                 }
             }
@@ -127,14 +127,14 @@ public static class InventoryHelpers
                             args[i] = GetDefaultForType(prms[i].ParameterType);
 
                         mi.Invoke(invInstance, args);
-                        TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: invoked tolerant {mi.Name} on {invType.FullName} (best-effort).");
+                        TBLog.Info($"TryAddItemToPlayerInventory: invoked tolerant {mi.Name} on {invType.FullName} (best-effort).");
                         TryInvokeRefresh(invInstance);
                         return true;
                     }
                 }
                 catch (TargetInvocationException tie)
                 {
-                    TravelButtonPlugin.LogWarning($"TryAddItemToPlayerInventory: tolerant method {mi.Name} threw: {tie.InnerException?.Message}");
+                    TBLog.Warn($"TryAddItemToPlayerInventory: tolerant method {mi.Name} threw: {tie.InnerException?.Message}");
                 }
                 catch { /* continue */ }
             }
@@ -151,7 +151,7 @@ public static class InventoryHelpers
                         var listObj = f.GetValue(invInstance);
                         if (TryAppendToCollection(listObj, itemId, amount))
                         {
-                            TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: appended to field '{cname}' on {invType.FullName}.");
+                            TBLog.Info($"TryAddItemToPlayerInventory: appended to field '{cname}' on {invType.FullName}.");
                             TryInvokeRefresh(invInstance);
                             return true;
                         }
@@ -163,7 +163,7 @@ public static class InventoryHelpers
                         var listObj = p.GetValue(invInstance, null);
                         if (TryAppendToCollection(listObj, itemId, amount))
                         {
-                            TravelButtonPlugin.LogInfo($"TryAddItemToPlayerInventory: appended to property '{cname}' on {invType.FullName}.");
+                            TBLog.Info($"TryAddItemToPlayerInventory: appended to property '{cname}' on {invType.FullName}.");
                             TryInvokeRefresh(invInstance);
                             return true;
                         }
@@ -172,12 +172,12 @@ public static class InventoryHelpers
                 catch { /* ignore */ }
             }
 
-            TravelButtonPlugin.LogWarning($"TryAddItemToPlayerInventory: could not find suitable Add method or collection for inventory type {invType.FullName}");
+            TBLog.Warn($"TryAddItemToPlayerInventory: could not find suitable Add method or collection for inventory type {invType.FullName}");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("TryAddItemToPlayerInventory: unexpected exception: " + ex);
+            TBLog.Warn("TryAddItemToPlayerInventory: unexpected exception: " + ex);
             return false;
         }
     }
@@ -189,7 +189,7 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("SafeAddSilverToPlayer: inventory instance not found.");
+                TBLog.Warn("SafeAddSilverToPlayer: inventory instance not found.");
                 return false;
             }
 
@@ -202,7 +202,7 @@ public static class InventoryHelpers
             if (addMoneyMethod != null)
             {
                 addMoneyMethod.Invoke(inv, new object[] { amount });
-                TravelButtonPlugin.LogInfo($"SafeAddSilverToPlayer: invoked AddMoney({amount}).");
+                TBLog.Info($"SafeAddSilverToPlayer: invoked AddMoney({amount}).");
                 TryInvokeRefresh(inv);
                 return true;
             }
@@ -216,7 +216,7 @@ public static class InventoryHelpers
                 long nv = cur + amount;
                 if (prop.PropertyType == typeof(int)) prop.SetValue(inv, (int)nv, null);
                 else prop.SetValue(inv, nv, null);
-                TravelButtonPlugin.LogInfo($"SafeAddSilverToPlayer: updated ContainedSilver from {cur} to {nv}");
+                TBLog.Info($"SafeAddSilverToPlayer: updated ContainedSilver from {cur} to {nv}");
                 TryInvokeRefresh(inv);
                 return true;
             }
@@ -229,17 +229,17 @@ public static class InventoryHelpers
                 long nv = cur + amount;
                 if (field.FieldType == typeof(int)) field.SetValue(inv, (int)nv);
                 else field.SetValue(inv, nv);
-                TravelButtonPlugin.LogInfo($"SafeAddSilverToPlayer: updated ContainedSilver field from {cur} to {nv}");
+                TBLog.Info($"SafeAddSilverToPlayer: updated ContainedSilver field from {cur} to {nv}");
                 TryInvokeRefresh(inv);
                 return true;
             }
 
-            TravelButtonPlugin.LogWarning("SafeAddSilverToPlayer: no AddMoney or ContainedSilver found.");
+            TBLog.Warn("SafeAddSilverToPlayer: no AddMoney or ContainedSilver found.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("SafeAddSilverToPlayer: unexpected: " + ex);
+            TBLog.Warn("SafeAddSilverToPlayer: unexpected: " + ex);
             return false;
         }
     }
@@ -254,7 +254,7 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("SafeAddItemByIdToPlayer: inventory instance not found.");
+                TBLog.Warn("SafeAddItemByIdToPlayer: inventory instance not found.");
                 return false;
             }
 
@@ -269,13 +269,13 @@ public static class InventoryHelpers
                 try
                 {
                     recv.Invoke(inv, new object[] { itemId, amount, false });
-                    TravelButtonPlugin.LogInfo($"SafeAddItemByIdToPlayer: invoked ReceiveItemReward({itemId},{amount},false)");
+                    TBLog.Info($"SafeAddItemByIdToPlayer: invoked ReceiveItemReward({itemId},{amount},false)");
                     TryInvokeRefresh(inv);
                     return true;
                 }
                 catch (TargetInvocationException tie)
                 {
-                    TravelButtonPlugin.LogWarning("SafeAddItemByIdToPlayer: ReceiveItemReward threw: " + tie.InnerException?.Message);
+                    TBLog.Warn("SafeAddItemByIdToPlayer: ReceiveItemReward threw: " + tie.InnerException?.Message);
                 }
             }
 
@@ -289,18 +289,18 @@ public static class InventoryHelpers
                 if (itemObj != null)
                 {
                     gen.Invoke(inv, new object[] { itemObj, amount, false });
-                    TravelButtonPlugin.LogInfo($"SafeAddItemByIdToPlayer: invoked GenerateItem with created Item for id {itemId} x{amount}");
+                    TBLog.Info($"SafeAddItemByIdToPlayer: invoked GenerateItem with created Item for id {itemId} x{amount}");
                     TryInvokeRefresh(inv);
                     return true;
                 }
             }
 
-            TravelButtonPlugin.LogWarning($"SafeAddItemByIdToPlayer: could not find ReceiveItemReward/GenerateItem for inventory type {t.FullName}.");
+            TBLog.Warn($"SafeAddItemByIdToPlayer: could not find ReceiveItemReward/GenerateItem for inventory type {t.FullName}.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("SafeAddItemByIdToPlayer: unexpected: " + ex);
+            TBLog.Warn("SafeAddItemByIdToPlayer: unexpected: " + ex);
             return false;
         }
     }
@@ -315,7 +315,7 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("AddSilverToPlayer: inventory instance not found.");
+                TBLog.Warn("AddSilverToPlayer: inventory instance not found.");
                 return false;
             }
 
@@ -335,13 +335,13 @@ public static class InventoryHelpers
                         long nv = cur + amount;
                         if (f.FieldType == typeof(int)) f.SetValue(inv, (int)nv);
                         else f.SetValue(inv, nv);
-                        TravelButtonPlugin.LogInfo($"AddSilverToPlayer: updated field {name} from {cur} to {nv}");
+                        TBLog.Info($"AddSilverToPlayer: updated field {name} from {cur} to {nv}");
                         TryInvokeRefresh(inv);
                         return true;
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"AddSilverToPlayer: failed to update field {name}: {ex.Message}");
+                        TBLog.Warn($"AddSilverToPlayer: failed to update field {name}: {ex.Message}");
                     }
                 }
 
@@ -355,13 +355,13 @@ public static class InventoryHelpers
                         long nv = cur + amount;
                         if (p.PropertyType == typeof(int)) p.SetValue(inv, (int)nv, null);
                         else p.SetValue(inv, nv, null);
-                        TravelButtonPlugin.LogInfo($"AddSilverToPlayer: updated property {name} from {cur} to {nv}");
+                        TBLog.Info($"AddSilverToPlayer: updated property {name} from {cur} to {nv}");
                         TryInvokeRefresh(inv);
                         return true;
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"AddSilverToPlayer: failed to update property {name}: {ex.Message}");
+                        TBLog.Warn($"AddSilverToPlayer: failed to update property {name}: {ex.Message}");
                     }
                 }
             }
@@ -379,31 +379,31 @@ public static class InventoryHelpers
                         if (parms.Length == 1 && IsIntegerParam(parms[0]))
                         {
                             mi.Invoke(inv, new object[] { amount });
-                            TravelButtonPlugin.LogInfo($"AddSilverToPlayer: invoked {mn}({amount})");
+                            TBLog.Info($"AddSilverToPlayer: invoked {mn}({amount})");
                             TryInvokeRefresh(inv);
                             return true;
                         }
                         if (parms.Length == 2 && IsIntegerParam(parms[0]) && IsIntegerParam(parms[1]))
                         {
                             mi.Invoke(inv, new object[] { amount, 0 });
-                            TravelButtonPlugin.LogInfo($"AddSilverToPlayer: invoked {mn}({amount},0)");
+                            TBLog.Info($"AddSilverToPlayer: invoked {mn}({amount},0)");
                             TryInvokeRefresh(inv);
                             return true;
                         }
                     }
                     catch (Exception ex)
                     {
-                        TravelButtonPlugin.LogWarning($"AddSilverToPlayer: invocation of {mn} failed: {ex.Message}");
+                        TBLog.Warn($"AddSilverToPlayer: invocation of {mn} failed: {ex.Message}");
                     }
                 }
             }
 
-            TravelButtonPlugin.LogWarning("AddSilverToPlayer: no currency field/method found - skipping unsafe fallback.");
+            TBLog.Warn("AddSilverToPlayer: no currency field/method found - skipping unsafe fallback.");
             return false;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AddSilverToPlayer: unexpected: " + ex);
+            TBLog.Warn("AddSilverToPlayer: unexpected: " + ex);
             return false;
         }
     }
@@ -416,7 +416,7 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("AddItemByIdToPlayer: inventory instance not found.");
+                TBLog.Warn("AddItemByIdToPlayer: inventory instance not found.");
                 return false;
             }
 
@@ -429,7 +429,7 @@ public static class InventoryHelpers
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AddItemByIdToPlayer: unexpected: " + ex);
+            TBLog.Warn("AddItemByIdToPlayer: unexpected: " + ex);
             return false;
         }
     }
@@ -442,45 +442,45 @@ public static class InventoryHelpers
             var invPair = FindInventoryInstance();
             if (invPair.instance == null || invPair.type == null)
             {
-                TravelButtonPlugin.LogWarning("DumpFoundInventoryApi: inventory instance not found.");
+                TBLog.Warn("DumpFoundInventoryApi: inventory instance not found.");
                 return;
             }
 
             var inv = invPair.instance;
             var t = invPair.type;
-            TravelButtonPlugin.LogInfo($"DumpFoundInventoryApi: found inventory instance of type {t.FullName}");
+            TBLog.Info($"DumpFoundInventoryApi: found inventory instance of type {t.FullName}");
 
             var fields = t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            TravelButtonPlugin.LogInfo($"  Fields ({fields.Length}):");
+            TBLog.Info($"  Fields ({fields.Length}):");
             foreach (var f in fields)
             {
                 object val = null;
                 try { val = f.GetValue(inv); } catch { val = "(err)"; }
-                TravelButtonPlugin.LogInfo($"    {f.FieldType.Name} {f.Name} = {FormatValueShort(val)}");
+                TBLog.Info($"    {f.FieldType.Name} {f.Name} = {FormatValueShort(val)}");
             }
 
             var props = t.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            TravelButtonPlugin.LogInfo($"  Properties ({props.Length}):");
+            TBLog.Info($"  Properties ({props.Length}):");
             foreach (var p in props)
             {
                 object val = null;
                 try { if (p.CanRead) val = p.GetValue(inv, null); } catch { val = "(err)"; }
-                TravelButtonPlugin.LogInfo($"    {p.PropertyType.Name} {p.Name} (canRead={p.CanRead}, canWrite={p.CanWrite}) = {FormatValueShort(val)}");
+                TBLog.Info($"    {p.PropertyType.Name} {p.Name} (canRead={p.CanRead}, canWrite={p.CanWrite}) = {FormatValueShort(val)}");
             }
 
             var methods = t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                            .OrderBy(m => m.Name).ToArray();
-            TravelButtonPlugin.LogInfo($"  Methods ({methods.Length}):");
+            TBLog.Info($"  Methods ({methods.Length}):");
             foreach (var m in methods)
             {
                 var ps = m.GetParameters();
                 string parmDesc = string.Join(", ", ps.Select(p => p.ParameterType.Name + " " + p.Name));
-                TravelButtonPlugin.LogInfo($"    {m.ReturnType.Name} {m.Name}({parmDesc})");
+                TBLog.Info($"    {m.ReturnType.Name} {m.Name}({parmDesc})");
             }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("DumpFoundInventoryApi: unexpected: " + ex);
+            TBLog.Warn("DumpFoundInventoryApi: unexpected: " + ex);
         }
     }
 
@@ -550,7 +550,7 @@ public static class InventoryHelpers
                 if (m != null)
                 {
                     m.Invoke(invInstance, null);
-                    TravelButtonPlugin.LogInfo($"TryInvokeRefresh: invoked {rn} on {t.FullName}");
+                    TBLog.Info($"TryInvokeRefresh: invoked {rn} on {t.FullName}");
                     return;
                 }
             }

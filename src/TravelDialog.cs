@@ -390,7 +390,7 @@ public class TravelDialog : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AttemptDeductAfterTeleport exception: " + ex);
+            TBLog.Warn("AttemptDeductAfterTeleport exception: " + ex);
         }
 
         // Nothing found / deducted
@@ -460,12 +460,12 @@ public class TravelDialog : MonoBehaviour
                 }
             }
 
-            TravelButtonPlugin.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
             return -1;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
             return -1;
         }
     }
