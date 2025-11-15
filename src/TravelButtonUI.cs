@@ -66,13 +66,16 @@ public class TravelButtonUI : MonoBehaviour
     
     private float dialogOpenedTime = 0f;
 
+    private const string CustomIconFilename = "TravelButton_icon.png";
+    private const string ResourcesIconPath = "TravelButton/icon"; // Resources/TravelButton/icon.png -> Resources.Load(ResourcesIconPath)
+
     void Start()
     {
         TravelButtonPlugin.LogInfo("TravelButtonUI.Start called.");
         CreateTravelButton();
         EnsureInputSystems();
         // start polling for inventory container (will reparent once found)
-        StartCoroutine(PollForInventoryParent());
+        StartCoroutine(PollForInventoryParentImpl());
     }
 
     void Update()
@@ -105,169 +108,290 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // Poll every 0.5s for the inventory GameObject by common names
-    private IEnumerator PollForInventoryParent()
+    // Replacement helper that loads an image file into a Texture2D robustly.
+    // Uses ImageConversion.LoadImage if available, otherwise falls back to invoking Texture2D.LoadImage via reflection.
+    // Returns a Sprite or null if loading failed.
+    // Replacement LoadCustomButtonSprite that avoids any direct calls to Texture2D.LoadImage
+    // (so it won't trigger "LoadImage not known" compile errors). It uses reflection only.
+    private Sprite LoadCustomButtonSprite()
     {
-        string[] inventoryNames = new string[] {
-            "InventoryUI", "Inventory", "InventoryCanvas", "UI Inventory", "Inventory_Window", "InventoryWindow", "InventoryPanel"
-        };
-
-        while (!inventoryParentFound)
-        {
-            foreach (var name in inventoryNames)
-            {
-                var go = GameObject.Find(name);
-                if (go != null)
-                {
-                    inventoryParentFound = true;
-                    inventoryContainer = go.transform;
-                    TravelButtonPlugin.LogInfo($"PollForInventoryParent: found inventory parent '{name}', reparenting button.");
-                    ReparentButtonToInventory(inventoryContainer);
-                    yield break;
-                }
-            }
-            // small delay
-            yield return new WaitForSeconds(0.5f);
-        }
-    }
-
-    private void ReparentButtonToInventory(Transform container)
-    {
+        // Try Resources first (Resources/TravelButton/icon.png -> Resources.Load("TravelButton/icon"))
         try
         {
-            if (buttonObject == null) return;
+            var res = Resources.Load<Sprite>(ResourcesIconPath);
+            if (res != null) return res;
+        }
+        catch { }
 
-            // Stop any existing visibility monitor (we'll start a new one if needed)
-            if (visibilityMonitorCoroutine != null)
+        string asmPath = null;
+        try { asmPath = System.Reflection.Assembly.GetExecutingAssembly().Location; } catch { asmPath = null; }
+
+        string[] candidates;
+        if (!string.IsNullOrEmpty(asmPath))
+        {
+            var dir = System.IO.Path.GetDirectoryName(asmPath);
+            candidates = new string[]
             {
-                try { StopCoroutine(visibilityMonitorCoroutine); } catch { }
-                visibilityMonitorCoroutine = null;
-            }
+            System.IO.Path.Combine(dir, CustomIconFilename),
+            System.IO.Path.Combine(dir, "resources", CustomIconFilename),
+            System.IO.Path.Combine(Application.dataPath ?? string.Empty, CustomIconFilename)
+            };
+        }
+        else
+        {
+            candidates = new string[]
+            {
+            System.IO.Path.Combine(Application.dataPath ?? string.Empty, CustomIconFilename)
+            };
+        }
 
-            // Find a template button under the container to copy visuals/layout from
-            Button templateButton = null;
+        foreach (var candidate in candidates)
+        {
             try
             {
-                var buttons = container.GetComponentsInChildren<Button>(true);
-                if (buttons != null && buttons.Length > 0)
-                {
-                    // prefer a top-level sibling style button (heuristic)
-                    templateButton = buttons[0];
-                }
-            }
-            catch { /* ignore */ }
+                if (string.IsNullOrEmpty(candidate) || !System.IO.File.Exists(candidate)) continue;
+                var bytes = System.IO.File.ReadAllBytes(candidate);
+                if (bytes == null || bytes.Length == 0) continue;
 
-            // Parent and configure layout participation
-            buttonObject.transform.SetParent(container, false);
-            buttonObject.transform.SetAsLastSibling();
+                var tex = new Texture2D(2, 2, TextureFormat.ARGB32, false);
+                bool loaded = false;
 
-            // Ensure the button participates in layout groups correctly
-            var layoutElement = buttonObject.GetComponent<LayoutElement>();
-            if (layoutElement == null)
-                layoutElement = buttonObject.AddComponent<LayoutElement>();
-
-            var rt = buttonObject.GetComponent<RectTransform>();
-            if (templateButton != null)
-            {
-                var tRt = templateButton.GetComponent<RectTransform>();
-                if (tRt != null)
-                {
-                    // copy anchors/pivot/size but clamp to sane maxima to avoid giant buttons
-                    rt.anchorMin = tRt.anchorMin;
-                    rt.anchorMax = tRt.anchorMax;
-                    rt.pivot = tRt.pivot;
-                    var copied = tRt.sizeDelta;
-                    // clamp sizes (adjust if you prefer other limits)
-                    float maxWidth = 220f;
-                    float maxHeight = 44f;
-                    copied.x = Mathf.Clamp(copied.x, 60f, maxWidth);
-                    copied.y = Mathf.Clamp(copied.y, 20f, maxHeight);
-                    rt.sizeDelta = copied;
-
-                    // place next to template
-                    rt.anchoredPosition = tRt.anchoredPosition + new Vector2(tRt.sizeDelta.x + 4f, 0f);
-
-                    // set preferred size so layout group uses it
-                    layoutElement.preferredWidth = rt.sizeDelta.x;
-                    layoutElement.preferredHeight = rt.sizeDelta.y;
-                    layoutElement.flexibleWidth = 0;
-                    layoutElement.flexibleHeight = 0;
-
-                    TravelButtonPlugin.LogInfo("ReparentButtonToInventory: copied layout from template button (clamped).");
-                }
-
-                // copy image sprite if template uses one (keeps brown tint applied)
+                // 1) Try UnityEngine.ImageConversion.LoadImage(Texture2D, byte[]) via reflection
                 try
                 {
-                    var templImg = templateButton.GetComponent<Image>();
-                    var ourImg = buttonObject.GetComponent<Image>();
-                    if (templImg != null && ourImg != null && templImg.sprite != null)
+                    var imageConvType = Type.GetType("UnityEngine.ImageConversion, UnityEngine");
+                    if (imageConvType != null)
                     {
-                        ourImg.sprite = templImg.sprite;
-                        ourImg.type = templImg.type;
-                        ourImg.preserveAspect = templImg.preserveAspect;
-                        // keep our color tint
+                        var loadMethod = imageConvType.GetMethod("LoadImage", new Type[] { typeof(Texture2D), typeof(byte[]) });
+                        if (loadMethod != null)
+                        {
+                            var result = loadMethod.Invoke(null, new object[] { tex, bytes });
+                            if (result is bool b) loaded = b;
+                            else loaded = true; // some Unity variants return void; assume success if no exception
+                        }
                     }
                 }
-                catch { /* ignore */ }
+                catch { /* ignore and try next fallback */ }
+
+                // 2) Try Texture2D.LoadImage(byte[]) via reflection (instance method)
+                if (!loaded)
+                {
+                    try
+                    {
+                        var texType = typeof(Texture2D);
+                        var mi = texType.GetMethod("LoadImage", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(byte[]) }, null);
+                        if (mi != null)
+                        {
+                            var invokeResult = mi.Invoke(tex, new object[] { bytes });
+                            if (invokeResult is bool b) loaded = b;
+                            else loaded = true; // assume success if no exception
+                        }
+                    }
+                    catch { /* ignore */ }
+                }
+
+                // If neither reflective API was available/successful, we cannot safely call LoadImage directly
+                if (!loaded)
+                {
+                    UnityEngine.Object.Destroy(tex);
+                    TravelButtonPlugin.LogInfo($"LoadCustomButtonSprite: could not find suitable LoadImage API for '{candidate}'");
+                    continue;
+                }
+
+                try { tex.Apply(true, false); } catch { try { tex.Apply(); } catch { } }
+
+                var spr = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), 100f);
+                spr.name = "TravelButton_CustomIcon";
+                return spr;
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("LoadCustomButtonSprite: failed to load candidate image: " + ex);
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    // Call this at the end of ReparentButtonToInventory (or wherever you configure the visuals)
+    private void ApplyCustomIconToButton(GameObject buttonObject)
+    {
+        if (buttonObject == null) return;
+
+        try
+        {
+            var img = buttonObject.GetComponent<Image>();
+            if (img == null)
+            {
+                img = buttonObject.AddComponent<Image>();
+            }
+
+            // Try to load custom sprite
+            var custom = LoadCustomButtonSprite();
+            if (custom != null)
+            {
+                img.sprite = custom;
+                img.type = Image.Type.Simple;
+                img.preserveAspect = true;
+                img.color = Color.white; // ensure sprite shows as-is
+                // if the button has a child Text label, we can hide it when using an icon
+                var txt = buttonObject.GetComponentInChildren<Text>();
+                if (txt != null)
+                {
+                    try { txt.gameObject.SetActive(false); } catch { }
+                }
             }
             else
             {
-                // no template found: use reasonable defaults and clamp
-                rt.sizeDelta = new Vector2(Mathf.Min(rt.sizeDelta.x, 160f), Mathf.Min(rt.sizeDelta.y, 34f));
-                layoutElement.preferredWidth = rt.sizeDelta.x;
-                layoutElement.preferredHeight = rt.sizeDelta.y;
-                layoutElement.flexibleWidth = 0;
-                layoutElement.flexibleHeight = 0;
-                TravelButtonPlugin.LogInfo("ReparentButtonToInventory: no template button found, used default layout sizes.");
+                // fallback: keep existing visuals or tint (ensure visible)
+                img.color = new Color(0.12f, 0.45f, 0.85f, 1f);
             }
 
-            // Find the real visibility target of the inventory UI so we can show/hide the button with the window
-            TryFindInventoryVisibilityTarget(container);
-
-            // If TryFindInventoryVisibilityTarget found something, sync to that target;
-            // otherwise fall back to monitoring the container active state (less precise but more robust across mods).
-            if (inventoryVisibilityTarget != null)
+            // Make sure button is visible on top of UI
+            var parentCanvas = buttonObject.GetComponentInParent<Canvas>();
+            if (parentCanvas != null)
             {
-                // Sync initial visibility using the found target
-                try
-                {
-                    bool visible = inventoryVisibilityTarget.activeInHierarchy;
-                    var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
-                    if (cg != null) visible = cg.alpha > 0.01f && cg.interactable;
-                    buttonObject.SetActive(visible);
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonPlugin.LogWarning("ReparentButtonToInventory: failed to sync visibility from found inventoryVisibilityTarget: " + ex);
-                    buttonObject.SetActive(true);
-                }
+                parentCanvas.sortingOrder = Math.Max(parentCanvas.sortingOrder, 3000);
             }
-            else
-            {
-                // Fallback: use container.activeInHierarchy as a visibility heuristic and monitor it
-                try
-                {
-                    bool visible = container.gameObject.activeInHierarchy;
-                    buttonObject.SetActive(visible);
-                    TravelButtonPlugin.LogInfo($"ReparentButtonToInventory: no explicit visibility target found; using container '{container.name}' active state as fallback (visible={visible}).");
-                }
-                catch (Exception ex)
-                {
-                    TravelButtonPlugin.LogWarning("ReparentButtonToInventory: fallback visibility check failed: " + ex);
-                    // show button by default to aid debugging if fallback failed
-                    buttonObject.SetActive(true);
-                }
-
-                // Start a monitor that toggles the button when the container's active state or CanvasGroup changes.
-                visibilityMonitorCoroutine = StartCoroutine(MonitorInventoryContainerVisibility(container));
-            }
-
-            TravelButtonPlugin.LogInfo("ReparentButtonToInventory: button reparented and visibility synced with inventory.");
+            buttonObject.transform.SetAsLastSibling();
+            buttonObject.SetActive(true);
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("ReparentButtonToInventory: " + ex);
+            TravelButtonPlugin.LogWarning("ApplyCustomIconToButton failed: " + ex);
+        }
+    }
+
+    // Poll for the inventory UI and reparent as soon as we find the inventory.
+    // Use StartCoroutine(PollForInventoryParentImpl()) to run this.
+    private IEnumerator PollForInventoryParentImpl()
+    {
+        var wait = new WaitForSeconds(0.5f);
+        while (buttonObject != null)
+        {
+            try
+            {
+                var invRt = FindAllRectTransformsSafeImpl()
+                            .FirstOrDefault(r => string.Equals(r.name, "Inventory", StringComparison.OrdinalIgnoreCase));
+                if (invRt != null)
+                {
+                    TravelButtonPlugin.LogInfo("PollForInventoryParentImpl: found inventory parent '" + invRt.name + "', reparenting button.");
+                    ReparentButtonToInventory(invRt.transform);
+                    yield break; // stop polling once reparented
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("PollForInventoryParentImpl: " + ex);
+            }
+
+            yield return wait;
+        }
+    }
+
+    // Ensure inventory parenting prefers the TopPanel/Sections toolbar so the button sits inline with icons.
+    private void ReparentButtonToInventory(Transform inventoryTransform)
+    {
+        if (buttonObject == null || inventoryTransform == null) return;
+        try
+        {
+            // 1) Prefer exact Sections group under the inventory (top toolbar)
+            var sectionsRt = inventoryTransform.GetComponentsInChildren<RectTransform>(true)
+                              .FirstOrDefault(rt => string.Equals(rt.name, "Sections", StringComparison.OrdinalIgnoreCase));
+            if (sectionsRt != null)
+            {
+                TravelButtonPlugin.LogInfo("ReparentButtonToInventory: found Sections under Inventory; using ParentButtonIntoSectionsImpl.");
+                ParentButtonIntoSectionsImpl(sectionsRt, Mathf.Max(32f, buttonObject.GetComponent<RectTransform>().sizeDelta.x));
+                return;
+            }
+
+            // 2) If no Sections, try to find a named toolbar button (btnInventory) and insert next to it
+            var templateBtn = inventoryTransform.GetComponentsInChildren<Button>(true)
+                               .FirstOrDefault(b => b != null && b.name.IndexOf("btnInventory", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            if (templateBtn == null)
+            {
+                // fallback: pick any visible toolbar button under inventory
+                templateBtn = inventoryTransform.GetComponentsInChildren<Button>(true)
+                                .FirstOrDefault(b => b != null && b.gameObject.activeInHierarchy);
+            }
+
+            if (templateBtn != null)
+            {
+                var templRt = templateBtn.GetComponent<RectTransform>();
+                var parent = templateBtn.transform.parent ?? inventoryTransform;
+                buttonObject.transform.SetParent(parent, false);
+
+                // copy/clone LayoutElement from template if present
+                var templLayout = templateBtn.GetComponent<LayoutElement>();
+                var layout = buttonObject.GetComponent<LayoutElement>() ?? buttonObject.AddComponent<LayoutElement>();
+                if (templLayout != null)
+                {
+                    layout.preferredWidth = templLayout.preferredWidth;
+                    layout.preferredHeight = templLayout.preferredHeight;
+                    layout.minWidth = templLayout.minWidth;
+                    layout.minHeight = templLayout.minHeight;
+                    layout.flexibleWidth = templLayout.flexibleWidth;
+                    layout.flexibleHeight = templLayout.flexibleHeight;
+                }
+                else
+                {
+                    // conservative defaults
+                    layout.preferredWidth = Mathf.Max(32f, buttonObject.GetComponent<RectTransform>().sizeDelta.x);
+                    layout.preferredHeight = layout.preferredWidth;
+                    layout.flexibleWidth = 0;
+                    layout.flexibleHeight = 0;
+                }
+
+                // match scale & rotation & local position "reset" for layout containers
+                var rt = buttonObject.GetComponent<RectTransform>();
+                rt.localScale = templRt.localScale;
+                rt.localRotation = templRt.localRotation;
+                rt.sizeDelta = new Vector2(layout.preferredWidth > 0 ? layout.preferredWidth : rt.sizeDelta.x,
+                                           layout.preferredHeight > 0 ? layout.preferredHeight : rt.sizeDelta.y);
+
+                // place immediately after the template button so it appears inline
+                try
+                {
+                    int insertIndex = templateBtn.transform.GetSiblingIndex() + 1;
+                    if (insertIndex <= parent.childCount)
+                        buttonObject.transform.SetSiblingIndex(insertIndex);
+                    else
+                        buttonObject.transform.SetAsLastSibling();
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("ReparentButtonToInventory: set sibling index failed: " + ex);
+                    try { buttonObject.transform.SetAsLastSibling(); } catch { }
+                }
+
+                // Force layout rebuild on the parent to make the UI update immediately
+                try
+                {
+                    var parentRt = parent as RectTransform;
+                    if (parentRt != null) LayoutRebuilder.ForceRebuildLayoutImmediate(parentRt);
+                    Canvas.ForceUpdateCanvases();
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("ReparentButtonToInventory: layout rebuild failed: " + ex);
+                }
+
+                buttonObject.SetActive(true);
+                TravelButtonPlugin.LogInfo("ReparentButtonToInventory: inserted next to template '" + templateBtn.name + "' under parent '" + (parent.name) + "'.");
+                return;
+            }
+
+            // 3) Last-resort fallback: parent under inventory root itself
+            TravelButtonPlugin.LogWarning("ReparentButtonToInventory: no Sections or template button found; parenting under inventory root.");
+            buttonObject.transform.SetParent(inventoryTransform, false);
+            Canvas.ForceUpdateCanvases();
+            buttonObject.SetActive(true);
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ReparentButtonToInventory: unexpected error: " + ex);
         }
     }
 
@@ -417,6 +541,7 @@ public class TravelButtonUI : MonoBehaviour
         TravelButtonPlugin.LogInfo("CreateTravelButton: beginning UI creation.");
         try
         {
+            // create basic button object
             buttonObject = new GameObject("TravelButton");
             buttonObject.AddComponent<CanvasRenderer>();
 
@@ -431,29 +556,77 @@ public class TravelButtonUI : MonoBehaviour
 
             var rt = buttonObject.GetComponent<RectTransform>();
             if (rt == null) rt = buttonObject.AddComponent<RectTransform>();
-            // default reasonable size (may be adjusted by template when reparented)
-            rt.sizeDelta = new Vector2(140, 32);
+
+            // small toolbar icon size
+            const float smallSize = 40f;
+            rt.sizeDelta = new Vector2(smallSize, smallSize);
 
             int uiLayer = LayerMask.NameToLayer("UI");
             if (uiLayer != -1) buttonObject.layer = uiLayer;
 
-            // initially parent to first available Canvas (so it's created in UI space)
+            // keep hidden until we place it
+            try { buttonObject.SetActive(false); } catch { }
+
+            // parent to canvas so we exist in UI space
             var canvas = FindCanvas();
             if (canvas != null)
             {
                 buttonObject.transform.SetParent(canvas.transform, false);
-                // put near top center by default (will be reparented to inventory when found)
-                rt.anchorMin = new Vector2(0.5f, 1f);
-                rt.anchorMax = new Vector2(0.5f, 1f);
-                rt.pivot = new Vector2(0.5f, 1f);
-                rt.anchoredPosition = new Vector2(0, -40);
+
+                // Try immediate parent into sections if available, otherwise start waiting coroutine
+                RectTransform sectionsRt = null;
+                try { sectionsRt = FindSectionsGroup(canvas); } catch { sectionsRt = null; }
+                TravelButtonPlugin.LogInfo($"CreateTravelButton: FindSectionsGroup returned = {(sectionsRt != null ? sectionsRt.name : "null")}");
+
+                if (sectionsRt != null && sectionsRt.gameObject.activeInHierarchy)
+                {
+                    try
+                    {
+                        ParentButtonIntoSectionsImpl(sectionsRt, smallSize);
+                        TravelButtonPlugin.LogInfo("CreateTravelButton: parented into Sections and activated.");
+                        try { buttonObject.SetActive(true); } catch { }
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("CreateTravelButton: ParentButtonIntoSectionsImpl failed: " + ex);
+                        try { StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f)); } catch { ForceTopToolbarPlacementImpl(canvas); }
+                    }
+                }
+                else
+                {
+                    // will wait for inventory to open (Sections group to appear)
+                    try
+                    {
+                        StartCoroutine(PlaceOnToolbarWhenAvailable(canvas, 8f));
+                        TravelButtonPlugin.LogInfo("CreateTravelButton: started PlaceOnToolbarWhenAvailable coroutine to wait for toolbar.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogWarning("CreateTravelButton: failed to start PlaceOnToolbarWhenAvailable: " + ex);
+                        ForceTopToolbarPlacementImpl(canvas);
+                        try { buttonObject.SetActive(true); } catch { }
+                    }
+                }
+
+                // make sure on top
+                try
+                {
+                    var parentCanvas = buttonObject.GetComponentInParent<Canvas>();
+                    if (parentCanvas != null)
+                    {
+                        parentCanvas.sortingOrder = Math.Max(parentCanvas.sortingOrder, 3000);
+                        buttonObject.transform.SetAsLastSibling();
+                    }
+                }
+                catch { }
             }
             else
             {
                 TravelButtonPlugin.LogWarning("CreateTravelButton: no Canvas found at creation time; button created at scene root.");
+                try { buttonObject.SetActive(true); } catch { }
             }
 
-            // Label
+            // Label (kept for accessibility; will be hidden when icon applied)
             var labelGO = new GameObject("Label");
             labelGO.transform.SetParent(buttonObject.transform, false);
             var txt = labelGO.AddComponent<Text>();
@@ -461,7 +634,7 @@ public class TravelButtonUI : MonoBehaviour
             txt.alignment = TextAnchor.MiddleCenter;
             txt.color = new Color(0.98f, 0.94f, 0.87f, 1.0f);
             txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            txt.fontSize = 14;
+            txt.fontSize = 12;
             txt.raycastTarget = false;
 
             var labelRt = labelGO.GetComponent<RectTransform>();
@@ -473,7 +646,6 @@ public class TravelButtonUI : MonoBehaviour
                 labelRt.offsetMax = Vector2.zero;
             }
 
-            // Ensure input systems and ensure button gets pointer events
             EnsureInputSystems();
 
             var logger = buttonObject.GetComponent<ClickLogger>();
@@ -481,9 +653,23 @@ public class TravelButtonUI : MonoBehaviour
 
             travelButton.onClick.AddListener(OpenTravelDialog);
 
-            // Hide the button until we reparent to the inventory UI; prevents showing on main HUD
-            buttonObject.SetActive(false);
+            // Try to apply an icon and hide text if present
+            try
+            {
+                ApplyCustomIconToButton(buttonObject);
+                var appliedImg = buttonObject.GetComponent<Image>();
+                if (appliedImg != null && appliedImg.sprite != null)
+                {
+                    try { labelGO.SetActive(false); } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("CreateTravelButton: ApplyCustomIconToButton failed: " + ex);
+            }
 
+            // start persistent monitor to snap back if moved
+            try { StartCoroutine(MonitorAndMaintainButtonParentImpl()); } catch (Exception ex) { TravelButtonPlugin.LogWarning("CreateTravelButton: failed to start monitor: " + ex); }
             TravelButtonPlugin.LogInfo("CreateTravelButton: Travel button created, ClickLogger attached, and listener attached.");
         }
         catch (Exception ex)
@@ -492,11 +678,521 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
+    // Improved FindSectionsGroup that looks for the inventory/top-toolbar group when inventory is open.
+    private RectTransform FindSectionsGroup(Canvas canvas)
+    {
+        try
+        {
+            if (canvas == null) return null;
+
+            var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "btnInventory", "btnEquipment", "btnVitals", "btnEffects",
+                "btnCrafting", "btnQuickSlot", "btnSkills", "btnJournal"
+            };
+
+            RectTransform fallback = null;
+            var all = canvas.GetComponentsInChildren<RectTransform>(true);
+            foreach (var rt in all)
+            {
+                if (rt == null) continue;
+                var buttons = rt.GetComponentsInChildren<Button>(true);
+                if (buttons == null || buttons.Length == 0) continue;
+
+                int knownCount = 0;
+                bool anyActive = false;
+                foreach (var b in buttons)
+                {
+                    if (b == null || b.gameObject == null) continue;
+                    if (known.Contains(b.name)) knownCount++;
+                    if (b.gameObject.activeInHierarchy) anyActive = true;
+                }
+
+                // strong candidate requires several known button names and at least one active (inventory opened)
+                if (knownCount >= 3 && anyActive)
+                {
+                    string path = GetTransformPath(rt);
+                    if (path.IndexOf("CharacterMenus", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        path.IndexOf("TopPanel", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        path.IndexOf("Sections", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        path.IndexOf("Inventory", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return rt;
+                    }
+                    if (fallback == null) fallback = rt;
+                }
+            }
+
+            if (fallback != null) return fallback;
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("FindSectionsGroup: " + ex);
+        }
+
+        return null;
+    }
+
+    // Parent the button into the toolbar group and copy layout from a template button so it flows with the icons.
+    private void ParentButtonIntoSectionsImpl(RectTransform sectionsRt, float desiredSize)
+    {
+        if (buttonObject == null || sectionsRt == null) return;
+
+        // Find a visible template button to copy layout from; prefer a named toolbar button (btnInventory)
+        Button[] allButtons = sectionsRt.GetComponentsInChildren<Button>(true);
+        Button template = allButtons.FirstOrDefault(b => b != null && b.gameObject.activeInHierarchy && b.name.IndexOf("btnInventory", StringComparison.OrdinalIgnoreCase) >= 0)
+                         ?? allButtons.FirstOrDefault(b => b != null && b.gameObject.activeInHierarchy)
+                         ?? allButtons.FirstOrDefault(b => b != null);
+
+        Transform parentTransform = sectionsRt.transform;
+        int insertIndex = -1;
+
+        if (template != null)
+        {
+            parentTransform = template.transform.parent ?? sectionsRt.transform;
+            insertIndex = template.transform.GetSiblingIndex() + 1; // place after template
+        }
+
+        // Parent without changing local transform immediately
+        buttonObject.transform.SetParent(parentTransform, false);
+
+        // Copy layout preferences from template if available
+        LayoutElement templLayout = template != null ? template.GetComponent<LayoutElement>() : null;
+        var layout = buttonObject.GetComponent<LayoutElement>() ?? buttonObject.AddComponent<LayoutElement>();
+
+        if (templLayout != null)
+        {
+            // copy important layout fields
+            layout.preferredWidth = templLayout.preferredWidth;
+            layout.preferredHeight = templLayout.preferredHeight;
+            layout.minWidth = templLayout.minWidth;
+            layout.minHeight = templLayout.minHeight;
+            layout.flexibleWidth = templLayout.flexibleWidth;
+            layout.flexibleHeight = templLayout.flexibleHeight;
+        }
+        else
+        {
+            layout.preferredWidth = desiredSize;
+            layout.preferredHeight = desiredSize;
+            layout.flexibleWidth = 0;
+            layout.flexibleHeight = 0;
+        }
+
+        // Size the rect transform to match preferred size
+        var rt = buttonObject.GetComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(layout.preferredWidth > 0 ? layout.preferredWidth : desiredSize,
+                                   layout.preferredHeight > 0 ? layout.preferredHeight : desiredSize);
+
+        // Insert at desired sibling index (so it sits beside the other icons). If insertIndex invalid, put at end.
+        try
+        {
+            if (insertIndex >= 0 && insertIndex <= parentTransform.childCount)
+                buttonObject.transform.SetSiblingIndex(insertIndex);
+            else
+                buttonObject.transform.SetAsLastSibling();
+
+            // Force layout rebuild on the parent so the icon appears in the correct place immediately
+            var parentRt = parentTransform as RectTransform ?? sectionsRt;
+            LayoutRebuilder.ForceRebuildLayoutImmediate(parentRt);
+
+            // Also force canvas update
+            Canvas.ForceUpdateCanvases();
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ParentButtonIntoSectionsImpl: layout/index update failed: " + ex);
+            try { buttonObject.transform.SetAsLastSibling(); } catch { }
+        }
+
+        // Ensure visible
+        try { buttonObject.SetActive(true); } catch { }
+
+        TravelButtonPlugin.LogInfo("ParentButtonIntoSectionsImpl: button parented under '" + (buttonObject.transform.parent != null ? buttonObject.transform.parent.name : "null") + "'");
+    }
+
+    private Canvas[] FindAllCanvasesSafe()
+    {
+        // 1) Try the simple generic API (no includeInactive parameter).
+        try
+        {
+            var canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
+            if (canvases != null && canvases.Length > 0)
+                return canvases;
+        }
+        catch
+        {
+            // ignore and try fallback
+        }
+
+        // 2) Fallback to non-generic FindObjectsOfType(Type).
+        try
+        {
+            var arr = UnityEngine.Object.FindObjectsOfType(typeof(Canvas));
+            if (arr != null)
+                return arr.Cast<Canvas>().Where(c => c != null).ToArray();
+        }
+        catch
+        {
+            // ignore and try final fallback
+        }
+
+        // 3) Final fallback: Resources.FindObjectsOfTypeAll (includes inactive and assets) — filter to scene objects.
+        try
+        {
+            var arr2 = UnityEngine.Resources.FindObjectsOfTypeAll(typeof(Canvas))
+                        .Cast<Canvas>()
+                        .Where(c => c != null && c.gameObject != null && c.gameObject.scene.IsValid())
+                        .ToArray();
+            if (arr2 != null && arr2.Length > 0)
+                return arr2;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        // Nothing found
+        return new Canvas[0];
+    }
+
+    // Coroutine: wait until Sections appears (inventory opened), then parent/activate the button.
+    // Improved coroutine: search all Canvases every poll and wait longer
+    // Improved coroutine: search all canvases each poll and wait longer
+    private IEnumerator PlaceOnToolbarWhenAvailable(Canvas startCanvas, float timeoutSeconds = 12f)
+    {
+        if (buttonObject != null) buttonObject.SetActive(false);
+        float deadline = Time.realtimeSinceStartup + timeoutSeconds;
+        var wait = new WaitForSeconds(0.25f);
+
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            // search all canvases each loop (some UIs live under different canvases)
+            var canvases = FindAllCanvasesSafeImpl(); // call your safe helper
+            RectTransform foundSections = null;
+            Canvas foundCanvas = null;
+
+            foreach (var c in canvases)
+            {
+                if (c == null) continue;
+                try
+                {
+                    var candidate = FindSectionsGroup(c); // your heuristic finder
+                    if (candidate != null && candidate.gameObject.activeInHierarchy)
+                    {
+                        foundSections = candidate;
+                        foundCanvas = c;
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("PlaceOnToolbarWhenAvailable: FindSectionsGroup threw for canvas " + (c != null ? c.name : "null") + ": " + ex);
+                }
+            }
+
+            if (foundSections != null)
+            {
+                try
+                {
+                    TravelButtonPlugin.LogInfo($"PlaceOnToolbarWhenAvailable: found Sections '{foundSections.name}' under Canvas '{(foundCanvas != null ? foundCanvas.name : "null")}' - parenting.");
+                    ParentButtonIntoSectionsImpl(foundSections, Mathf.Max(32f, buttonObject.GetComponent<RectTransform>().sizeDelta.x));
+
+                    // bring to front and ensure layout updated
+                    try
+                    {
+                        var parentCanvas = buttonObject.GetComponentInParent<Canvas>();
+                        if (parentCanvas != null) parentCanvas.sortingOrder = Math.Max(parentCanvas.sortingOrder, 3000);
+                        buttonObject.transform.SetAsLastSibling();
+                        Canvas.ForceUpdateCanvases();
+                    }
+                    catch { }
+
+                    buttonObject.SetActive(true);
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("PlaceOnToolbarWhenAvailable: ParentButtonIntoSectionsImpl failed: " + ex);
+                    ForceTopToolbarPlacementImpl(foundCanvas ?? startCanvas);
+                    if (buttonObject != null) buttonObject.SetActive(true);
+                }
+                yield break;
+            }
+
+            yield return wait;
+        }
+
+        TravelButtonPlugin.LogInfo("PlaceOnToolbarWhenAvailable: timeout waiting for Sections; using fallback placement.");
+        try
+        {
+            ForceTopToolbarPlacementImpl(startCanvas);
+            if (buttonObject != null) buttonObject.SetActive(true);
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("PlaceOnToolbarWhenAvailable: ForceTopToolbarPlacementImpl failed: " + ex);
+        }
+    }
+
+    // Fallback approximate placement on the top toolbar area (canvas-local conversion)
+    private void ForceTopToolbarPlacementImpl(Canvas canvas)
+    {
+        if (buttonObject == null || canvas == null) return;
+        try
+        {
+            var rt = buttonObject.GetComponent<RectTransform>();
+            Camera cam = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
+            RectTransform canvasRt = canvas.GetComponent<RectTransform>();
+            Vector2 screenPoint = new Vector2(Screen.width * 0.5f + 140f, Screen.height - 60f);
+            Vector2 localPoint;
+            if (RectTransformUtility.ScreenPointToLocalPointInRectangle(canvasRt, screenPoint, cam, out localPoint))
+            {
+                rt.anchorMin = new Vector2(0.5f, 0.5f);
+                rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.pivot = new Vector2(0.5f, 0.5f);
+                rt.anchoredPosition = localPoint;
+                buttonObject.SetActive(true);
+                TravelButtonPlugin.LogInfo("ForceTopToolbarPlacementImpl: placed fallback at " + localPoint);
+            }
+            else
+            {
+                TravelButtonPlugin.LogWarning("ForceTopToolbarPlacementImpl: Screen->Local conversion failed, leaving default transform.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ForceTopToolbarPlacementImpl: " + ex);
+        }
+    }
+
+    // Persistent monitor: ensure the button remains parented to Sections while the game runs.
+    private IEnumerator MonitorAndMaintainButtonParentImpl()
+    {
+        var waitShort = new WaitForSeconds(0.5f);
+        var waitLong = new WaitForSeconds(0.75f);
+
+        while (true)
+        {
+            if (buttonObject == null) yield break;
+
+            var canvas = FindCanvas();
+            if (canvas == null)
+            {
+                yield return waitShort;
+                continue;
+            }
+
+            try
+            {
+                // perform guarded work inside TryMaintainParent (no yields there)
+                TryMaintainParent(canvas);
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("MonitorAndMaintainButtonParentImpl: TryMaintainParent threw: " + ex);
+            }
+
+            yield return waitLong;
+        }
+    }
+
+    // Helper that performs the guarded parent-check/reparent logic without yielding.
+    private bool TryMaintainParent(Canvas canvas)
+    {
+        if (buttonObject == null || canvas == null) return false;
+        try
+        {
+            RectTransform sections = null;
+            try { sections = FindSectionsGroup(canvas); } catch (Exception ex) { TravelButtonPlugin.LogWarning("TryMaintainParent: FindSectionsGroup threw: " + ex); sections = null; }
+
+            if (sections == null) return false;
+
+            Transform currentParent = null;
+            try { currentParent = buttonObject.transform.parent; } catch (Exception ex) { TravelButtonPlugin.LogWarning("TryMaintainParent: could not get current parent: " + ex); currentParent = null; }
+
+            bool needsReparent = (currentParent == null) || !IsTransformOrAncestorImpl(currentParent, sections);
+
+            if (!needsReparent) return false;
+
+            try
+            {
+                ParentButtonIntoSectionsImpl(sections, Mathf.Max(32f, buttonObject.GetComponent<RectTransform>().sizeDelta.x));
+                TravelButtonPlugin.LogInfo("TryMaintainParent: reparented button into Sections.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("TryMaintainParent: reparent attempt failed: " + ex);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("TryMaintainParent: unexpected exception: " + ex);
+            return false;
+        }
+    }
+
+    // Helper: returns true if candidate is equal to ancestor or is a child under ancestor
+    private bool IsTransformOrAncestorImpl(Transform candidate, Transform ancestor)
+    {
+        if (candidate == null || ancestor == null) return false;
+        var cur = candidate;
+        while (cur != null)
+        {
+            if (cur == ancestor) return true;
+            cur = cur.parent;
+        }
+        return false;
+    }
+
+    // Helper to build readable transform path (kept from earlier diagnostics)
+    private string GetTransformPath(Transform t)
+    {
+        if (t == null) return "";
+        string path = t.name;
+        var cur = t.parent;
+        while (cur != null)
+        {
+            path = cur.name + "/" + path;
+            cur = cur.parent;
+        }
+        return path;
+    }
+
+    // Unity-version-safe helper to find scene Canvas objects.
+    // Place this inside your TravelButtonUI partial class.
+    // Requires: using System.Linq; using UnityEngine;
+    private Canvas[] FindAllCanvasesSafeImpl()
+    {
+        // 1) Try the common generic API (may only return active canvases on some Unity versions)
+        try
+        {
+            var canvases1 = UnityEngine.Object.FindObjectsOfType<Canvas>();
+            if (canvases1 != null && canvases1.Length > 0)
+                return canvases1;
+        }
+        catch
+        {
+            // ignore and try fallbacks
+        }
+
+        // 2) Fallback to non-generic FindObjectsOfType(Type)
+        try
+        {
+            var arr = UnityEngine.Object.FindObjectsOfType(typeof(Canvas));
+            if (arr != null && arr.Length > 0)
+                return arr.Cast<Canvas>().Where(c => c != null).ToArray();
+        }
+        catch
+        {
+            // ignore and try final fallback
+        }
+
+        // 3) Final fallback: Resources.FindObjectsOfTypeAll (includes inactive & assets) - filter to scene instances
+        try
+        {
+            var arr2 = UnityEngine.Resources.FindObjectsOfTypeAll(typeof(Canvas))
+                        .Cast<Canvas>()
+                        .Where(c => c != null && c.gameObject != null && c.gameObject.scene.IsValid())
+                        .ToArray();
+            if (arr2 != null && arr2.Length > 0)
+                return arr2;
+        }
+        catch
+        {
+            // ignore
+        }
+
+        // Nothing found
+        return new Canvas[0];
+    }
+
+    // Safe finder for RectTransform scene instances (place inside TravelButtonUI)
+    private RectTransform[] FindAllRectTransformsSafeImpl()
+    {
+        try
+        {
+            var rts = UnityEngine.Object.FindObjectsOfType<RectTransform>();
+            if (rts != null && rts.Length > 0) return rts;
+        }
+        catch { }
+
+        try
+        {
+            var arr = UnityEngine.Object.FindObjectsOfType(typeof(RectTransform));
+            if (arr != null && arr.Length > 0)
+                return arr.Cast<RectTransform>().Where(r => r != null).ToArray();
+        }
+        catch { }
+
+        try
+        {
+            var arr2 = UnityEngine.Resources.FindObjectsOfTypeAll(typeof(RectTransform))
+                        .Cast<RectTransform>()
+                        .Where(r => r != null && r.gameObject != null && r.gameObject.scene.IsValid())
+                        .ToArray();
+            if (arr2 != null && arr2.Length > 0) return arr2;
+        }
+        catch { }
+
+        return new RectTransform[0];
+    }
+
+    // Diagnostic: run while the inventory is open and paste the resulting log lines here
+    // Corrected DebugLogToolbarCandidates — uses RectTransform list for the candidate scan
+    private void DebugLogToolbarCandidates()
+    {
+        try
+        {
+            // Log canvases (existing helper)
+            var canvases = FindAllCanvasesSafeImpl();
+            TravelButtonPlugin.LogInfo($"DebugLogToolbarCandidates: canvases found = {canvases.Length}");
+            foreach (var c in canvases)
+            {
+                TravelButtonPlugin.LogInfo($" Canvas '{c.name}' renderMode={c.renderMode} scale={c.scaleFactor} worldCamera={(c.worldCamera != null ? c.worldCamera.name : "null")}");
+            }
+
+            // Inspect RectTransforms across scene for likely toolbar candidates
+            var allRts = FindAllRectTransformsSafeImpl(); // <-- important: RectTransform array, not Canvas array
+            for (int i = 0; i < allRts.Length; i++)
+            {
+                var rt = allRts[i];
+                if (rt == null) continue;
+                string nm = rt.name ?? "";
+                if (nm.IndexOf("Sections", StringComparison.OrdinalIgnoreCase) >= 0
+                    || nm.IndexOf("TopPanel", StringComparison.OrdinalIgnoreCase) >= 0
+                    || nm.IndexOf("Inventory", StringComparison.OrdinalIgnoreCase) >= 0
+                    || nm.IndexOf("btnInventory", StringComparison.OrdinalIgnoreCase) >= 0
+                    || nm.IndexOf("CharacterMenus", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    var btns = rt.GetComponentsInChildren<UnityEngine.UI.Button>(true);
+                    string worldTopY = "N/A";
+                    try
+                    {
+                        Vector3[] corners = new Vector3[4];
+                        rt.GetWorldCorners(corners);
+                        float topY = (corners[1].y + corners[2].y) * 0.5f;
+                        worldTopY = topY.ToString("F1");
+                    }
+                    catch { }
+                    TravelButtonPlugin.LogInfo($"Candidate [{i}] '{rt.name}' active={rt.gameObject.activeInHierarchy} btnCount={(btns != null ? btns.Length : 0)} rect=({rt.rect.width:F0}x{rt.rect.height:F0}) worldTopY={worldTopY} path={GetTransformPath(rt)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DebugLogToolbarCandidates: " + ex);
+        }
+    }
+
     private void OpenTravelDialog()
     {
         TravelButtonPlugin.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
-        DumpDetectedPositionsForActiveScene();
-        LogLoadedScenes();
+        //DumpDetectedPositionsForActiveScene();
+        //        LogLoadedScenes();
+        //DebugLogCanvasHierarchy();
+        DebugLogToolbarCandidates();
+
         try
         {
             // Auto-assign scene names and log anchors (best-effort diagnostic)
@@ -548,6 +1244,9 @@ public class TravelButtonUI : MonoBehaviour
                 dialogCanvas.AddComponent<CanvasGroup>();
                 UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
                 TravelButtonPlugin.LogInfo("OpenTravelDialog: created dedicated TravelDialogCanvas (top-most).");
+            } else
+            {
+                TravelButtonPlugin.LogInfo("OpenTravelDialog: (dialogCanvas == null).");
             }
 
             // Root
@@ -556,6 +1255,8 @@ public class TravelButtonUI : MonoBehaviour
             dialogRoot.transform.SetAsLastSibling();
             dialogRoot.AddComponent<CanvasRenderer>();
             var rootRt = dialogRoot.AddComponent<RectTransform>();
+
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: (dialogCanvas == null).");
 
             // center the dialog explicitly
             rootRt.anchorMin = new Vector2(0.5f, 0.5f);
@@ -567,6 +1268,8 @@ public class TravelButtonUI : MonoBehaviour
 
             var bg = dialogRoot.AddComponent<Image>();
             bg.color = new Color(0f, 0f, 0f, 0.95f);
+
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: (dialogCanvas == null).");
 
             // Title
             var titleGO = new GameObject("Title");
@@ -584,6 +1287,8 @@ public class TravelButtonUI : MonoBehaviour
             titleText.fontSize = 18;
             titleText.color = Color.white;
 
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: nastavuju hodnoty 1.");
+
             // Inline message area
             var inlineMsgGO = new GameObject("InlineMessage");
             inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
@@ -600,6 +1305,7 @@ public class TravelButtonUI : MonoBehaviour
             inlineText.fontSize = 14;
             inlineText.raycastTarget = false;
 
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: nastavuju hodnoty 2.");
             // ScrollRect + viewport for city list
             var scrollGO = new GameObject("ScrollArea");
             scrollGO.transform.SetParent(dialogRoot.transform, false);
@@ -615,6 +1321,7 @@ public class TravelButtonUI : MonoBehaviour
             scrollRect.inertia = true;
             scrollRect.scrollSensitivity = 20f;
 
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: nastavuju hodnoty 3.");
             var viewport = new GameObject("Viewport");
             viewport.transform.SetParent(scrollGO.transform, false);
             var vpRt = viewport.AddComponent<RectTransform>();
@@ -627,6 +1334,7 @@ public class TravelButtonUI : MonoBehaviour
             vImg.color = Color.clear;
             viewport.AddComponent<UnityEngine.UI.RectMask2D>();
 
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: nastavuju hodnoty 4.");
             // Content container
             var content = new GameObject("Content");
             content.transform.SetParent(viewport.transform, false);
@@ -637,6 +1345,7 @@ public class TravelButtonUI : MonoBehaviour
             contentRt.anchoredPosition = Vector2.zero;
             contentRt.sizeDelta = new Vector2(0, 0);
 
+            TravelButtonPlugin.LogInfo("OpenTravelDialog: nastavuju hodnoty 5.");
             var vlayout = content.AddComponent<VerticalLayoutGroup>();
             vlayout.childControlHeight = true;
             vlayout.childForceExpandHeight = false;
@@ -770,6 +1479,7 @@ public class TravelButtonUI : MonoBehaviour
 
                     // player money for initial display (treat unknown as permissive)
                     bool playerMoneyKnown = playerMoney >= 0;
+                    TravelButtonPlugin.LogInfo($"OpenTravelDialog: computing hasEnoughMoney='{playerMoneyKnown}', playerMoney='{playerMoney}', hasEnoughMoney='{cost}'");
                     bool hasEnoughMoney = !playerMoneyKnown || (playerMoney >= cost);
 
                     // scene-aware coords allowance
@@ -884,16 +1594,6 @@ public class TravelButtonUI : MonoBehaviour
                     dtxt.alignment = TextAnchor.MiddleCenter;
                     dtxt.raycastTarget = false;
                 }
-            }
-
-            // --- NEW: scan the active scene for candidate anchor positions and write them to a JSON file ---
-            try
-            {
-                DumpDetectedPositionsForActiveScene();
-            }
-            catch (Exception ex)
-            {
-                TravelButtonPlugin.LogWarning("OpenTravelDialog: DumpDetectedPositionsForActiveScene failed: " + ex);
             }
 
             // Layout and refresh
@@ -2941,60 +3641,7 @@ public class TravelButtonUI : MonoBehaviour
     }
 
     // Force the button visible near top-center of the screen (temporary debug)
-    private void ForceShowTravelButton()
-    {
-        try
-        {
-            var tb = GameObject.Find("TravelButton");
-            if (tb == null)
-            {
-                TravelButtonPlugin.LogWarning("ForceShowTravelButton: TravelButton not found.");
-                return;
-            }
 
-            // find or create a top-level Canvas
-            var canvas = GameObject.FindObjectOfType<Canvas>();
-            if (canvas == null)
-            {
-                var go = new GameObject("TravelButton_DebugCanvas");
-                canvas = go.AddComponent<Canvas>();
-                canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-                go.AddComponent<UnityEngine.UI.GraphicRaycaster>();
-                UnityEngine.Object.DontDestroyOnLoad(go);
-            }
-            else
-            {
-                // ensure graphic raycaster present
-                if (canvas.GetComponent<UnityEngine.UI.GraphicRaycaster>() == null)
-                    canvas.gameObject.AddComponent<UnityEngine.UI.GraphicRaycaster>();
-            }
-
-            tb.transform.SetParent(canvas.transform, false);
-
-            var rt = tb.GetComponent<RectTransform>();
-            if (rt == null) rt = tb.AddComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0.5f, 1f);
-            rt.anchorMax = new Vector2(0.5f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.anchoredPosition = new Vector2(0, -40);
-            rt.sizeDelta = new Vector2(140, 32);
-
-            tb.SetActive(true);
-
-            // ensure it's visible (no dim)
-            var img = tb.GetComponent<UnityEngine.UI.Image>();
-            if (img != null) img.color = new Color(0.45f, 0.26f, 0.13f, 1f);
-
-            var btn = tb.GetComponent<UnityEngine.UI.Button>();
-            if (btn != null) btn.interactable = true;
-
-            TravelButtonPlugin.LogInfo("ForceShowTravelButton: forced TravelButton onto top Canvas and made visible.");
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("ForceShowTravelButton exception: " + ex);
-        }
-    }
 
 
     // Helper: try to invoke likely UI/inventory refresh methods on the given MB and a small set of other objects.
