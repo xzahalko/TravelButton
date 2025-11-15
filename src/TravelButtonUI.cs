@@ -16,14 +16,17 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Text;
 using uNature.Core.Terrains;
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
-using System.Linq;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -492,13 +495,15 @@ public class TravelButtonUI : MonoBehaviour
     private void OpenTravelDialog()
     {
         TravelButtonPlugin.LogInfo("OpenTravelDialog: invoked via click or keyboard.");
-
+        DumpDetectedPositionsForActiveScene();
+        LogLoadedScenes();
         try
         {
             // Auto-assign scene names and log anchors (best-effort diagnostic)
             try
             {
-                TravelButtonMod.AutoAssignSceneNamesFromLoadedScenes();
+                if (dialogRoot == null)
+                    TravelButtonMod.AutoAssignSceneNamesFromLoadedScenes();
 //                TravelButtonMod.LogLoadedScenesAndRootObjects();
 //                TravelButtonMod.LogCityAnchorsFromLoadedScenes();
             }
@@ -651,6 +656,7 @@ public class TravelButtonUI : MonoBehaviour
 
             // read player money once per dialog opening
             long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
+            TravelButtonPlugin.LogWarning($"OpenTravelDialog: hrac ma '{playerMoney}'.");
 
             if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
             {
@@ -703,6 +709,8 @@ public class TravelButtonUI : MonoBehaviour
 
                     // determine per-city cost
                     int cost = TravelButtonMod.cfgTravelCost.Value;
+                    TravelButtonPlugin.LogWarning($"OpenTravelDialog: hrac ma '{playerMoney}'. cost= '{cost}'");
+
                     try
                     {
                         var priceField = city.GetType().GetField("price");
@@ -771,6 +779,7 @@ public class TravelButtonUI : MonoBehaviour
                     bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
 
                     // New rule for initial interactability
+                    // ONZA
                     bool initialInteractable = enabledByConfig && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
 
                     bbtn.interactable = initialInteractable;
@@ -875,6 +884,16 @@ public class TravelButtonUI : MonoBehaviour
                     dtxt.alignment = TextAnchor.MiddleCenter;
                     dtxt.raycastTarget = false;
                 }
+            }
+
+            // --- NEW: scan the active scene for candidate anchor positions and write them to a JSON file ---
+            try
+            {
+                DumpDetectedPositionsForActiveScene();
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("OpenTravelDialog: DumpDetectedPositionsForActiveScene failed: " + ex);
             }
 
             // Layout and refresh
@@ -992,6 +1011,11 @@ public class TravelButtonUI : MonoBehaviour
                 if (city.coords != null && city.coords.Length >= 3)
                 {
                     coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                    // ONZA
+/*                    var cd = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
+                    Vector3? posNullable = cd.GetCityPosition(city);
+                    coordsHint = posNullable.Value;
+*/
                     haveCoordsHint = true;
                     TravelButtonPlugin.LogInfo($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
                     if (!IsCoordsReasonable(coordsHint))
@@ -1065,6 +1089,7 @@ public class TravelButtonUI : MonoBehaviour
                         try
                         {
                             isTeleporting = false;
+                            // ONZA
                             if (dialogRoot != null) dialogRoot.SetActive(false);
                             if (refreshButtonsCoroutine != null)
                             {
@@ -1200,6 +1225,15 @@ public class TravelButtonUI : MonoBehaviour
 
     // Coroutine to load a target scene (map) and teleport the player there.
     // This version avoids yielding inside try/catch blocks (C# restriction).
+    //podle souradnic
+
+    // Replace the existing LoadSceneAndTeleportCoroutine with the version below.
+    // Added robust fallback grounding logic (TryFindSafePosition) that attempts:
+    //  - TeleportHelpers.GetGroundedPosition (existing)
+    //  - A downward Physics.Raycast from a high altitude
+    //  - A spiral search of nearby XZ samples with downward raycasts
+    // This increases the chance of landing on valid ground when the configured coords are inaccurate.
+
     private IEnumerator LoadSceneAndTeleportCoroutine(TravelButtonMod.City city, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
         if (city == null)
@@ -1239,10 +1273,12 @@ public class TravelButtonUI : MonoBehaviour
                 yield return null;
             }
 
-            // Give one frame (two frames) for scene initialization
+            // Give a couple frames for scene initialization
             yield return null;
             yield return null;
         }
+
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after test op != null.");
 
         if (loadFailed)
         {
@@ -1265,59 +1301,84 @@ public class TravelButtonUI : MonoBehaviour
             yield break;
         }
 
-        // After load, determine the teleport target (prefer GameObject anchor if present)
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after test loadFailed.");
+
+        // Resolve final desired position as before (prefer city.coords, then coordsHint, then named GameObject, then heuristic)
         Vector3 finalPos = Vector3.zero;
         bool haveFinalPos = false;
 
         try
         {
-            if (!string.IsNullOrEmpty(city.targetGameObjectName))
+            // 1) Prefer configured coords in the city entry
+            if (city.coords != null && city.coords.Length >= 3)
             {
-                var tgo = GameObject.Find(city.targetGameObjectName);
-                if (tgo != null)
-                {
-                    finalPos = tgo.transform.position;
-                    haveFinalPos = true;
-                    TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: found target GameObject '{city.targetGameObjectName}' at {finalPos} after load.");
-                }
-                else
-                {
-                    TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: target GameObject '{city.targetGameObjectName}' still not found after scene load.");
-                }
+                finalPos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                haveFinalPos = true;
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using configured city.coords for '{city.name}' -> {finalPos}");
             }
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: error searching for target GameObject after load: " + ex);
-        }
 
-        if (!haveFinalPos && haveCoordsHint)
-        {
-            finalPos = coordsHint;
-            haveFinalPos = true;
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using coordsHint {finalPos} after load.");
-        }
-
-        if (!haveFinalPos)
-        {
-            // Try heuristics similar to TryGetTargetPosition: search for a transform matching city name
-            try
+            // 2) If no city.coords, fall back to coordsHint passed by caller (if present)
+            if (!haveFinalPos && haveCoordsHint)
             {
-                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-                foreach (var tr in allTransforms)
+                finalPos = coordsHint;
+                haveFinalPos = true;
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: using coordsHint for '{city.name}' -> {finalPos}");
+            }
+
+            // 3) If still no final pos, try to find a target GameObject by name (legacy fallback)
+            if (!haveFinalPos && !string.IsNullOrEmpty(city.targetGameObjectName))
+            {
+                try
                 {
-                    if (tr == null) continue;
-                    if (tr.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                    var tgo = GameObject.Find(city.targetGameObjectName);
+                    if (tgo != null)
                     {
-                        finalPos = tr.position;
+                        finalPos = tgo.transform.position;
                         haveFinalPos = true;
-                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: heuristic found scene object '{tr.name}' for city '{city.name}' at {finalPos}");
-                        break;
+                        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: found target GameObject '{city.targetGameObjectName}' at {finalPos} after load (fallback).");
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: target GameObject '{city.targetGameObjectName}' not found after scene load (fallback).");
                     }
                 }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: error searching for target GameObject after load: " + ex);
+                }
             }
-            catch { }
+
+            // 4) Final heuristic: look for any transform whose name contains the city name
+            if (!haveFinalPos)
+            {
+                try
+                {
+                    var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                    foreach (var tr in allTransforms)
+                    {
+                        if (tr == null) continue;
+                        if (!string.IsNullOrEmpty(tr.name) && !string.IsNullOrEmpty(city.name) &&
+                            tr.name.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            finalPos = tr.position;
+                            haveFinalPos = true;
+                            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: heuristic found scene object '{tr.name}' for city '{city.name}' at {finalPos}");
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: heuristic search failed: " + ex);
+                }
+            }
         }
+        catch (Exception exOuter)
+        {
+            TravelButtonPlugin.LogWarning("LoadSceneAndTeleportCoroutine: unexpected error while resolving final position: " + exOuter);
+        }
+
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: after resolving finalPos; haveFinalPos={haveFinalPos}");
 
         if (!haveFinalPos)
         {
@@ -1327,14 +1388,42 @@ public class TravelButtonUI : MonoBehaviour
             yield break;
         }
 
-        // Attempt the teleport in the newly loaded scene
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: before teleporting to {finalPos}");
+
+        // Enhanced grounding/fallback procedure:
+        // Try a best-effort to find a safe grounded point close to finalPos.
+        bool foundSafe = TryFindSafePosition(finalPos, out Vector3 safePos);
+
+        // If we couldn't find a good ground at the chosen coords, but the coords were user-provided (city.coords),
+        // try swapping Y/Z interpretation as a last resort (handles mis-ordered coords).
+        if (!foundSafe && city.coords != null && city.coords.Length >= 3)
+        {
+            var swapped = new Vector3(city.coords[0], city.coords[2], city.coords[1]);
+            TravelButtonPlugin.LogWarning($"LoadSceneAndTeleportCoroutine: primary grounding failed for '{city.name}', trying swapped coords interpretation {swapped}.");
+            foundSafe = TryFindSafePosition(swapped, out safePos);
+
+            if (foundSafe)
+            {
+                TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: swapped coords interpretation succeeded for '{city.name}' -> {safePos}. Updating in-memory coords.");
+                try { city.coords = new float[] { safePos.x, safePos.y, safePos.z }; } catch { }
+            }
+        }
+
+        if (!foundSafe)
+        {
+            TravelButtonPlugin.LogError($"LoadSceneAndTeleportCoroutine: could not find a safe ground position near {finalPos} for '{city.name}' after attempts.");
+            ShowInlineDialogMessage("Could not find safe teleport position");
+            isTeleporting = false;
+            yield break;
+        }
+
+        TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleporting to safe position {safePos}");
+
+        // Do the actual teleport
         bool teleported = false;
         try
         {
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounding final position {finalPos}");
-            Vector3 groundedFinalPos = TeleportHelpers.GetGroundedPosition(finalPos);
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: Grounded position is {groundedFinalPos}");
-            teleported = AttemptTeleportToPositionSafe(groundedFinalPos);
+            teleported = AttemptTeleportToPositionSafe(safePos);
         }
         catch (Exception ex)
         {
@@ -1344,7 +1433,7 @@ public class TravelButtonUI : MonoBehaviour
 
         if (teleported)
         {
-            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleported player to '{city.name}' at {finalPos}.");
+            TravelButtonPlugin.LogInfo($"LoadSceneAndTeleportCoroutine: teleported player to '{city.name}' at {safePos}.");
 
             try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
 
@@ -1410,6 +1499,268 @@ public class TravelButtonUI : MonoBehaviour
         }
 
         yield break;
+    }
+
+    /// <summary>
+    /// Try to find a safe grounded position near 'pos'.
+    /// Strategy:
+    ///  - use TeleportHelpers.GetGroundedPosition(pos) (may use game-specific grounding)
+    ///  - if that fails, do a downward Physics.Raycast from high above pos
+    ///  - if that fails, perform a spiral search on XZ plane, raycasting down at each candidate
+    /// Returns true and sets 'outPos' when a candidate ground is found.
+    /// </summary>
+    private bool TryFindSafePosition(Vector3 pos, out Vector3 outPos)
+    {
+        outPos = Vector3.zero;
+        try
+        {
+            // 1) TeleportHelpers grounding (existing helper)
+            try
+            {
+                var gp = TeleportHelpers.GetGroundedPosition(pos);
+                // treat any returned value as candidate; but verify ground by a short downward raycast if possible
+                // We'll accept gp if a raycast from gp+0.5 down hits within small distance or gp.y is not 0 with reasonable check.
+                RaycastHit hit;
+                Vector3 rayStart = gp + Vector3.up * 0.5f;
+                if (Physics.Raycast(rayStart, Vector3.down, out hit, 5f, Physics.DefaultRaycastLayers))
+                {
+                    outPos = hit.point;
+                    TravelButtonPlugin.LogInfo($"TryFindSafePosition: TeleportHelpers returned grounded pos {outPos} (via raycast verification).");
+                    return true;
+                }
+                else
+                {
+                    // Accept gp if it's not exactly zero and not obviously invalid
+                    if (!Mathf.Approximately(gp.sqrMagnitude, 0f))
+                    {
+                        outPos = gp;
+                        TravelButtonPlugin.LogInfo($"TryFindSafePosition: TeleportHelpers returned pos {gp} (no raycast hit but accepting).");
+                        return true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogWarning("TryFindSafePosition: TeleportHelpers.GetGroundedPosition threw: " + ex);
+            }
+
+            // 2) Downward raycast from high above pos
+            {
+                float startY = pos.y + 50f;
+                Vector3 start = new Vector3(pos.x, startY, pos.z);
+                RaycastHit hit;
+                if (Physics.Raycast(start, Vector3.down, out hit, 200f, Physics.DefaultRaycastLayers))
+                {
+                    outPos = hit.point;
+                    TravelButtonPlugin.LogInfo($"TryFindSafePosition: downward raycast hit at {outPos} (startY={startY}).");
+                    return true;
+                }
+            }
+
+            // 3) Spiral search on XZ plane
+            int maxRadius = 20; // meters
+            float step = 1.0f; // meter steps
+            for (int r = 1; r <= maxRadius; r++)
+            {
+                // sample a full circle at this radius with a few steps
+                int steps = Mathf.Max(8, (int)(6 * r));
+                for (int s = 0; s < steps; s++)
+                {
+                    float angle = (s / (float)steps) * Mathf.PI * 2f;
+                    var candidate = new Vector3(pos.x + Mathf.Cos(angle) * r, pos.y + 50f, pos.z + Mathf.Sin(angle) * r);
+                    RaycastHit hit;
+                    if (Physics.Raycast(candidate, Vector3.down, out hit, 200f, Physics.DefaultRaycastLayers))
+                    {
+                        outPos = hit.point;
+                        TravelButtonPlugin.LogInfo($"TryFindSafePosition: spiral raycast hit at {outPos} (radius={r}, step={s}).");
+                        return true;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("TryFindSafePosition unexpected error: " + ex);
+        }
+
+        // Give up
+        return false;
+    }
+
+    /// <summary>
+    /// Heuristic to decide whether a GameObject is part of UI (RectTransform, Canvas parent, or UI layer).
+    /// This keeps TravelButtonUI self-contained and avoids referencing TravelButtonMod.IsUiGameObject.
+    /// </summary>
+    private static bool IsUiGameObject(GameObject go)
+    {
+        if (go == null) return false;
+        try
+        {
+            // RectTransform indicates a UI element
+            if (go.GetComponent<RectTransform>() != null) return true;
+
+            // If any parent has a Canvas, treat as UI
+            if (go.GetComponentInParent<Canvas>() != null) return true;
+
+            // If there's a layer named "UI" and the object uses it, treat as UI
+            int uiLayer = LayerMask.NameToLayer("UI");
+            if (uiLayer != -1 && go.layer == uiLayer) return true;
+        }
+        catch
+        {
+            // On error, be conservative and consider it non-UI
+        }
+        return false;
+    }
+
+    private void DumpDetectedPositionsForActiveScene()
+    {
+        try
+        {
+            var scene = SceneManager.GetActiveScene();
+            if (!scene.IsValid())
+            {
+                TravelButtonPlugin.LogInfo("DumpDetectedPositionsForActiveScene: active scene invalid, skipping.");
+                return;
+            }
+
+            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            {
+                TravelButtonPlugin.LogInfo("DumpDetectedPositionsForActiveScene: no cities configured, skipping.");
+                return;
+            }
+
+            TravelButtonPlugin.LogInfo($"DumpDetectedPositionsForActiveScene: scanning scene '{scene.name}' for candidate anchors...");
+
+            // Prepare map of cityName -> list of positions
+            var detected = new Dictionary<string, List<Vector3>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in TravelButtonMod.Cities)
+                detected[c.name] = new List<Vector3>();
+
+            // Find all transforms in loaded scenes (includes inactive)
+            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+
+            foreach (var tr in allTransforms)
+            {
+                if (tr == null) continue;
+                var go = tr.gameObject;
+                if (go == null) continue;
+
+                // Skip objects that are not in a loaded scene
+                if (!go.scene.IsValid() || !go.scene.isLoaded) continue;
+
+                // Skip UI elements
+                if (IsUiGameObject(go)) continue;
+
+                string objName = tr.name ?? "";
+                if (string.IsNullOrEmpty(objName)) continue;
+
+                // For each city, check exact targetGameObjectName match, then substring match
+                foreach (var city in TravelButtonMod.Cities)
+                {
+                    try
+                    {
+                        bool matched = false;
+                        if (!string.IsNullOrEmpty(city.targetGameObjectName) &&
+                            string.Equals(objName, city.targetGameObjectName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            matched = true;
+                        }
+                        else if (!string.IsNullOrEmpty(city.name) &&
+                                 objName.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            matched = true;
+                        }
+
+                        if (matched)
+                        {
+                            // Record the world position
+                            detected[city.name].Add(tr.position);
+                            TravelButtonPlugin.LogInfo($"DumpDetectedPositionsForActiveScene: matched '{objName}' -> city '{city.name}' pos=({tr.position.x:F3},{tr.position.y:F3},{tr.position.z:F3})");
+                        }
+                    }
+                    catch { /* per-city errors ignored */ }
+                }
+            }
+
+            // Build JSON content
+            var sb = new StringBuilder();
+            sb.Append("{");
+            sb.Append("\"scene\":\"").Append(EscapeForJson(scene.name)).Append("\",");
+            sb.Append("\"detected\":{");
+
+            bool firstCity = true;
+            foreach (var kv in detected)
+            {
+                var list = kv.Value;
+                if (list == null || list.Count == 0) continue;
+                if (!firstCity) sb.Append(",");
+                firstCity = false;
+
+                sb.Append("\"").Append(EscapeForJson(kv.Key)).Append("\":[");
+                for (int i = 0; i < list.Count; i++)
+                {
+                    var v = list[i];
+                    sb.Append("[");
+                    sb.Append(v.x.ToString("F3", CultureInfo.InvariantCulture)).Append(",");
+                    sb.Append(v.y.ToString("F3", CultureInfo.InvariantCulture)).Append(",");
+                    sb.Append(v.z.ToString("F3", CultureInfo.InvariantCulture));
+                    sb.Append("]");
+                    if (i < list.Count - 1) sb.Append(",");
+                }
+                sb.Append("]");
+            }
+
+            sb.Append("}}");
+
+            // Determine output path: prefer BepInEx config folder, fallback to plugin folder
+            string outPath = null;
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                var candidate = Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities_detected_positions.json");
+                outPath = candidate;
+            }
+            catch { outPath = "TravelButton_Cities_detected_positions.json"; }
+
+            try
+            {
+                File.WriteAllText(outPath, sb.ToString(), Encoding.UTF8);
+                TravelButtonPlugin.LogInfo($"DumpDetectedPositionsForActiveScene: wrote detected positions for scene '{scene.name}' to '{outPath}'");
+            }
+            catch (Exception exWrite)
+            {
+                TravelButtonPlugin.LogWarning("DumpDetectedPositionsForActiveScene: failed to write file: " + exWrite.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("DumpDetectedPositionsForActiveScene: unexpected error: " + ex);
+        }
+    }
+
+    private static string EscapeForJson(string s)
+    {
+        if (s == null) return "";
+        var sb = new StringBuilder();
+        foreach (char c in s)
+        {
+            switch (c)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '\"': sb.Append("\\\""); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 32) sb.Append("\\u" + ((int)c).ToString("x4"));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
     }
 
     private static string GuessSceneNameFromBuildSettings(string cityName)
@@ -2057,13 +2408,164 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // Refresh city buttons while dialog is open: re-evaluates player's currency and enables/disables buttons.
     private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialog)
     {
+        TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen start");
         while (dialog != null && dialog.activeInHierarchy)
         {
+            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen activeInHierarchy");
             try
             {
+                // --- Player position logging (best-effort multi-strategy) ---
+                Vector3 playerPos = Vector3.zero;
+                bool havePlayerPos = false;
+                try
+                {
+                    // local helper to try several common strategies for locating the local player
+                    bool TryGetPlayerPosition(out Vector3 outPos)
+                    {
+                        outPos = Vector3.zero;
+                        try
+                        {
+                            // 1) Common Unity tag
+                            try
+                            {
+                                var go = GameObject.FindWithTag("Player");
+                                if (go != null && go.transform != null)
+                                {
+                                    outPos = go.transform.position;
+                                    return true;
+                                }
+                            }
+                            catch { /* ignore tag errors */ }
+
+                            // 2) Common object name(s)
+                            string[] candidateNames = new[] { "Player", "player", "LocalPlayer", "localPlayer", "Character" };
+                            foreach (var nm in candidateNames)
+                            {
+                                try
+                                {
+                                    var go = GameObject.Find(nm);
+                                    if (go != null && go.transform != null)
+                                    {
+                                        outPos = go.transform.position;
+                                        return true;
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            // 3) Try to find a game-specific "local player" static (e.g., Player.m_localPlayer or LocalPlayer.Instance)
+                            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                            {
+                                try
+                                {
+                                    Type playerType = null;
+                                    try { playerType = asm.GetTypes().FirstOrDefault(t => t.Name == "Player" || t.Name == "LocalPlayer"); } catch { }
+                                    if (playerType == null) continue;
+
+                                    // look for common static fields/properties
+                                    var fld = playerType.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                              ?? playerType.GetField("localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                                    if (fld != null)
+                                    {
+                                        var inst = fld.GetValue(null);
+                                        if (inst != null)
+                                        {
+                                            // if instance is a Component or has a 'transform' property
+                                            var comp = inst as UnityEngine.Component;
+                                            if (comp != null)
+                                            {
+                                                outPos = comp.transform.position;
+                                                return true;
+                                            }
+                                            // attempt to get a 'transform' property or field via reflection
+                                            var tProp = inst.GetType().GetProperty("transform");
+                                            if (tProp != null)
+                                            {
+                                                var t = tProp.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                            var tField = inst.GetType().GetField("transform");
+                                            if (tField != null)
+                                            {
+                                                var t = tField.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                        }
+                                    }
+
+                                    var prop = playerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                               ?? playerType.GetProperty("instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                               ?? playerType.GetProperty("LocalPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                                    if (prop != null)
+                                    {
+                                        var inst = prop.GetValue(null);
+                                        if (inst != null)
+                                        {
+                                            var comp = inst as UnityEngine.Component;
+                                            if (comp != null)
+                                            {
+                                                outPos = comp.transform.position;
+                                                return true;
+                                            }
+                                            var tProp = inst.GetType().GetProperty("transform");
+                                            if (tProp != null)
+                                            {
+                                                var t = tProp.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                            var tField = inst.GetType().GetField("transform");
+                                            if (tField != null)
+                                            {
+                                                var t = tField.GetValue(inst) as Transform;
+                                                if (t != null) { outPos = t.position; return true; }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch { /* ignore assembly/type reflection errors */ }
+                            }
+
+                            // 4) Fallback: search all Transforms for likely player-like names (inefficient but safe)
+                            try
+                            {
+                                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+                                foreach (var t in allTransforms)
+                                {
+                                    if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                                    var nmLower = t.name.ToLowerInvariant();
+                                    if (nmLower.Contains("player") || nmLower.Contains("local") || nmLower.Contains("character"))
+                                    {
+                                        outPos = t.position;
+                                        return true;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        catch { }
+                        return false;
+                    }
+
+                    havePlayerPos = TryGetPlayerPosition(out playerPos);
+                }
+                catch { havePlayerPos = false; }
+
+                // Log player coordinates (if found) or note that we couldn't locate player
+                try
+                {
+                    if (havePlayerPos)
+                    {
+                        TravelButtonPlugin.LogInfo($"Player position: ({playerPos.x:F3}, {playerPos.y:F3}, {playerPos.z:F3})");
+                    }
+                    else
+                    {
+                        TravelButtonPlugin.LogInfo("Player position: (not found)");
+                    }
+                }
+                catch { /* swallow logging errors */ }
+
                 // fetch current player money (best-effort)
                 long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
                 bool haveMoneyInfo = currentMoney >= 0;
@@ -2079,6 +2581,7 @@ public class TravelButtonUI : MonoBehaviour
                 var content = dialog.transform.Find("ScrollArea/Viewport/Content");
                 if (content != null)
                 {
+                    TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen content found");
                     for (int i = 0; i < content.childCount; i++)
                     {
                         var child = content.GetChild(i);
@@ -2112,6 +2615,8 @@ public class TravelButtonUI : MonoBehaviour
                         int cost = TravelButtonMod.cfgTravelCost.Value;
                         if (foundCity != null)
                         {
+                            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen foundCity found");
+
                             try
                             {
                                 var priceField = foundCity.GetType().GetField("price");
@@ -2180,13 +2685,14 @@ public class TravelButtonUI : MonoBehaviour
                         // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                        // Detailed debug log for each condition
+                        // Detailed debug log for each condition (include player coords if known)
                         TravelButtonPlugin.LogInfo($"Debug Refresh '{cityName}': " +
                                                    $"enabledByConfig={enabledByConfig}, " +
                                                    $"visitedNow={visitedNow}, " +
                                                    $"hasEnoughMoney={hasEnoughMoney}, " +
                                                    $"coordsAvailable={coordsAvailable}, " +
-                                                   $"isCurrentScene={isCurrentScene} " +
+                                                   $"isCurrentScene={isCurrentScene}, " +
+                                                   $"playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")} " +
                                                    $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
 
                         if (btn.interactable != shouldBeInteractableNow)
@@ -2292,6 +2798,15 @@ public class TravelButtonUI : MonoBehaviour
             }
         }
         return null;
+    }
+
+    private void LogLoadedScenes()
+    {
+        for (int i = 0; i < SceneManager.sceneCount; i++)
+        {
+            var s = SceneManager.GetSceneAt(i);
+            TravelButtonPlugin.LogInfo($"Loaded Scene[{i}] name='{s.name}' path='{s.path}' isLoaded={s.isLoaded}");
+        }
     }
 
     /// <summary>
