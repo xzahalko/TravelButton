@@ -1,8 +1,9 @@
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using UnityEngine;
-using Newtonsoft.Json;
 
 // ConfigManager: load/save travel_config.json (per-city config).
 // - Creates default config if missing.
@@ -136,7 +137,7 @@ public static class ConfigManager
             { "Cierzo", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{ 1205.881f, -17.360f, 1366.486f},
+                coords = new float[]{1362.051f, 37.088f, 1652.189f},
                 targetGameObjectName = "Cierzo_Location",
                 sceneName="CierzoNewTerrain",
                 desc = "Cierzo - example description",
@@ -148,7 +149,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{-573f, 90f, -515f},
                 targetGameObjectName = "Levant_Location",
-                sceneName="Levant",
+                sceneName="LevantNewTerrain",
                 desc = "Levant - example description",
                 visited = false,
                 note = "coords required"
@@ -158,7 +159,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{3f, 1.0f, -5f},
                 targetGameObjectName = "Monsoon_Location",
-                sceneName="Monsoon",
+                sceneName="MonsoonNewTerrain",
                 desc = "Monsoon - example description",
                 visited = false,
                 note = "coords required"
@@ -166,8 +167,8 @@ public static class ConfigManager
             { "Berg", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{ 1175.378f, 5.920f, 1376.680f}, 
-                targetGameObjectName = "Berg_Location",
+                coords = new float[]{1204.881f, -13.656f, 1372.639f}, 
+                targetGameObjectName = "Berg_SafeSpawn",
                 sceneName="Berg",
                 desc = "Berg - example description",
                 visited = false,
@@ -178,7 +179,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{500.0f, 3.0f, 80.0f},
                 targetGameObjectName = "Harmattan_Location",
-                sceneName="Harmattan",
+                sceneName="HarmattanNewTerrain",
                 desc = "Harmattan - example description",
                 visited = false,
                 note = "coords required"
@@ -188,7 +189,7 @@ public static class ConfigManager
                 price = 1,
                 coords = new float[]{600.0f, 1.2f, -300.0f},
                 targetGameObjectName = "Sirocco_Location",
-                sceneName="Sirocco",
+                sceneName="SiroccoNewTerrain",
                 desc = "Sirocco - example description",
                 visited = false,
                 note = "coords required"

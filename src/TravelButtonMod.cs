@@ -706,6 +706,31 @@ public class TravelButtonPlugin : BaseUnityPlugin
         EnsureTravelButtonUI();
     }
 
+    public static void LogCitySceneName(string cityName)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(cityName))
+            {
+                TravelButtonPlugin.LogWarning("LogCitySceneName: cityName is null/empty.");
+                return;
+            }
+
+            var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+            if (city == null)
+            {
+                TravelButtonPlugin.LogWarning($"LogCitySceneName: city '{cityName}' not found in TravelButtonMod.Cities.");
+                return;
+            }
+
+            TravelButtonPlugin.LogInfo($"LogCitySceneName: city='{city.name}', sceneName='{city.sceneName ?? "(null)"}', coords={(city.coords != null ? $"[{string.Join(", ", city.coords)}]" : "(null)")}, targetGameObjectName='{city.targetGameObjectName ?? "(null)"}'");
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("LogCitySceneName exception: " + ex);
+        }
+    }
+
     // Exposed logger set by the plugin bootstrap. May be null early during domain load.
     private void EnsureTravelButtonUI()
     {

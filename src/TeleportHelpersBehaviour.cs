@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -9,9 +10,40 @@ using UnityEngine;
 /// </summary>
 public class TeleportHelpersBehaviour : MonoBehaviour
 {
+    private static TeleportHelpersBehaviour _instance;
+    public static TeleportHelpersBehaviour GetOrCreateHost()
+    {
+        if (_instance != null) return _instance;
+        var go = new GameObject("TeleportHelpersHost");
+        DontDestroyOnLoad(go);
+        _instance = go.AddComponent<TeleportHelpersBehaviour>();
+        return _instance;
+    }
     private void Awake()
     {
         try { DontDestroyOnLoad(this.gameObject); } catch { }
+    }
+
+    // Watch a GameObject for post-teleport changes.
+    // Logs if the world position changes during 'durationSec' seconds, checking every frame.
+    // Watch the moved object's position for T seconds and log if it changes
+    public IEnumerator WatchPositionAfterTeleport(GameObject moved, Vector3 expected, float watchSeconds)
+    {
+        if (moved == null) yield break;
+        float end = Time.realtimeSinceStartup + watchSeconds;
+        Vector3 last = moved.transform.position;
+        while (Time.realtimeSinceStartup < end)
+        {
+            if (moved == null) yield break;
+            Vector3 cur = moved.transform.position;
+            if ((cur - expected).sqrMagnitude > 0.01f && (cur - last).sqrMagnitude > 0.001f)
+            {
+                TravelButtonPlugin.LogWarning($"WatchPositionAfterTeleport: detected external change of '{moved.name}' from expected {expected} to {cur}");
+                last = cur;
+            }
+            yield return null;
+        }
+        yield break;
     }
 
     /// <summary>
@@ -184,12 +216,75 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         callback?.Invoke(relocated);
     }
 
-    public static TeleportHelpersBehaviour GetOrCreateHost()
+    // Place this inside TeleportHelpersBehaviour (or add to an existing partial class).
+    // Re-enable components and restore rigidbody flags after a short delay.
+    // This coroutine toggles TeleportHelpers.ReenableInProgress for caller synchronization.
+    public IEnumerator ReenableComponentsAfterDelay(GameObject moved, List<Behaviour> disabledBehaviours, List<(Rigidbody rb, bool originalIsKinematic)> changedRigidbodies, float delay)
     {
-        var existing = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
-        if (existing != null) return existing;
-        var go = new GameObject("TeleportHelpersHost");
-        UnityEngine.Object.DontDestroyOnLoad(go);
-        return go.AddComponent<TeleportHelpersBehaviour>();
+        try
+        {
+            TeleportHelpers.ReenableInProgress = true;
+        }
+        catch { }
+
+        // Wait the configured delay (real time to avoid being paused)
+        if (delay > 0f)
+            yield return new WaitForSecondsRealtime(delay);
+        else
+            yield return null;
+
+        // Re-enable behaviours (reverse order for safety)
+        try
+        {
+            if (disabledBehaviours != null)
+            {
+                foreach (var b in disabledBehaviours)
+                {
+                    if (b == null) continue;
+                    try
+                    {
+                        b.enabled = true;
+                        TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error re-enabling behaviours: " + ex.Message);
+        }
+
+        // Restore rigidbody isKinematic flags
+        try
+        {
+            if (changedRigidbodies != null)
+            {
+                foreach (var tup in changedRigidbodies)
+                {
+                    try
+                    {
+                        if (tup.rb != null)
+                        {
+                            tup.rb.isKinematic = tup.originalIsKinematic;
+                            TravelButtonPlugin.LogInfo($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogWarning("ReenableComponentsAfterDelay: error restoring rigidbodies: " + ex.Message);
+        }
+
+        try
+        {
+            TeleportHelpers.ReenableInProgress = false;
+        }
+        catch { }
+
+        yield break;
     }
 }
