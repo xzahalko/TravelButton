@@ -25,6 +25,17 @@ public static class TBLog
         catch (Exception) { /* swallow */ }
     }
 
+    public static void Debug(string message)
+    {
+        try
+        {
+            // Debug level - only log when debug mode is enabled
+            if (DebugConfig.IsDebug)
+                TravelButtonPlugin.LogDebug(message);
+        }
+        catch (Exception) { /* swallow */ }
+    }
+
     // Optional helper for unconditional logging (bypass debug gate)
     public static void ForceInfo(string message)
     {
