@@ -5483,70 +5483,162 @@ public class TravelButtonUI : MonoBehaviour
     {
         try
         {
-            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMono)
+            var candidates = new List<(long value, string source)>();
+
+            // Helper to attempt reading currency-like values from an object via reflection
+            long TryReadCurrencyFromObject(object obj, out string note)
             {
-                var t = mb.GetType();
-                string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
-                foreach (var pn in propNames)
+                note = "(unknown)";
+                if (obj == null) return -1;
+                var t = obj.GetType();
+                note = t.FullName;
+                string[] names = new[] { "ContainedSilver", "containedSilver", "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
+                foreach (var n in names)
                 {
-                    var pi = t.GetProperty(pn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                    if (pi != null && pi.CanRead)
+                    try
                     {
-                        try
+                        var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (f != null)
                         {
-                            var val = pi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
+                            var val = f.GetValue(obj);
+                            if (val is int i) { note += $".{f.Name}"; return i; }
+                            if (val is long l) { note += $".{f.Name}"; return l; }
+                            if (val is float fval) { note += $".{f.Name}"; return (long)fval; }
+                            if (val is double dval) { note += $".{f.Name}"; return (long)dval; }
                         }
-                        catch { }
                     }
+                    catch { }
+                    try
+                    {
+                        var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                        if (p != null && p.CanRead)
+                        {
+                            var val = p.GetValue(obj, null);
+                            if (val is int i2) { note += $".{p.Name}()"; return i2; }
+                            if (val is long l2) { note += $".{p.Name}()"; return l2; }
+                            if (val is float fval2) { note += $".{p.Name}()"; return (long)fval2; }
+                            if (val is double dval2) { note += $".{p.Name}()"; return (long)dval2; }
+                        }
+                    }
+                    catch { }
                 }
 
-                string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
-                foreach (var mn in methodNames)
+                string[] methodNames = new[] { "GetSilver", "GetMoney", "GetCoins", "GetCurrency", "GetContainedSilver" };
+                foreach (var mname in methodNames)
                 {
-                    var mi = t.GetMethod(mn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                    if (mi != null && mi.GetParameters().Length == 0)
+                    try
                     {
-                        try
+                        var mi = t.GetMethod(mname, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                        if (mi != null && mi.GetParameters().Length == 0)
                         {
-                            var res = mi.Invoke(mb, null);
-                            if (res is int) return (int)res;
-                            if (res is long) return (long)res;
-                            if (res is float) return (long)((float)res);
-                            if (res is double) return (long)((double)res);
+                            var ret = mi.Invoke(obj, null);
+                            if (ret is int ri) { note += $".{mi.Name}()"; return ri; }
+                            if (ret is long rl) { note += $".{mi.Name}()"; return rl; }
+                            if (ret is float rf) { note += $".{mi.Name}()"; return (long)rf; }
+                            if (ret is double rd) { note += $".{mi.Name}()"; return (long)rd; }
                         }
-                        catch { }
                     }
+                    catch { }
                 }
 
-                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
-                {
-                    var name = fi.Name.ToLower();
-                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
-                    {
-                        try
-                        {
-                            var val = fi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
-                        }
-                        catch { }
-                    }
-                }
+                return -1;
             }
 
-            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
-            return -1;
+            // 1) Preferred: search for known types that likely represent player inventory
+            string[] knownTypeNames = new[] { "CharacterInventory", "CharacterInv", "Inventory", "PlayerInventory", "PlayerWallet" };
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type ciType = null;
+                try
+                {
+                    ciType = asm.GetTypes().FirstOrDefault(t => knownTypeNames.Contains(t.Name));
+                }
+                catch { continue; }
+                if (ciType == null) continue;
+
+                // static Instance property/field
+                try
+                {
+                    var instProp = ciType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)
+                                 ?? ciType.GetProperty("instance", BindingFlags.Public | BindingFlags.Static)
+                                 ?? ciType.GetProperty("Instance", BindingFlags.NonPublic | BindingFlags.Static);
+                    object inst = null;
+                    if (instProp != null) inst = instProp.GetValue(null);
+                    else
+                    {
+                        var instField = ciType.GetField("Instance", BindingFlags.Public | BindingFlags.Static)
+                                    ?? ciType.GetField("instance", BindingFlags.Public | BindingFlags.Static)
+                                    ?? ciType.GetField("m_instance", BindingFlags.NonPublic | BindingFlags.Static);
+                        if (instField != null) inst = instField.GetValue(null);
+                    }
+                    if (inst != null)
+                    {
+                        var val = TryReadCurrencyFromObject(inst, out var note);
+                        if (val >= 0) candidates.Add((val, $"StaticInstance:{note}"));
+                    }
+                }
+                catch { }
+
+                // active instances in scene
+                try
+                {
+                    var objs = UnityEngine.Object.FindObjectsOfType(ciType);
+                    if (objs != null)
+                    {
+                        foreach (var o in objs)
+                        {
+                            try
+                            {
+                                var val = TryReadCurrencyFromObject(o, out var note);
+                                if (val >= 0) candidates.Add((val, $"FindObjectsOfType:{note}"));
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2) General scan of MonoBehaviours (fallback) - record candidates but don't return first-match
+            try
+            {
+                var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+                foreach (var mb in allMono)
+                {
+                    if (mb == null) continue;
+                    try
+                    {
+                        var val = TryReadCurrencyFromObject(mb, out var note);
+                        if (val >= 0) candidates.Add((val, $"MB:{note}"));
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            // 3) Evaluate candidates
+            if (candidates.Count == 0)
+            {
+                TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne: no currency candidates found.");
+                return -1;
+            }
+
+            // pick the best candidate: prefer highest positive value (helps avoid transient zeros)
+            var best = candidates.OrderByDescending(c => c.value).First();
+            TBLog.Info($"GetPlayerCurrencyAmountOrMinusOne: picked candidate value={best.value} source={best.source} (found {candidates.Count} candidates)");
+
+            // If best is zero, treat as unknown to avoid disabling UI on transient reads shortly after scene-load
+            if (best.value == 0)
+            {
+                TBLog.Info("GetPlayerCurrencyAmountOrMinusOne: best candidate is 0 -> treat as unknown (-1) to avoid false-negative during load.");
+                return -1;
+            }
+
+            return best.value;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne exception: " + ex.Message);
             return -1;
         }
     }
