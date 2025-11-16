@@ -49,28 +49,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
     }
 
     /// <summary>
-    /// Load TravelButton_Cities.json using the new JsonTravelConfig DTO.
-    /// If JSON file not found, creates a default file from JsonTravelConfig.Default().
-    /// Populates TravelButtonMod.Cities with metadata from JSON.
-    /// Does NOT load enabled/price from JSON - those are managed by BepInEx config.
-    /// </summary>
-    /// <summary>
-    /// Best-effort: locate TravelButton_Cities.json in common locations and parse it using TravelConfig.LoadFromFile.
-    /// If the file is missing or unparsable, attempt to create a default TravelButton_Cities.json using TravelConfig.Default().
-    /// Map loaded CityConfig entries into TravelButtonMod.City list (metadata only): set name, coords, sceneName, targetGameObjectName,
-    /// and keep price=null and enabled=false so EnsureBepInExConfigBindings will create per-city BepInEx config entries.
-    /// Deduplicate by case-insensitive city name; prefer JSON entry when merging metadata.
-    /// Log what source (JSON or Config) provided initial values for each city for auditability.
-    /// </summary>
-    /// <summary>
-    /// Robust loader for TravelButton_Cities.json that uses CityConfig DTO classes.
-    /// - Searches candidate locations (BepInEx config, assembly dir, cwd, Application.dataPath, etc.)
-    /// - Attempts to parse via TravelConfig.LoadFromFile (uses UnityEngine.JsonUtility)
-    /// - If missing/unparsable, writes TravelConfig.Default() to preferred writable location
-    /// - Maps CityConfig entries into TravelButtonMod.City instances (metadata only)
-    /// - Sets city.price from JSON and city.enabled = false so EnsureBepInExConfigBindings can create bindings
-    /// - Deduplicates by case-insensitive city name
-    /// - Logs which source provided initial values for auditability
+    /// Locate TravelButton_Cities.json in candidate locations, load it using TravelConfig helper,
+    /// and map each CityConfig into TravelButtonMod.City instances.
+    /// If not found, creates default TravelButton_Cities.json in the preferred location.
+    /// Sets city.price = null and city.enabled = false so BepInEx config bindings will be created
+    /// with JSON price as the seed value (if available).
     /// </summary>
     private static void TryLoadCitiesJsonIntoTravelButtonMod()
     {
@@ -80,22 +63,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
             void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
             void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
 
-            // Build candidate paths to search for TravelButton_Cities.json
+            // Build candidate paths list
             var candidatePaths = new List<string>();
 
-            // Common BepInEx config location (preferred for writing)
-            string preferredWritePath = null;
+            // 1. BepInEx config directory (preferred for writing)
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
-                var bepInExConfigPath = Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json");
-                candidatePaths.Add(bepInExConfigPath);
-                preferredWritePath = bepInExConfigPath; // This is our preferred write location
-                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
             }
             catch { }
 
-            // Assembly location (same folder as plugin DLL)
+            // 2. Assembly location (same folder as plugin DLL)
             try
             {
                 var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
@@ -104,14 +83,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            if (jsonConfig == null)
+            // 3. Current working directory
+            try
             {
                 var cwd = Directory.GetCurrentDirectory();
                 candidatePaths.Add(Path.Combine(cwd, "TravelButton_Cities.json"));
             }
             catch { }
 
-            // Unity data path (may not be available early)
+            // 4. Unity Application.dataPath
             try
             {
                 var dataPath = Application.dataPath;
@@ -120,7 +100,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            // TravelButtonMod.ConfigFilePath folder (if available)
+            // 5. TravelButtonMod.ConfigFilePath folder (if available)
             try
             {
                 var cfgPath = TravelButtonMod.ConfigFilePath;
@@ -147,7 +127,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            // De-duplicate and find existing file
+            // 6. Repo root (for development)
+            try
+            {
+                var repoRoot = Path.GetDirectoryName(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location));
+                if (!string.IsNullOrEmpty(repoRoot))
+                    candidatePaths.Add(Path.Combine(repoRoot, "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            // De-duplicate and find first existing file
             var tested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string foundPath = null;
             TravelConfig travelConfig = null;
@@ -171,135 +160,127 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 catch { }
             }
 
-            TravelConfig travelConfig = null;
-
-            if (!string.IsNullOrEmpty(foundPath))
+            // If not found, create default file in preferred location
+            if (string.IsNullOrEmpty(foundPath))
             {
-                LInfo("Found TravelButton_Cities.json at: " + foundPath);
+                LInfo("TravelButton_Cities.json not found in candidate locations. Creating default file...");
                 
-                // Attempt to parse using TravelConfig.LoadFromFile
-                try
+                // Prefer BepInEx config folder as write location
+                string preferredPath = null;
+                foreach (var p in candidatePaths)
                 {
-                    travelConfig = TravelConfig.LoadFromFile(foundPath);
-                    if (travelConfig != null && travelConfig.cities != null && travelConfig.cities.Length > 0)
+                    if (string.IsNullOrEmpty(p)) continue;
+                    try
                     {
-                        LInfo($"Successfully parsed {travelConfig.cities.Length} cities from JSON.");
+                        if (p.Contains("BepInEx") && p.Contains("config"))
+                        {
+                            preferredPath = p;
+                            break;
+                        }
                     }
-                    else
-                    {
-                        LWarn("TravelButton_Cities.json exists but failed to parse or contains no cities.");
-                        travelConfig = null;
-                    }
+                    catch { }
                 }
-                catch (Exception ex)
-                {
-                    LWarn("Error parsing TravelButton_Cities.json: " + ex.Message);
-                    travelConfig = null;
-                }
-            }
+                
+                if (string.IsNullOrEmpty(preferredPath) && candidatePaths.Count > 0)
+                    preferredPath = candidatePaths[0];
 
-            // If missing or unparsable, create default file
-            if (travelConfig == null)
-            {
-                LInfo("TravelButton_Cities.json missing or unparsable. Creating default file...");
-                travelConfig = TravelConfig.Default();
-                
-                // Write to preferred location (BepInEx config folder)
-                if (!string.IsNullOrEmpty(preferredWritePath))
+                if (!string.IsNullOrEmpty(preferredPath))
                 {
                     try
                     {
-                        bool saved = TravelConfig.SaveToFile(preferredWritePath, travelConfig);
-                        if (saved)
+                        var defaultConfig = TravelConfig.Default();
+                        if (TravelConfig.SaveToFile(defaultConfig, preferredPath))
                         {
-                            LInfo($"Created default TravelButton_Cities.json at: {preferredWritePath}");
+                            LInfo($"Created default TravelButton_Cities.json at: {preferredPath}");
+                            foundPath = preferredPath;
                         }
                         else
                         {
-                            LWarn($"Failed to write default TravelButton_Cities.json to: {preferredWritePath}");
+                            LWarn("Failed to save default TravelButton_Cities.json");
                         }
                     }
                     catch (Exception ex)
                     {
-                        LWarn($"Exception writing default TravelButton_Cities.json: {ex.Message}");
+                        LWarn($"Exception creating default TravelButton_Cities.json: {ex.Message}");
                     }
-                }
-            }
-
-            // Map CityConfig entries into TravelButtonMod.Cities
-            if (travelConfig != null && travelConfig.cities != null && travelConfig.cities.Length > 0)
-            {
-                var citiesList = new List<TravelButtonMod.City>();
-                var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var cc in travelConfig.cities)
-                {
-                    try
-                    {
-                        if (cc == null || string.IsNullOrEmpty(cc.name)) continue;
-                        
-                        // Deduplicate by case-insensitive name
-                        if (seenNames.Contains(cc.name))
-                        {
-                            LWarn($"Duplicate city name '{cc.name}' found in JSON, skipping duplicate.");
-                            continue;
-                        }
-                        seenNames.Add(cc.name);
-
-                        // Create TravelButtonMod.City from CityConfig (metadata only)
-                        var city = new TravelButtonMod.City(cc.name);
-                        
-                        // Map metadata fields
-                        if (cc.coords != null && cc.coords.Length >= 3)
-                        {
-                            city.coords = new float[] { cc.coords[0], cc.coords[1], cc.coords[2] };
-                        }
-                        
-                        if (!string.IsNullOrEmpty(cc.targetGameObjectName))
-                        {
-                            city.targetGameObjectName = cc.targetGameObjectName;
-                        }
-                        
-                        if (!string.IsNullOrEmpty(cc.sceneName))
-                        {
-                            city.sceneName = cc.sceneName;
-                        }
-                        
-                        // Store description if available (optional field)
-                        // Note: TravelButtonMod.City doesn't have a desc field, so we'll skip this
-                        // or you can add it to the City class if needed
-                        
-                        // Set price from JSON (will be used as default when creating BepInEx binding)
-                        city.price = cc.price;
-                        
-                        // Set enabled = false initially
-                        // EnsureBepInExConfigBindings will create the binding and set the actual runtime value
-                        city.enabled = false;
-                        
-                        citiesList.Add(city);
-                        
-                        // Log for auditability: JSON provided metadata
-                        LInfo($"Loaded city '{cc.name}' from JSON: coords={city.coords != null}, targetGO='{city.targetGameObjectName ?? ""}', scene='{city.sceneName ?? ""}', price={city.price}");
-                    }
-                    catch (Exception ex)
-                    {
-                        LWarn($"Error mapping city '{cc?.name ?? "(null)"}' from JSON: {ex.Message}");
-                    }
-                }
-
-                if (citiesList.Count > 0)
-                {
-                    TravelButtonMod.Cities = citiesList;
-                    LInfo($"Loaded {citiesList.Count} cities from TravelButton_Cities.json into TravelButtonMod.Cities.");
                 }
                 else
                 {
-                    LWarn("No cities were successfully mapped from TravelButton_Cities.json.");
+                    LWarn("No suitable location found to create TravelButton_Cities.json");
                 }
             }
             else
             {
-                LWarn("No valid TravelConfig available after load/default creation.");
+                LInfo($"Found TravelButton_Cities.json at: {foundPath}");
+            }
+
+            // Load the config
+            if (string.IsNullOrEmpty(foundPath))
+            {
+                LWarn("Unable to load or create TravelButton_Cities.json");
+                return;
+            }
+
+            var travelConfig = TravelConfig.LoadFromFile(foundPath);
+            if (travelConfig == null || travelConfig.cities == null || travelConfig.cities.Count == 0)
+            {
+                LWarn("Failed to load cities from TravelButton_Cities.json or file is empty");
+                return;
+            }
+
+            // Map CityConfig instances to TravelButtonMod.City instances
+            var citiesList = new List<TravelButtonMod.City>();
+            var cityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // deduplicate
+
+            foreach (var cc in travelConfig.cities)
+            {
+                try
+                {
+                    if (cc == null || string.IsNullOrEmpty(cc.name))
+                    {
+                        LWarn("Skipping city with null or empty name");
+                        continue;
+                    }
+
+                    // Deduplicate by case-insensitive name
+                    if (cityNames.Contains(cc.name))
+                    {
+                        LWarn($"Duplicate city name '{cc.name}' found, skipping");
+                        continue;
+                    }
+                    cityNames.Add(cc.name);
+
+                    var city = new TravelButtonMod.City(cc.name);
+                    
+                    // Set metadata from JSON
+                    city.coords = cc.coords;
+                    city.targetGameObjectName = cc.targetGameObjectName;
+                    city.sceneName = cc.sceneName;
+                    
+                    // Note: TravelButtonMod.City doesn't have a desc field in current implementation
+                    // If it did, we would set it here: city.desc = cc.desc;
+
+                    // IMPORTANT: Set price from JSON to seed BepInEx binding, but mark as needing config
+                    // The actual runtime value will be set by EnsureBepInExConfigBindings
+                    city.price = cc.price; // Use JSON price as seed for Config.Bind default value
+                    city.enabled = false;   // BepInEx will set this from config
+
+                    citiesList.Add(city);
+                }
+                catch (Exception ex)
+                {
+                    LWarn($"Error mapping city '{cc?.name ?? "(null)"}': {ex.Message}");
+                }
+            }
+
+            if (citiesList.Count > 0)
+            {
+                TravelButtonMod.Cities = citiesList;
+                LInfo($"Successfully loaded and mapped {citiesList.Count} cities from {foundPath}");
+            }
+            else
+            {
+                LWarn("No cities were successfully mapped from TravelButton_Cities.json");
             }
         }
         catch (Exception ex)
@@ -593,28 +574,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                 string section = "TravelButton.Cities";
                 
-                // For enabled: default is false (city.enabled was set to false by loader)
-                // If BepInEx config already exists, it will use that value; otherwise false
-                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", city.enabled, $"Enable teleport destination {city.name}");
-                
-                // For price: use JSON-provided price if available, otherwise global default
-                // city.price was set from JSON by the loader, or null if not specified
+                // Use city.price from JSON as seed for Config.Bind default value if available
                 var priceDefault = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+                var enabledDefault = city.enabled; // Should be false from JSON loading
+                
+                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
                 var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefault, $"Price to teleport to {city.name} (overrides global)");
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
 
-                // Log for auditability: which source provided the initial value
-                bool enabledFromBepInEx = enabledKey.Value != city.enabled;
-                bool priceFromBepInEx = city.price.HasValue && priceKey.Value != city.price.Value;
+                // Log source of values: JSON-seed vs BepInEx config
+                bool priceFromJson = city.price.HasValue && city.price.Value == priceDefault;
+                string priceSource = priceFromJson ? "JSON-seed" : "BepInEx";
+                string enabledSource = enabledKey.Value == enabledDefault ? "default" : "BepInEx";
                 
-                string enabledSource = enabledFromBepInEx ? "BepInEx config" : "default (false)";
-                string priceSource = priceFromBepInEx ? "BepInEx config" : (city.price.HasValue ? "JSON" : "global default");
-                
-                TBLog.Info($"Binding city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource})");
+                TBLog.Info($"City '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource})");
 
-                // Sync config values into runtime city object
+                // Sync config values into runtime city object (BepInEx is authoritative)
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
                 
@@ -651,14 +628,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 if (bex_cityEnabled.ContainsKey(city.name)) continue;
                 string section = "TravelButton.Cities";
-                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", city.enabled, $"Enable teleport destination {city.name}");
+                
                 var priceDefault = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+                var enabledDefault = city.enabled;
+                
+                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
                 var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefault, $"Price to teleport to {city.name} (overrides global)");
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
 
-                // sync initial runtime
+                // Log source of values
+                bool priceFromJson = city.price.HasValue && city.price.Value == priceDefault;
+                string priceSource = priceFromJson ? "JSON-seed" : "BepInEx";
+                string enabledSource = enabledKey.Value == enabledDefault ? "default" : "BepInEx";
+                
+                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource})");
+
+                // sync initial runtime (BepInEx is authoritative)
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
 

@@ -7,7 +7,7 @@ using UnityEngine.UI;
 /// <summary>
 /// TravelDialog: lists configured cities and initiates teleport+post-charge flow.
 /// Behavior:
-///  - Shows all cities from ConfigManager.Config
+///  - Shows all cities from TravelButtonMod.Cities
 ///  - City button is interactable only when (visited OR enabled in config) AND coords/target exist
 ///  - On click: if detected player money is known and insufficient -> show "not enough resources to travel"
 ///            otherwise start teleport coroutine (TeleportHelpersBehaviour) and AFTER successful teleport attempt to deduct currency
@@ -118,12 +118,18 @@ public class TravelDialog : MonoBehaviour
         // clear previous
         foreach (Transform t in content) Destroy(t.gameObject);
 
-        var cfg = ConfigManager.Config;
-        // create one entry per configured city (dictionary preserves names)
-        foreach (var kv in cfg.cities)
+        var cities = TravelButtonMod.Cities;
+        if (cities == null || cities.Count == 0)
         {
-            var cityName = kv.Key;
-            var cityCfg = kv.Value;
+            TBLog.Warn("TravelDialog.RefreshList: no cities available");
+            return;
+        }
+
+        // create one entry per configured city
+        foreach (var city in cities)
+        {
+            if (city == null) continue;
+            var cityName = city.name;
 
             var itemGO = new GameObject("CityItem_" + cityName);
             itemGO.transform.SetParent(content, false);
@@ -150,7 +156,7 @@ public class TravelDialog : MonoBehaviour
             var priceGO = new GameObject("Price");
             priceGO.transform.SetParent(itemGO.transform, false);
             var ptxt = priceGO.AddComponent<Text>();
-            var priceToShow = cityCfg.price ?? cfg.globalTeleportPrice;
+            var priceToShow = city.price ?? TravelButtonMod.cfgTravelCost.Value;
             ptxt.text = priceToShow.ToString();
             ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             ptxt.color = Color.black;
@@ -162,12 +168,12 @@ public class TravelDialog : MonoBehaviour
             pRect.offsetMax = new Vector2(-10, 0);
 
             bool visited = VisitedTracker.HasVisited(cityName);
-            bool allowedByConfig = cityCfg.enabled;
-            bool coordsAvailable = cityCfg.coords != null && cityCfg.coords.Length >= 3;
+            bool allowedByConfig = city.enabled;
+            bool coordsAvailable = city.coords != null && city.coords.Length >= 3;
             bool targetGOAvailable = false;
-            if (!coordsAvailable && !string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+            if (!coordsAvailable && !string.IsNullOrEmpty(city.targetGameObjectName))
             {
-                var tg = GameObject.Find(cityCfg.targetGameObjectName);
+                var tg = GameObject.Find(city.targetGameObjectName);
                 targetGOAvailable = tg != null;
             }
 
@@ -207,21 +213,25 @@ public class TravelDialog : MonoBehaviour
 
     private void OnCityClicked(string cityName)
     {
-        var cfg = ConfigManager.Config;
-        if (!cfg.cities.ContainsKey(cityName)) return;
-        var cityCfg = cfg.cities[cityName];
-        int price = cityCfg.price ?? cfg.globalTeleportPrice;
+        var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+        if (city == null)
+        {
+            ShowMessage($"City {cityName} not found.");
+            return;
+        }
+        
+        int price = city.price ?? TravelButtonMod.cfgTravelCost.Value;
 
-        if ((cityCfg.coords == null || cityCfg.coords.Length < 3) && string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+        if ((city.coords == null || city.coords.Length < 3) && string.IsNullOrEmpty(city.targetGameObjectName))
         {
             ShowMessage($"Location for {cityName} is not configured.");
             return;
         }
 
-        if (!string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+        if (!string.IsNullOrEmpty(city.targetGameObjectName))
         {
-            var tg = GameObject.Find(cityCfg.targetGameObjectName);
-            if (tg == null && (cityCfg.coords == null || cityCfg.coords.Length < 3))
+            var tg = GameObject.Find(city.targetGameObjectName);
+            if (tg == null && (city.coords == null || city.coords.Length < 3))
             {
                 ShowMessage($"Location for {cityName} is not configured.");
                 return;
@@ -240,15 +250,15 @@ public class TravelDialog : MonoBehaviour
         var stub = new CityStub
         {
             name = cityName,
-            coords = cityCfg.coords,
-            targetGameObjectName = cityCfg.targetGameObjectName
+            coords = city.coords,
+            targetGameObjectName = city.targetGameObjectName
         };
 
         // Use TeleportHelpersBehaviour to perform the teleport coroutine (it accepts object and uses reflection)
         TeleportHelpersBehaviour host = TeleportHelpersBehaviour.GetOrCreateHost();
-        Vector3 hint = (cityCfg.coords != null && cityCfg.coords.Length >= 3) ? new Vector3(cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2]) : Vector3.zero;
+        Vector3 hint = (city.coords != null && city.coords.Length >= 3) ? new Vector3(city.coords[0], city.coords[1], city.coords[2]) : Vector3.zero;
 
-        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, cityCfg.coords != null && cityCfg.coords.Length >= 3, success =>
+        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, city.coords != null && city.coords.Length >= 3, success =>
         {
             if (success)
             {
@@ -256,10 +266,11 @@ public class TravelDialog : MonoBehaviour
                 try { VisitedTracker.MarkVisited(cityName); } catch { }
 
                 // attempt to deduct using reflection heuristics and the configured currency item name
-                bool charged = AttemptDeductAfterTeleport(price, cfg.currencyItem);
+                string currencyItem = TravelButtonMod.cfgCurrencyItem.Value;
+                bool charged = AttemptDeductAfterTeleport(price, currencyItem);
                 if (!charged)
                 {
-                    ShowMessage($"Teleported to {cityName} (failed to charge {price} {cfg.currencyItem})");
+                    ShowMessage($"Teleported to {cityName} (failed to charge {price} {currencyItem})");
                 }
                 else
                 {
@@ -282,7 +293,7 @@ public class TravelDialog : MonoBehaviour
     }
 
     // Attempt to deduct currency after a successful teleport.
-    // Uses reflection heuristics; `currencyItemName` is taken from ConfigManager.Config.currencyItem.
+    // Uses reflection heuristics; `currencyItemName` is taken from TravelButtonMod.cfgCurrencyItem.Value.
     private bool AttemptDeductAfterTeleport(int amount, string currencyItemName)
     {
         try

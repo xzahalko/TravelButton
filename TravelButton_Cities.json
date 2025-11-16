@@ -6,51 +6,51 @@
   "cities": [
     {
       "name": "Cierzo",
+      "price": 200,
       "coords": [1410.388, 6.786, 1665.642],
       "targetGameObjectName": "Cierzo",
       "sceneName": "CierzoNewTerrain",
-      "desc": "Cierzo - example description",
-      "price": 200
+      "desc": "Cierzo - example description"
     },
     {
       "name": "Levant",
+      "price": 200,
       "coords": [-55.212, 1.056, 79.379],
       "targetGameObjectName": "WarpLocation_HM",
       "sceneName": "Levant",
-      "desc": "Levant - example description",
-      "price": 200
+      "desc": "Levant - example description"
     },
     {
       "name": "Monsoon",
+      "price": 200,
       "coords": [61.553, -3.743, 167.599],
       "targetGameObjectName": "Monsoon_Location",
       "sceneName": "Monsoon",
-      "desc": "Monsoon - example description",
-      "price": 200
+      "desc": "Monsoon - example description"
     },
     {
       "name": "Berg",
+      "price": 200,
       "coords": [1202.414, -13.071, 1378.836],
       "targetGameObjectName": "Berg",
       "sceneName": "Berg",
-      "desc": "Berg - example description",
-      "price": 200
+      "desc": "Berg - example description"
     },
     {
       "name": "Harmattan",
+      "price": 200,
       "coords": [93.757, 65.474, 767.849],
       "targetGameObjectName": "Harmattan_Location",
       "sceneName": "Harmattan",
-      "desc": "Harmattan - example description",
-      "price": 200
+      "desc": "Harmattan - example description"
     },
     {
       "name": "Sirocco",
+      "price": 200,
       "coords": [600.0, 1.2, -300.0],
       "targetGameObjectName": "Sirocco_Location",
       "sceneName": "NewSirocco",
-      "desc": "Sirocco - example description",
-      "price": 200
+      "desc": "Sirocco - example description"
     }
   ]
 }
