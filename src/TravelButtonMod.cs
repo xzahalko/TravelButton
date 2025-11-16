@@ -61,6 +61,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
             void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
 
+            // Build candidate paths list
             var candidatePaths = new List<string>();
 
             // Common BepInEx config location (preferred for writing defaults)
@@ -68,7 +69,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
                 candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
             }
             catch { }
 
@@ -81,7 +81,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            // Current working directory
+            // 3. Current working directory
             try
             {
                 candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json"));
@@ -120,6 +120,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // De-duplicate and find existing file
             var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string foundPath = null;
+            TravelConfig travelConfig = null;
+
             foreach (var p in candidatePaths)
             {
                 if (string.IsNullOrEmpty(p)) continue;
@@ -129,10 +131,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 tried.Add(full);
                 try
                 {
-                    if (File.Exists(full))
+                    travelConfig = TravelConfig.LoadFromFile(full);
+                    if (travelConfig != null)
                     {
-                        foundPath = full;
-                        break;
+                        jsonConfig = JsonTravelConfig.Default();
                     }
                 }
                 catch { }
@@ -539,6 +541,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 // BepInEx config is authoritative: assign ConfigEntry values to runtime city object
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
+                
+                TBLog.Info($"City '{city.name}': enabled={city.enabled} (from BepInEx config), price={city.price} (from BepInEx config)");
 
                 // Log whether values were seeded from JSON or provided by BepInEx
                 if (hasJsonPrice && priceKey.Value == priceDefaultValue)
@@ -585,14 +589,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 if (bex_cityEnabled.ContainsKey(city.name)) continue;
                 string section = "TravelButton.Cities";
-                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", city.enabled, $"Enable teleport destination {city.name}");
+                
                 var priceDefault = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+                var enabledDefault = city.enabled;
+                
+                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
                 var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefault, $"Price to teleport to {city.name} (overrides global)");
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
 
-                // sync initial runtime
+                // Log source of values
+                bool priceFromJson = city.price.HasValue && city.price.Value == priceDefault;
+                string priceSource = priceFromJson ? "JSON-seed" : "BepInEx";
+                string enabledSource = enabledKey.Value == enabledDefault ? "default" : "BepInEx";
+                
+                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource})");
+
+                // sync initial runtime (BepInEx is authoritative)
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
 
