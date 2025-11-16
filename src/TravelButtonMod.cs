@@ -23,7 +23,7 @@ using UnityEngine.UI;
 // - Provides City model used by TravelButtonUI and helpers to map/persist configuration.
 // - Adds diagnostics helpers DumpTravelButtonState and ForceShowTravelButton for runtime inspection.
 //
-[BepInPlugin("com.xzahalko.travelbutton", "TravelButton", "1.0.0")]
+[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.0.0")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
 
