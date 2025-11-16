@@ -2319,8 +2319,8 @@ public class TravelButtonUI : MonoBehaviour
         Vector3 before = (playerRoot != null) ? playerRoot.transform.position : Vector3.zero;
         TBLog.Info($"OpenTravelDialog: hrac pozice: ({before.x:F3}, {before.y:F3}, {before.z:F3})");
 
-                InventoryHelpers.SafeAddSilverToPlayer(100);
-                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 1);
+//                InventoryHelpers.SafeAddSilverToPlayer(100);
+//                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 1);
 //        var rescuePos = new Vector3(1204.881f, -12.5f, 1372.639f);
 //        TeleportHelpers.AttemptTeleportToPositionSafe(rescuePos);
 
@@ -2872,6 +2872,81 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
+    public static void RebuildTravelDialog()
+    {
+        try
+        {
+            var inst = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+            if (inst == null) return;
+
+            var t = inst.GetType();
+
+            // 1) Find a likely dialog root field and destroy it if present
+            string[] dialogFieldNames = new[] { "dialogRoot", "travelDialogGameObject", "dialog", "travelDialog", "dialogGameObject" };
+            foreach (var fieldName in dialogFieldNames)
+            {
+                var f = t.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null && typeof(GameObject).IsAssignableFrom(f.FieldType))
+                {
+                    try
+                    {
+                        var go = f.GetValue(inst) as GameObject;
+                        if (go != null)
+                        {
+                            // Destroy the old UI so it will be recreated fresh
+                            GameObject.Destroy(go);
+                            // clear the field so the UI code thinks it needs to recreate
+                            f.SetValue(inst, null);
+                            break;
+                        }
+                    }
+                    catch { /* continue trying other names */ }
+                }
+            }
+
+            // 2) Invoke a known build/open method to recreate the dialog
+            string[] openMethodNames = new[] { "BuildDialog", "BuildDialogContents", "OpenDialog", "ShowDialog", "Open", "Show" };
+            foreach (var name in openMethodNames)
+            {
+                var m = t.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (m != null && m.GetParameters().Length == 0)
+                {
+                    try
+                    {
+                        m.Invoke(inst, null);
+                        return;
+                    }
+                    catch { /* try next */ }
+                }
+            }
+
+            // 3) If no explicit open/build, try toggling likely dialog GameObject fields to force the UI to recreate on next access
+            foreach (var fieldName in dialogFieldNames)
+            {
+                var f = t.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null && typeof(GameObject).IsAssignableFrom(f.FieldType))
+                {
+                    try
+                    {
+                        var go = f.GetValue(inst) as GameObject;
+                        if (go != null)
+                        {
+                            bool was = go.activeSelf;
+                            go.SetActive(false);
+                            go.SetActive(was);
+                            return;
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            try { TBLog.Warn("TravelButtonUIRebuilder.RebuildDialog failed: " + ex.Message); } catch { Debug.LogWarning("[TravelButton] TravelButtonUIRebuilder.RebuildDialog failed: " + ex); }
+        }
+    }
+
     // Best-effort player position probe used for debug logging
     private bool TryGetPlayerPosition(out Vector3 outPos)
     {
@@ -3211,8 +3286,32 @@ public class TravelButtonUI : MonoBehaviour
     /// </summary>
 
     // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
+    // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
+        // Charge first (real deduction). If charging fails, abort the teleport.
+        try
+        {
+            if (cost > 0)
+            {
+                TBLog.Info($"LoadSceneAndTeleportCoroutine(wrapper): attempting to charge {cost} silver before teleport.");
+                // Use justSimulate = false to perform the real deduction.
+                bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                if (!charged)
+                {
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine(wrapper): payment of {cost} failed; aborting teleport.");
+                    try { TravelButtonPlugin.ShowPlayerNotification?.Invoke($"Could not charge {cost} silver. Teleport cancelled."); } catch { }
+                    yield break;
+                }
+                TBLog.Info($"LoadSceneAndTeleportCoroutine(wrapper): charged {cost} silver; continuing with teleport.");
+            }
+        }
+        catch (Exception exCharge)
+        {
+            TBLog.Warn("LoadSceneAndTeleportCoroutine(wrapper): charge attempt threw: " + exCharge);
+            yield break;
+        }
+
         if (haveCoordsHint && cityObj != null)
         {
             try
@@ -3254,13 +3353,10 @@ public class TravelButtonUI : MonoBehaviour
         }
         TBLog.Info($"LoadSceneAndTeleportCoroutine: scene '{sceneName}' reached ready-to-activate (progress={loadOp.progress:F2}).");
 
-        // Disable visible rendering via fade-in overlay and ensure at least one rendered frame of the overlay exists
-        // so the GPU has drawn the black frame before scene activation.
-        // Fade-in: obtain enumerator inside try/catch but perform the actual yield outside it
+        // Fade-in overlay: obtain enumerator inside try/catch but perform the actual yield outside it
         IEnumerator fadeInEnumerator = null;
         try
         {
-            // This should not throw normally; we only catch in case Instance creation throws
             fadeInEnumerator = FadeOverlay.Instance.FadeIn(0.12f);
         }
         catch (Exception exFade)
@@ -3272,9 +3368,7 @@ public class TravelButtonUI : MonoBehaviour
 
         if (fadeInEnumerator != null)
         {
-            // perform the yield outside of any try/catch that would include a catch block
             yield return StartCoroutine(fadeInEnumerator);
-
             // guarantee a frame rendered with the overlay visible
             yield return null;
             yield return new WaitForEndOfFrame();
@@ -3286,29 +3380,20 @@ public class TravelButtonUI : MonoBehaviour
             yield return new WaitForEndOfFrame();
         }
 
-        // We'll collect camera states primarily for safety; overlay already hides visuals.
+        // Collect camera states for restoration later (overlay hides visuals)
         Camera[] allCams = null;
         var camStates = new List<(Camera cam, bool enabled)>();
-        try
-        {
-            allCams = Camera.allCameras;
-        }
-        catch { allCams = new Camera[0]; }
+        try { allCams = Camera.allCameras; } catch { allCams = new Camera[0]; }
 
         foreach (var cam in allCams)
         {
             if (cam == null) continue;
-            try
-            {
-                camStates.Add((cam, cam.enabled));
-                // we won't disable cameras here because overlay hides visuals; we keep states to restore later
-            }
-            catch { }
+            try { camStates.Add((cam, cam.enabled)); } catch { }
         }
 
-        // We'll ensure final cleanup (restoring cameras/components and running FadeOut) in a finally outside the scene activation/teleport try,
-        // so overlay is always removed even on error. Do not yield inside finally.
+        // Ensure final cleanup in finally (no yields inside finally)
         bool teleportAttempted = false;
+        string displayName = null;
         try
         {
             // Activate the scene while overlay is up (prevents user from seeing default spawn)
@@ -3320,7 +3405,7 @@ public class TravelButtonUI : MonoBehaviour
 
             TBLog.Info($"LoadSceneAndTeleportCoroutine: requested='{sceneName}', loaded.name='{SceneManager.GetActiveScene().name}', isLoaded={SceneManager.GetActiveScene().isLoaded}, isActive={SceneManager.GetActiveScene() == SceneManager.GetActiveScene()}");
 
-            // Small single frame to let scene objects instantiate (we keep overlay up until after teleport)
+            // Small single frame to let scene objects instantiate (overlay still visible)
             yield return null;
 
             // compute finalPos: prefer anchor GameObject if present
@@ -3348,8 +3433,8 @@ public class TravelButtonUI : MonoBehaviour
             }
 
             // displayName for logs
-            string displayName = TryGetStringFieldOrProp(cityObj, new string[] { "name", "Name", "cityName", "CityName" })
-                                 ?? (!string.IsNullOrEmpty(targetGameObjectName) ? targetGameObjectName : sceneName);
+            displayName = TryGetStringFieldOrProp(cityObj, new string[] { "name", "Name", "cityName", "CityName" })
+                          ?? (!string.IsNullOrEmpty(targetGameObjectName) ? targetGameObjectName : sceneName);
 
             // If anchor exists, teleport to it. Otherwise run immediate-probe -> fallback settle-probe logic.
             if (anchor != null)
@@ -3375,7 +3460,6 @@ public class TravelButtonUI : MonoBehaviour
                     outSafe = raw;
                     try
                     {
-                        // 1) quick raycast-from-above (may succeed immediately)
                         RaycastHit hit;
                         Vector3 origin = new Vector3(raw.x, raw.y + 200f, raw.z);
                         if (Physics.Raycast(origin, Vector3.down, out hit, 1000f, ~0, QueryTriggerInteraction.Ignore))
@@ -3385,7 +3469,6 @@ public class TravelButtonUI : MonoBehaviour
                             return true;
                         }
 
-                        // 2) try NavMesh-based fallback
                         if (TeleportHelpers.TryFindNearestNavMeshOrGround(raw, out Vector3 nmSafe, navSearchRadius: 15f, maxGroundRay: 400f))
                         {
                             outSafe = nmSafe;
@@ -3560,11 +3643,9 @@ public class TravelButtonUI : MonoBehaviour
         }
 
         // Fade out overlay now (we are outside finally and can yield). If FadeOut fails, ensure overlay is hidden.
-        // Safe FadeOut: prepare enumerator inside try/catch, but yield it outside (no yields inside try/catch)
         IEnumerator fadeOutEnum = null;
         try
         {
-            // Try to create the FadeOut coroutine enumerator (this shouldn't usually throw).
             fadeOutEnum = FadeOverlay.Instance.FadeOut(0.12f);
         }
         catch (Exception exFadeOutInit)
@@ -3573,14 +3654,12 @@ public class TravelButtonUI : MonoBehaviour
             try { FadeOverlay.Instance.HideInstant(); } catch { }
         }
 
-        // Now yield the fade-out outside of any try/catch that contains yields
         if (fadeOutEnum != null)
         {
             yield return StartCoroutine(fadeOutEnum);
         }
         else
         {
-            // Nothing to yield, ensure overlay hidden and give one frame
             try { FadeOverlay.Instance.HideInstant(); } catch { }
             yield return null;
         }

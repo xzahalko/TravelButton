@@ -1,7 +1,3 @@
-// TravelButton_Cities.json
-// Schema: { "cities": [ { "name": "...", "coords": [x,y,z], "targetGameObjectName": "...", "sceneName": "...", "desc": "..." }, ... ] }
-// Note: 'enabled' and 'price' are managed by BepInEx config, not this file.
-
 {
   "cities": [
     {
@@ -16,7 +12,7 @@
       "name": "Levant",
       "price": 200,
       "coords": [-55.212, 1.056, 79.379],
-      "targetGameObjectName": "WarpLocation_HM",
+      "targetGameObjectName": "Levant_Location",
       "sceneName": "Levant",
       "desc": "Levant - example description"
     },
@@ -47,7 +43,7 @@
     {
       "name": "Sirocco",
       "price": 200,
-      "coords": [600.0, 1.2, -300.0],
+      "coords": [62.530, 56.805, -54.049],
       "targetGameObjectName": "Sirocco_Location",
       "sceneName": "NewSirocco",
       "desc": "Sirocco - example description"

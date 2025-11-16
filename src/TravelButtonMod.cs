@@ -21,7 +21,7 @@ using UnityEngine.UI;
 // - Provides City model used by TravelButtonUI and helpers to map/persist configuration.
 // - Adds diagnostics helpers DumpTravelButtonState and ForceShowTravelButton for runtime inspection.
 //
-[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.0.0")]
+[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.0.1")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
 
@@ -39,6 +39,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
     public static ManualLogSource LogSource { get; private set; }
     private const string Prefix = "[TravelButton] ";
 
+    private DateTime _lastConfigChange = DateTime.MinValue;
+
     public static void Initialize(ManualLogSource manualLogSource)
     {
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
@@ -53,6 +55,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     /// enabled=false so EnsureBepInExConfigBindings will create BepInEx config bindings and populate runtime values.
     /// Deduplicates cities by case-insensitive name.
     /// </summary>
+    // Replace the existing TryLoadCitiesJsonIntoTravelButtonMod method body with this corrected implementation.
     private static void TryLoadCitiesJsonIntoTravelButtonMod()
     {
         try
@@ -61,18 +64,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
             void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
             void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
 
-            // Build candidate paths list
             var candidatePaths = new List<string>();
 
-            // Common BepInEx config location (preferred for writing defaults)
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
                 candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
             }
             catch { }
 
-            // Assembly location (same folder as plugin DLL)
             try
             {
                 var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
@@ -81,22 +82,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            // 3. Current working directory
-            try
-            {
-                candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json"));
-            }
-            catch { }
+            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
 
-            // Unity data path (best-effort; may not be available at startup)
-            try
-            {
-                if (!string.IsNullOrEmpty(Application.dataPath))
-                    candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json"));
-            }
-            catch { }
-
-            // BepInEx config folder from helper (if available)
             try
             {
                 var cfgPath = TravelButtonMod.ConfigFilePath;
@@ -104,23 +92,17 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     var dir = cfgPath;
                     try { if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath); } catch { }
-                    if (!string.IsNullOrEmpty(dir))
-                        candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
                 }
             }
             catch { }
 
-            // Repository root (for development/maintainers)
-            try
-            {
-                candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json"));
-            }
-            catch { }
+            try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
 
-            // De-duplicate and find existing file
-            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Find first candidate that exists and parses successfully
             string foundPath = null;
-            TravelConfig travelConfig = null;
+            TravelConfig loaded = null;
+            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var p in candidatePaths)
             {
@@ -129,31 +111,38 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 try { full = Path.GetFullPath(p); } catch { full = p; }
                 if (tried.Contains(full)) continue;
                 tried.Add(full);
+
                 try
                 {
-                    travelConfig = TravelConfig.LoadFromFile(full);
-                    if (travelConfig != null)
+                    if (!File.Exists(full)) continue;
+                    var cfg = TravelConfig.LoadFromFile(full);
+                    if (cfg != null)
                     {
-                        jsonConfig = JsonTravelConfig.Default();
+                        foundPath = full;
+                        loaded = cfg;
+                        break;
+                    }
+                    else
+                    {
+                        LWarn($"TravelButton_Cities.json present at {full} but parsing failed.");
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    LWarn($"Error while attempting to load TravelButton_Cities.json at {full}: {ex.Message}");
+                }
             }
 
-            TravelConfig loaded = null;
             if (!string.IsNullOrEmpty(foundPath))
             {
-                LInfo("Found TravelButton_Cities.json at: " + foundPath);
-                loaded = TravelConfig.LoadFromFile(foundPath);
-                if (loaded == null)
-                    LWarn("TravelButton_Cities.json found but parsing failed via TravelConfig.LoadFromFile (file may be malformed).");
+                LInfo("Found and parsed TravelButton_Cities.json at: " + foundPath);
             }
             else
             {
-                LInfo("No TravelButton_Cities.json found in candidate locations.");
+                LInfo("No valid TravelButton_Cities.json found in candidate locations.");
             }
 
-            // If file missing or unparsable, create default
+            // If not found or parsing failed, create default file at preferred candidate path
             if (loaded == null)
             {
                 var defaults = TravelConfig.Default();
@@ -163,8 +152,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     if (defaults.SaveToFile(writePath))
                     {
                         LInfo("Wrote default TravelButton_Cities.json to: " + writePath);
-                        foundPath = writePath;
                         loaded = defaults;
+                        foundPath = writePath;
                     }
                     else
                     {
@@ -177,44 +166,30 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 }
             }
 
-            // Map CityConfig entries into TravelButtonMod.City instances
+            // Map CityConfig entries into TravelButtonMod.City instances (metadata only)
             if (loaded != null && loaded.cities != null)
             {
-                // Use dictionary for deduplication by case-insensitive city name
                 var map = new Dictionary<string, TravelButtonMod.City>(StringComparer.OrdinalIgnoreCase);
                 foreach (var cc in loaded.cities)
                 {
                     try
                     {
                         if (string.IsNullOrWhiteSpace(cc.name)) continue;
-
                         var c = new TravelButtonMod.City(cc.name);
-                        
-                        // Set metadata fields from JSON
+
                         if (cc.coords != null && cc.coords.Length >= 3)
                             c.coords = new float[] { cc.coords[0], cc.coords[1], cc.coords[2] };
-                        
+
                         c.targetGameObjectName = cc.targetGameObjectName;
                         c.sceneName = cc.sceneName;
 
-                        // Store JSON price temporarily for optional seeding in EnsureBepInExConfigBindings
-                        // We'll use a temporary field to pass this through
-                        if (cc.price.HasValue)
-                        {
-                            // Store the JSON price so EnsureBepInExConfigBindings can optionally seed it
-                            c.price = cc.price.Value;
-                        }
-                        else
-                        {
-                            // No JSON price - BepInEx will create binding with global default
-                            c.price = null;
-                        }
+                        // If JSON provides a price, set city.price so we can seed the Config.Bind default.
+                        // BepInEx remains authoritative: EnsureBepInExConfigBindings will overwrite with the actual Config value.
+                        c.price = cc.price.HasValue ? cc.price.Value : (int?)null;
 
-                        // DO NOT set enabled from JSON - BepInEx config is authoritative
-                        // Always initialize to false so EnsureBepInExConfigBindings creates the binding
+                        // Do not set enabled from JSON; keep BepInEx authoritative.
                         c.enabled = false;
 
-                        // Deduplicate by name (case-insensitive)
                         map[c.name] = c;
                     }
                     catch (Exception ex)
@@ -226,7 +201,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 if (map.Count > 0)
                 {
                     TravelButtonMod.Cities = new List<TravelButtonMod.City>(map.Values);
-                    LInfo($"Loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json (metadata only; BepInEx config will control enabled/price).");
+                    LInfo($"Loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
                 }
                 else
                 {
@@ -288,7 +263,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = true;
+        DebugConfig.IsDebug = false;
 
         try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
         }
@@ -350,6 +325,41 @@ public class TravelButtonPlugin : BaseUnityPlugin
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("TravelButtonPlugin.Awake exception: " + ex);
+        }
+
+        try
+        {
+            // existing initialization (logger, config, etc.)
+            // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
+            EnsureBepInExConfigBindings();
+
+            // start the file watcher so external edits to the config file are detected
+            StartConfigWatcher();
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("Awake initialization failed: " + ex);
+        }
+
+        ShowPlayerNotification = (msg) =>
+        {
+            // enqueue to main thread if required; Show uses Unity main thread anyway
+            TravelButtonNotificationUI.Show(msg, 3f);
+        };
+    }
+
+    // Add OnDestroy to clean up the watcher and any resources:
+    private void OnDestroy()
+    {
+        try
+        {
+            StopConfigWatcher();
+
+            // other cleanup if necessary (e.g., persist, unsubscribe)
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OnDestroy cleanup failed: " + ex);
         }
     }
 
@@ -429,6 +439,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
         EnsureTravelButtonUI();
     }
 
+    public static Action<string> ShowPlayerNotification = (msg) =>
+    {
+        try { TBLog.Info($"[TravelButton][Notification] {msg}"); }
+        catch { UnityEngine.Debug.Log("[TravelButton][Notification] " + msg); }
+    };
+
     public static void LogCitySceneName(string cityName)
     {
         try
@@ -481,6 +497,132 @@ public class TravelButtonPlugin : BaseUnityPlugin
     }
 
     // --- BepInEx config binding helpers ---
+    private FileSystemWatcher configWatcher;
+
+    private void StartConfigWatcher()
+    {
+        try
+        {
+            var configPath = ConfigManager.ConfigPathForLog();
+            var file = Path.GetFileName(configPath);
+            var dir = Path.GetDirectoryName(configPath);
+            if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(file)) return;
+
+            configWatcher = new FileSystemWatcher(dir, file);
+            configWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
+            configWatcher.Changed += (s, e) =>
+            {
+                MainThreadQueue.Enqueue(() =>
+                {
+                    try
+                    {
+                        // Re-apply binding values from Config (BepInEx entries).
+                        // Call the instance method - StartConfigWatcher is an instance method, so EnsureBepInExConfigBindings() is callable here.
+                        EnsureBepInExConfigBindings();
+
+                        // Refresh UI via the static helper
+                        RefreshUI();
+
+                        TBLog.Info("Config file changed on disk; UI refreshed.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("Config watcher callback failed: " + ex);
+                    }
+                });
+            };
+            configWatcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex) { TBLog.Warn("StartConfigWatcher failed: " + ex.Message); }
+    }
+
+    // Named handler that runs when the file changes.
+    // FileSystemWatcher callbacks are on a background thread so marshal to main thread.
+    private void ConfigWatcher_Changed(object sender, FileSystemEventArgs e)
+    {
+        try
+        {
+            // Debounce: ignore very rapid repeated events (optional)
+            var now = DateTime.UtcNow;
+            if ((now - _lastConfigChange).TotalMilliseconds < 150) return;
+            _lastConfigChange = now;
+
+            MainThreadQueue.Enqueue(() =>
+            {
+                try
+                {
+                    // Ensure binds exist (if startup hasn't created them)
+                    if (bex_cityPrice.Count == 0 || bex_cityEnabled.Count == 0)
+                    {
+                        EnsureBepInExConfigBindings();
+                    }
+
+                    // Reload the BepInEx config from disk so ConfigEntry.Value picks up external edits
+                    try
+                    {
+                        Config.Reload();
+                        TBLog.Info("[TravelButton] Reloaded BepInEx config from disk.");
+                    }
+                    catch (Exception rex)
+                    {
+                        TBLog.Warn("[TravelButton] Config.Reload() failed: " + rex.Message);
+                    }
+
+                    // Update runtime city objects from the current ConfigEntry values
+                    if (TravelButtonMod.Cities != null)
+                    {
+                        foreach (var city in TravelButtonMod.Cities)
+                        {
+                            if (bex_cityEnabled.TryGetValue(city.name, out var enabledEntry))
+                            {
+                                city.enabled = enabledEntry.Value;
+                            }
+
+                            if (bex_cityPrice.TryGetValue(city.name, out var priceEntry))
+                            {
+                                city.price = priceEntry.Value;
+                            }
+
+                            // If you persist cities to a file after changes, avoid doing that here repeatedly
+                            // TravelButtonMod.PersistCitiesToConfig();
+                        }
+                    }
+
+                    // Refresh UI so dialogs reflect the new prices immediately
+                    RefreshUI();
+
+                    TBLog.Info($"[TravelButton] Config file changed on disk ({e.FullPath}); runtime values and UI refreshed.");
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("[TravelButton] ConfigWatcher_Changed (main-thread) failed: " + ex);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ConfigWatcher_Changed (background) failed: " + ex);
+        }
+    }
+
+    // Add StopConfigWatcher to dispose the watcher (if you don't already have it):
+    private void StopConfigWatcher()
+    {
+        try
+        {
+            if (configWatcher != null)
+            {
+                configWatcher.EnableRaisingEvents = false;
+                configWatcher.Changed -= ConfigWatcher_Changed; // if you used a named handler
+                configWatcher.Dispose();
+                configWatcher = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("StopConfigWatcher failed: " + ex);
+        }
+    }
 
     // Create top-level and per-city BepInEx Config.Bind entries and wire change handlers.
     // Call this once after TravelButtonMod.Cities is populated (InitFromConfig success or fallback).
@@ -524,11 +666,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 if (bex_cityEnabled.ContainsKey(city.name)) continue;
 
                 string section = "TravelButton.Cities";
-                
+
                 // For enabled: always default to false (cities start disabled until user enables them)
                 // BepInEx config is authoritative
-                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", false, $"Enable teleport destination {city.name}");
-                
+                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", true, $"Enable teleport destination {city.name}");
+
                 // For price: if JSON provided a price, use it as the default seed for new config entries
                 // Otherwise use global travel cost as default
                 bool hasJsonPrice = city.price.HasValue;
@@ -541,7 +683,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 // BepInEx config is authoritative: assign ConfigEntry values to runtime city object
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
-                
+
                 TBLog.Info($"City '{city.name}': enabled={city.enabled} (from BepInEx config), price={city.price} (from BepInEx config)");
 
                 // Log whether values were seeded from JSON or provided by BepInEx
@@ -563,18 +705,115 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     city.enabled = enabledKey.Value;
                     TBLog.Info($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
+                    try { TravelButtonUI.RebuildTravelDialog(); } catch { }
                 };
+
                 priceKey.SettingChanged += (s, e) =>
                 {
                     city.price = priceKey.Value;
                     TBLog.Info($"Config changed: {city.name}.Price = {priceKey.Value}");
                     TravelButtonMod.PersistCitiesToConfig();
+                    try { TravelButtonUI.RebuildTravelDialog(); } catch { }
                 };
             }
         }
         catch (Exception ex)
         {
             TBLog.Warn("EnsureBepInExConfigBindings failed: " + ex);
+        }
+    }
+
+    /// <summary>
+    /// Robust Refresh helper for TravelButtonUI that does not require modifying the original class.
+    /// Finds the runtime TravelButtonUI instance and attempts several safe strategies to refresh/rebuild the dialog:
+    ///  - invoke known rebuild/update methods via reflection
+    ///  - call CloseDialog/OpenDialog if present
+    ///  - toggle likely GameObject fields to force a UI refresh
+    ///  - hide/show as a last resort
+    ///
+    /// Use TravelButtonUIRefresh.RefreshUI() from SettingChanged handlers.
+    ///—</summary>
+
+    public static void RefreshUI()
+    {
+        try
+        {
+            var inst = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+            if (inst == null) return;
+
+            var t = inst.GetType();
+
+            // 1) Try common rebuild/update method names
+            string[] rebuildNames = new[]
+            {
+            "RebuildDialog", "BuildDialogContents", "BuildDialog", "RebuildCityList",
+            "RefreshDialog", "UpdateDialog", "RebuildUI", "Rebuild"
+        };
+            foreach (var name in rebuildNames)
+            {
+                var m = t.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (m != null && m.GetParameters().Length == 0)
+                {
+                    try { m.Invoke(inst, null); return; } catch { /* try next */ }
+                }
+            }
+
+            // 2) Try Close/Open sequence if those methods exist
+            var closeMethod = t.GetMethod("CloseDialog", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var openMethod = t.GetMethod("OpenDialog", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (closeMethod != null && openMethod != null)
+            {
+                try
+                {
+                    closeMethod.Invoke(inst, null);
+                    openMethod.Invoke(inst, null);
+                    return;
+                }
+                catch { /* fallthrough */ }
+            }
+
+            // 3) Try toggling likely dialog GameObject fields to force Unity to refresh visuals
+            string[] dialogFieldNames = new[] { "travelDialogGameObject", "dialogRoot", "dialog", "travelDialog", "dialogGameObject" };
+            foreach (var fieldName in dialogFieldNames)
+            {
+                var f = t.GetField(fieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null && typeof(GameObject).IsAssignableFrom(f.FieldType))
+                {
+                    try
+                    {
+                        var go = f.GetValue(inst) as GameObject;
+                        if (go != null)
+                        {
+                            bool wasActive = go.activeSelf;
+                            // toggle to force UI refresh (briefly deactivating/reactivating)
+                            go.SetActive(false);
+                            go.SetActive(wasActive);
+                            return;
+                        }
+                    }
+                    catch { /* continue trying other names */ }
+                }
+            }
+
+            // 4) As a last resort, rebuild the dialog by hide/show if methods exist
+            var hideMethod = t.GetMethod("Hide", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                            ?? t.GetMethod("Close", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var showMethod = t.GetMethod("Show", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                            ?? t.GetMethod("Open", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (hideMethod != null && showMethod != null)
+            {
+                try
+                {
+                    hideMethod.Invoke(inst, null);
+                    showMethod.Invoke(inst, null);
+                    return;
+                }
+                catch { /* give up quietly */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            try { TBLog.Warn("TravelButtonUIRefresh.RefreshUI failed: " + ex.Message); } catch { Debug.LogWarning("[TravelButton] TravelButtonUIRefresh.RefreshUI failed: " + ex); }
         }
     }
 
