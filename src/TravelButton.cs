@@ -425,6 +425,56 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
+    private static void MarkCityVisited(TravelButton.City city, string source)
+    {
+        if (city == null) return;
+        try
+        {
+            // Try direct property/field first (preferred)
+            var ct = city.GetType();
+            var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop != null && prop.PropertyType == typeof(bool) && prop.CanRead && prop.CanWrite)
+            {
+                bool already = false;
+                try { already = (bool)prop.GetValue(city, null); } catch { already = false; }
+                if (!already)
+                {
+                    prop.SetValue(city, true, null);
+                    TravelButton.PersistCitiesToConfig();
+                    TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}).");
+                }
+                return;
+            }
+
+            var field = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field != null && field.FieldType == typeof(bool))
+            {
+                bool already = false;
+                try { already = (bool)field.GetValue(city); } catch { already = false; }
+                if (!already)
+                {
+                    field.SetValue(city, true);
+                    TravelButton.PersistCitiesToConfig();
+                    TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}).");
+                }
+                return;
+            }
+
+            // Fallback: store in plugin set (less ideal)
+            if (s_pluginVisitedNames == null) s_pluginVisitedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!s_pluginVisitedNames.Contains(city.name))
+            {
+                s_pluginVisitedNames.Add(city.name);
+                TravelButtonMod.PersistCitiesToConfig();
+                TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}) (fallback).");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("MarkCityVisited_Simple exception: " + ex.Message);
+        }
+    }
+
     private IEnumerator TryInitConfigCoroutine()
     {
         int maxAttempts = 10;
@@ -1672,6 +1722,8 @@ public static class TravelButton
         // whether city is explicitly enabled in config (default false)
         public bool enabled;
 
+        public bool visited;
+
         public string sceneName;
 
         public City(string name)
@@ -1681,6 +1733,7 @@ public static class TravelButton
             this.targetGameObjectName = null;
             this.price = null;
             this.enabled = false;
+            bool visited = false; 
             this.sceneName = null;
         }
 
@@ -4128,4 +4181,7 @@ public static class TravelButton
             }
         }
     }
+
+    [Serializable]
+    public class CityListWrapper { public List<TravelButton.City> Cities; }
 }
