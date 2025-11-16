@@ -103,6 +103,7 @@ public class JsonTravelConfig
     /// <summary>
     /// Load JsonTravelConfig from JSON file at the specified path.
     /// Returns null if file does not exist or cannot be parsed.
+    /// Strips lines starting with // to allow for documentation comments.
     /// </summary>
     public static JsonTravelConfig LoadFromJson(string path)
     {
@@ -120,10 +121,12 @@ public class JsonTravelConfig
             }
 
             // Remove comment lines (starting with //) before parsing
+            // This is a best-effort approach to allow documentation in JSON files
             var lines = new List<string>();
             foreach (var line in json.Split('\n'))
             {
-                var trimmed = line.Trim();
+                var trimmed = line.TrimStart();
+                // Only remove lines that start with // (not // inside a string value)
                 if (!trimmed.StartsWith("//"))
                 {
                     lines.Add(line);
