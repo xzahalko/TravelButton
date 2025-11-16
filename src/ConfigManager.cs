@@ -9,8 +9,10 @@ using UnityEngine;
 // - Creates default config if missing.
 // - Fills missing cities (from Default()) for backward compatibility.
 // - Exposes the TravelConfig object for other code to use.
+// NOTE: This is a legacy config manager that uses Newtonsoft.Json and dictionary-based cities.
+// The new system uses CityConfig.cs with JsonUtility and array-based cities.
 
-public class CityConfig
+public class LegacyCityConfig
 {
     public bool enabled = false;
     public int? price = null;
@@ -24,12 +26,12 @@ public class CityConfig
     public bool visited = false;
 }
 
-public class TravelConfig
+public class LegacyTravelConfig
 {
     public bool enabled = true;
     public string currencyItem = "Silver";
     public int globalTeleportPrice = 100;
-    public Dictionary<string, CityConfig> cities = new Dictionary<string, CityConfig>();
+    public Dictionary<string, LegacyCityConfig> cities = new Dictionary<string, LegacyCityConfig>();
 }
 
 public static class ConfigManager
@@ -39,7 +41,7 @@ public static class ConfigManager
     private static readonly string DefaultConfigPath = Path.Combine(Application.dataPath, "Mods", "TravelButton", "config", "TravelButton_Cities.json");
 
     // Runtime-held config instance
-    public static TravelConfig Config { get; set; } = null;
+    public static LegacyTravelConfig Config { get; set; } = null;
 
     public static string ConfigPathForLog()
     {
@@ -66,7 +68,7 @@ public static class ConfigManager
             }
 
             var json = File.ReadAllText(DefaultConfigPath);
-            var des = JsonConvert.DeserializeObject<TravelConfig>(json);
+            var des = JsonConvert.DeserializeObject<LegacyTravelConfig>(json);
             if (des == null) des = Default();
 
             // fill missing keys with defaults for backward compatibility
@@ -126,15 +128,15 @@ public static class ConfigManager
     }
 
     // Return a default TravelConfig populated with the exact values you provided.
-    public static TravelConfig Default()
+    public static LegacyTravelConfig Default()
     {
-        var t = new TravelConfig();
+        var t = new LegacyTravelConfig();
         t.enabled = true;
         t.currencyItem = "Silver";
         t.globalTeleportPrice = 100;
-        t.cities = new Dictionary<string, CityConfig>
+        t.cities = new Dictionary<string, LegacyCityConfig>
         {
-            { "Cierzo", new CityConfig {
+            { "Cierzo", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{1410.388f, 6.786f, 1665.642f},
@@ -144,7 +146,7 @@ public static class ConfigManager
                 visited = false,
                 note = "coords required"
             } },
-            { "Levant", new CityConfig {
+            { "Levant", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{-55.212f, 10.056f, 79.379f},
@@ -154,7 +156,7 @@ public static class ConfigManager
                 visited = false,
                 note = "coords required"
             } },
-            { "Monsoon", new CityConfig {
+            { "Monsoon", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{57.352f, -3.877f, 113.537f},
@@ -164,7 +166,7 @@ public static class ConfigManager
                 visited = false,
                 note = "coords required"
             } },
-            { "Berg", new CityConfig {
+            { "Berg", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{1202.414f, -13.071f, 1378.836f}, 
@@ -174,7 +176,7 @@ public static class ConfigManager
                 visited = false,
                 note = "coords required"
             } },
-            { "Harmattan", new CityConfig {
+            { "Harmattan", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{93.757f, 65.474f, 767.849f},
@@ -184,7 +186,7 @@ public static class ConfigManager
                 visited = false,
                 note = "coords required"
             } },
-            { "Sirocco", new CityConfig {
+            { "Sirocco", new LegacyCityConfig {
                 enabled = false,
                 price = 1,
                 coords = new float[]{100.0f, 1.2f, 300.0f},
