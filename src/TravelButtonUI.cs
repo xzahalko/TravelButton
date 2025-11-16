@@ -2336,8 +2336,13 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // Robust, simplified OpenTravelDialog implementation.
-    // Replace your current OpenTravelDialog body with this version (keep the same signature).
+    /// <summary>
+    /// Robust, simplified OpenTravelDialog implementation that resolves freezes, missing buttons, and click-through issues.
+    /// - Clears caches at the start
+    /// - Uses guarded start for the RefreshCityButtonsWhileOpen coroutine (only one refresher runs)
+    /// - Builds dialog UI with Canvas/ScrollArea/Viewport/Content hierarchy
+    /// - Creates CityButton_ GameObjects with proper interactability handling
+    /// </summary>
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
