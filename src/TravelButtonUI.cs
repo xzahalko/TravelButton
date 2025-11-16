@@ -4398,7 +4398,7 @@ public class TravelButtonUI : MonoBehaviour
                         return true;
                     }
                 }
-                catch { /* ignore */ }
+                catch { /* ignore */ } 
             }
 
             // Last resort heuristic: any transform with city.name substring (helps when anchor names differ)
