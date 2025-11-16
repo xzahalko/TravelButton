@@ -2348,6 +2348,8 @@ public class TravelButtonUI : MonoBehaviour
             try { ClearSaveRootCache(); } catch { }
             try { ClearVisitedCache(); } catch { }
             try { TravelButton.ClearCityVisitedCache(); } catch { }
+            // Prepare persistent lookup once so per-city HasPlayerVisitedFast is cheap
+            try { PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed at dialog open: " + ex.Message); }
 
             // player pos
             try
