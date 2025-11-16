@@ -2722,49 +2722,154 @@ public static class TravelButton
     // If cache is missing, it can optionally call legacy HasPlayerVisited as a fallback.
     // Fast cached lookup. If the cache is missing, try to build it once and re-check.
     // Returns false if no match and no cache could be built.
+    // Replace/insert this in TravelButtonMod.cs (same class as existing helpers).
     public static bool HasPlayerVisitedFast(string cityId)
     {
         if (string.IsNullOrEmpty(cityId)) return false;
-
-        // take a snapshot of the cache
-        HashSet<string> snapshot = null;
-        lock (s_visitedLock) snapshot = s_cachedVisitedKeys;
-
-        if (snapshot != null && snapshot.Count > 0)
-        {
-            // try direct and a couple normalized variants
-            if (snapshot.Contains(cityId)) return true;
-            var lower = cityId.ToLowerInvariant();
-            if (snapshot.Contains(lower)) return true;
-            var nospace = lower.Replace(" ", "");
-            if (snapshot.Contains(nospace)) return true;
-
-            return false;
-        }
-
-        // No cache available: attempt to build it now (single, cheap attempt)
         try
         {
-            PrepareVisitedLookup();
+            TBLog.Info($"HasPlayerVisitedFast: checking '{cityId}'");
 
-            // re-check cache after building
-            lock (s_visitedLock) snapshot = s_cachedVisitedKeys;
-            if (snapshot != null && snapshot.Count > 0)
+            var saveRoot = FindSaveRootInstance();
+            var saveRootFound = saveRoot != null;
+            TBLog.Info($"HasPlayerVisitedFast: saveRootFound={saveRootFound}");
+
+            // check per-character visited
+            try
             {
-                if (snapshot.Contains(cityId)) return true;
-                var lower = cityId.ToLowerInvariant();
-                if (snapshot.Contains(lower)) return true;
-                var nospace = lower.Replace(" ", "");
-                if (snapshot.Contains(nospace)) return true;
+                var charInner = GetFirstCharacterInnerSave();
+                if (charInner != null)
+                {
+                    var perCharVisited = GetVisitedCollectionFromSaveObject(charInner);
+                    if (perCharVisited != null)
+                    {
+                        foreach (var item in perCharVisited)
+                        {
+                            if (item == null) continue;
+                            var s = item.ToString().Trim();
+                            if (string.Equals(s, cityId, StringComparison.InvariantCultureIgnoreCase)
+                                || s.IndexOf(cityId, StringComparison.OrdinalIgnoreCase) >= 0
+                                || (int.TryParse(s, out var inum) && int.TryParse(cityId, out var nnum) && inum == nnum))
+                            {
+                                TBLog.Info($"HasPlayerVisitedFast: matched per-character visited with '{s}' for '{cityId}'");
+                                return true;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        TBLog.Info("HasPlayerVisitedFast: per-character visited collection is null.");
+                    }
+                }
+                else
+                {
+                    TBLog.Info("HasPlayerVisitedFast: no character inner save object found.");
+                }
             }
+            catch (Exception exChar)
+            {
+                TBLog.Warn("HasPlayerVisitedFast: error checking per-character visited: " + exChar.Message);
+            }
+
+            // check world save visited
+            if (saveRootFound)
+            {
+                try
+                {
+                    var rootType = saveRoot.GetType();
+                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+                    var worldSaveProp = rootType.GetProperty("WorldSave", flags) ?? rootType.GetProperty("worldSave", flags);
+                    if (worldSaveProp != null)
+                    {
+                        var worldSave = worldSaveProp.GetValue(saveRoot, null);
+                        var worldVisited = GetVisitedCollectionFromSaveObject(worldSave);
+                        if (worldVisited != null)
+                        {
+                            foreach (var item in worldVisited)
+                            {
+                                if (item == null) continue;
+                                var s = item.ToString().Trim();
+                                if (string.Equals(s, cityId, StringComparison.InvariantCultureIgnoreCase)
+                                    || s.IndexOf(cityId, StringComparison.OrdinalIgnoreCase) >= 0
+                                    || (int.TryParse(s, out var inum) && int.TryParse(cityId, out var nnum) && inum == nnum))
+                                {
+                                    TBLog.Info($"HasPlayerVisitedFast: matched WorldSave visited with '{s}' for '{cityId}'");
+                                    return true;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            TBLog.Info("HasPlayerVisitedFast: WorldSave visited collection is null.");
+                        }
+                    }
+                    else
+                    {
+                        TBLog.Info("HasPlayerVisitedFast: WorldSave property not found on save root.");
+                    }
+                }
+                catch (Exception exWorld)
+                {
+                    TBLog.Warn("HasPlayerVisitedFast: error checking WorldSave visited: " + exWorld.Message);
+                }
+            }
+
+            // Additional fallback: try VisitedTracker.HasVisited(name) if available (some game systems use that)
+            try
+            {
+                var vtType = AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.Name == "VisitedTracker");
+                if (vtType != null)
+                {
+                    var hasVisitedMethod = vtType.GetMethod("HasVisited", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase);
+                    if (hasVisitedMethod != null)
+                    {
+                        try
+                        {
+                            var res = hasVisitedMethod.Invoke(null, new object[] { cityId });
+                            if (res is bool b && b)
+                            {
+                                TBLog.Info($"HasPlayerVisitedFast: VisitedTracker.HasVisited returned true for '{cityId}'");
+                                return true;
+                            }
+                        }
+                        catch (Exception exVT) { TBLog.Warn("HasPlayerVisitedFast: VisitedTracker.HasVisited invocation failed: " + exVT.Message); }
+                    }
+                }
+            }
+            catch (Exception ex) { TBLog.Warn("HasPlayerVisitedFast: error while trying VisitedTracker fallback: " + ex.Message); }
+
+            // No match by save-based checks; log sample of visited keys (helpful to debug)
+            try
+            {
+                var sample = new List<string>();
+                var charInner = GetFirstCharacterInnerSave();
+                if (charInner != null)
+                {
+                    var perCharVisited = GetVisitedCollectionFromSaveObject(charInner);
+                    if (perCharVisited != null)
+                    {
+                        foreach (var item in perCharVisited)
+                        {
+                            if (item == null) continue;
+                            sample.Add(item.ToString());
+                            if (sample.Count >= 10) break;
+                        }
+                    }
+                }
+                TBLog.Info($"HasPlayerVisitedFast: no match for '{cityId}'. Sample per-character visited keys (up to 10): [{string.Join(", ", sample)}]");
+            }
+            catch { /* ignore sample dump failure */ }
+
+            TBLog.Info($"HasPlayerVisitedFast: returning false for '{cityId}'");
+            return false;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("HasPlayerVisitedFast: failed to build/inspect visited cache: " + ex.Message);
+            TBLog.Warn("HasPlayerVisitedFast: unexpected error: " + ex.Message);
+            return false;
         }
-
-        // Give up — no cache and no match. Returning false is safer than recursing into heavier code.
-        return false;
     }
 
     // Helper to clear cache (call when save is modified externally or when you want to force rebuild)
