@@ -2047,4 +2047,132 @@ public static class TravelButtonMod
         }
     }
 
+    private static void TryLoadCitiesJsonIntoTravelButtonMod()
+    {
+        try
+        {
+            var logger = LogSource;
+            void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
+            void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
+
+            var candidatePaths = new List<string>();
+
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            try
+            {
+                var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+                if (!string.IsNullOrEmpty(asmLocation)) candidatePaths.Add(Path.Combine(asmLocation, "TravelButton_Cities.json"));
+            }
+            catch { }
+
+            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
+
+            try
+            {
+                var cfgPath = TravelButtonMod.ConfigFilePath;
+                if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)")
+                {
+                    var dir = cfgPath;
+                    try { if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath); } catch { }
+                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+                }
+            }
+            catch { }
+
+            // repository root / maintainers convenience
+            try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
+
+            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string foundPath = null;
+            foreach (var p in candidatePaths)
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                string full;
+                try { full = Path.GetFullPath(p); } catch { full = p; }
+                if (tried.Contains(full)) continue;
+                tried.Add(full);
+                try { if (File.Exists(full)) { foundPath = full; break; } } catch { }
+            }
+
+            TravelConfig loaded = null;
+            if (!string.IsNullOrEmpty(foundPath))
+            {
+                LInfo("Found TravelButton_Cities.json at: " + foundPath);
+                loaded = TravelConfig.LoadFromFile(foundPath);
+                if (loaded == null) LWarn("TravelButton_Cities.json found but parsing failed via JsonUtility/fallback.");
+            }
+            else
+            {
+                LInfo("No TravelButton_Cities.json found in candidate locations.");
+            }
+
+            if (loaded == null)
+            {
+                // create default
+                var defaults = TravelConfig.Default();
+                string writePath = candidatePaths.Count > 0 ? candidatePaths[0] : Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json");
+                try
+                {
+                    if (defaults.SaveToFile(writePath))
+                    {
+                        LInfo("Wrote default TravelButton_Cities.json to: " + writePath);
+                        foundPath = writePath;
+                        loaded = defaults;
+                    }
+                    else
+                    {
+                        LWarn("Failed to write default TravelButton_Cities.json to: " + writePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LWarn("Error writing default TravelButton_Cities.json: " + ex.Message);
+                }
+            }
+
+            if (loaded != null && loaded.cities != null)
+            {
+                var map = new Dictionary<string, City>(StringComparer.OrdinalIgnoreCase);
+                foreach (var cc in loaded.cities)
+                {
+                    try
+                    {
+                        if (string.IsNullOrWhiteSpace(cc.name)) continue;
+                        var c = new City(cc.name);
+                        if (cc.coords != null && cc.coords.Length >= 3) c.coords = new float[] { cc.coords[0], cc.coords[1], cc.coords[2] };
+                        c.targetGameObjectName = cc.targetGameObjectName;
+                        c.sceneName = cc.sceneName;
+                        // DON'T overwrite enabled/price here; leave to BepInEx binding.
+                        c.price = null;
+                        c.enabled = false;
+                        map[c.name] = c;
+                    }
+                    catch { }
+                }
+
+                if (map.Count > 0)
+                {
+                    Cities = new List<City>(map.Values);
+                    LInfo($"Loaded {Cities.Count} cities from TravelButton_Cities.json (metadata only).");
+                }
+                else
+                {
+                    LWarn("TravelButton_Cities.json parsed but no valid city entries found.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "TryLoadCitiesJsonIntoTravelButtonMod unexpected failure: " + ex.Message); } catch { }
+        }
+    }
+
 }
