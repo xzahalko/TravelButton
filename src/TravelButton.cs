@@ -377,6 +377,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
     }
+    // Add these snippets into src/TravelButton.cs in the TravelButton class.
+    // 1) Add a plugin fallback set (near other static fields)
+    private static System.Collections.Generic.HashSet<string> s_pluginVisitedNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
+    // 2) If TravelButton.City does not already have a persisted visited field, add it to the City definition:
+    // Insert this inside the TravelButton.City class (near other serializable fields)
+    public bool visited = false; // persisted visited flag (default false)
 
     // mark and persist
     private static void MarkCityVisitedByScene(string sceneName)
@@ -425,53 +432,81 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
+    // 3) Consolidated idempotent marker + source-of-mark logging helper.
+    // Add this inside TravelButton class (near other helpers):
     private static void MarkCityVisited(TravelButton.City city, string source)
     {
         if (city == null) return;
+
         try
         {
-            // Try direct property/field first (preferred)
+            bool changed = false;
+
             var ct = city.GetType();
-            var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (prop != null && prop.PropertyType == typeof(bool) && prop.CanRead && prop.CanWrite)
+
+            // Preferred: try property named 'visited'
+            try
             {
-                bool already = false;
-                try { already = (bool)prop.GetValue(city, null); } catch { already = false; }
-                if (!already)
+                var prop = ct.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (prop != null && prop.PropertyType == typeof(bool) && prop.CanRead && prop.CanWrite)
                 {
-                    prop.SetValue(city, true, null);
-                    TravelButton.PersistCitiesToConfig();
-                    TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}).");
+                    bool already = false;
+                    try { already = (bool)prop.GetValue(city, null); } catch { already = false; }
+                    if (!already)
+                    {
+                        prop.SetValue(city, true, null);
+                        changed = true;
+                    }
                 }
-                return;
+                else
+                {
+                    var field = ct.GetField("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                    if (field != null && field.FieldType == typeof(bool))
+                    {
+                        bool already = false;
+                        try { already = (bool)field.GetValue(city); } catch { already = false; }
+                        if (!already)
+                        {
+                            field.SetValue(city, true);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            catch { /* per-city reflection errors ignored */ }
+
+            // Fallback: plugin-level name set
+            if (!changed)
+            {
+                string nm = city.name ?? "";
+                if (!string.IsNullOrWhiteSpace(nm))
+                {
+                    if (!s_pluginVisitedNames.Contains(nm))
+                    {
+                        s_pluginVisitedNames.Add(nm);
+                        changed = true;
+                    }
+                }
             }
 
-            var field = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (field != null && field.FieldType == typeof(bool))
+            if (changed)
             {
-                bool already = false;
-                try { already = (bool)field.GetValue(city); } catch { already = false; }
-                if (!already)
+                try
                 {
-                    field.SetValue(city, true);
+                    // Persist only when something changed
                     TravelButton.PersistCitiesToConfig();
-                    TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}).");
                 }
-                return;
-            }
+                catch (System.Exception ex)
+                {
+                    TBLog.Info("MarkCityVisited: PersistCitiesToConfig threw: " + ex.Message);
+                }
 
-            // Fallback: store in plugin set (less ideal)
-            if (s_pluginVisitedNames == null) s_pluginVisitedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!s_pluginVisitedNames.Contains(city.name))
-            {
-                s_pluginVisitedNames.Add(city.name);
-                TravelButtonMod.PersistCitiesToConfig();
-                TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}) (fallback).");
+                TBLog.Info($"Marked and persisted visited for '{city.name}' (source={source}).");
             }
         }
-        catch (Exception ex)
+        catch (System.Exception ex)
         {
-            TBLog.Warn("MarkCityVisited_Simple exception: " + ex.Message);
+            TBLog.Warn("MarkCityVisited exception: " + ex.Message);
         }
     }
 
@@ -1739,7 +1774,7 @@ public static class TravelButton
 
         // Compatibility properties expected by older code:
         // property 'visited' (lowercase) → maps to VisitedTracker if available
-        public bool visited
+        public bool setVisited
         {
             get
             {
@@ -3313,6 +3348,7 @@ public static class TravelButton
     private static DateTime s_saveRootCachedAt = DateTime.MinValue;
     private static readonly TimeSpan s_saveRootCacheTtl = TimeSpan.FromSeconds(10); // safety TTL if you want periodic refresh
     private static bool s_saveRootLogged = false;
+    private static System.Collections.Generic.HashSet<string> s_pluginVisitedNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Find the game's save root (SaveManager instance or equivalent).
@@ -4080,6 +4116,7 @@ public static class TravelButton
     // Calls BuildVisitedKeysFromSave() and caches results.
     public static void PrepareVisitedLookup(bool forceRebuild = false)
     {
+        // ensure lock name matches the one in your file (s_visitedKeysInitLock)
         lock (s_visitedKeysInitLock)
         {
             if (s_visitedKeysSetInitialized && !forceRebuild)
@@ -4090,93 +4127,118 @@ public static class TravelButton
 
             try
             {
-                var set = BuildVisitedKeysFromSave() ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                // Clean null/empty entries
-                var cleaned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var k in set)
-                {
-                    if (string.IsNullOrWhiteSpace(k)) continue;
-                    cleaned.Add(k.Trim());
-                }
-
-                s_visitedKeysSet = cleaned;
-                // After s_visitedKeysSet = cleaned; inside PrepareVisitedLookup
+                // 1) get save-extracted keys (may be empty)
+                var saveKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
                 try
                 {
-                    // 1) Add city names from plugin's persisted city config (if any are marked visited)
-                    try
+                    var built = BuildVisitedKeysFromSave();
+                    if (built != null)
                     {
-                        if (TravelButton.Cities != null)
+                        foreach (var k in built)
+                            if (!string.IsNullOrWhiteSpace(k))
+                                saveKeys.Add(k.Trim());
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    TBLog.Warn("PrepareVisitedLookup: BuildVisitedKeysFromSave failed: " + ex.Message);
+                }
+
+                // 2) gather plugin-persisted keys (authoritative)
+                var pluginKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    if (TravelButton.Cities != null)
+                    {
+                        foreach (var c in TravelButton.Cities)
                         {
-                            foreach (var c in TravelButton.Cities)
+                            try
                             {
                                 bool visitedFlag = false;
-                                // Try to read common visited-like fields/properties
                                 var ct = c.GetType();
-                                var fv = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                if (fv != null && fv.FieldType == typeof(bool))
+                                var p = ct.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                                if (p != null && p.PropertyType == typeof(bool) && p.CanRead)
                                 {
-                                    try { visitedFlag = (bool)fv.GetValue(c); } catch { visitedFlag = false; }
+                                    visitedFlag = (bool)p.GetValue(c, null);
                                 }
                                 else
                                 {
-                                    var pv = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                    if (pv != null && pv.PropertyType == typeof(bool) && pv.CanRead)
+                                    var f = ct.GetField("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                                    if (f != null && f.FieldType == typeof(bool))
                                     {
-                                        try { visitedFlag = (bool)pv.GetValue(c, null); } catch { visitedFlag = false; }
+                                        visitedFlag = (bool)f.GetValue(c);
                                     }
                                 }
 
                                 if (visitedFlag)
                                 {
                                     var name = (c.name ?? "").Trim();
-                                    if (!string.IsNullOrEmpty(name)) s_visitedKeysSet.Add(name);
+                                    if (!string.IsNullOrEmpty(name)) pluginKeys.Add(name);
                                     var scene = (c.sceneName ?? "").Trim();
-                                    if (!string.IsNullOrEmpty(scene)) s_visitedKeysSet.Add(scene);
+                                    if (!string.IsNullOrEmpty(scene)) pluginKeys.Add(scene);
                                 }
                             }
+                            catch { /* ignore per-city reflection errors */ }
                         }
                     }
-                    catch (Exception exCities) { TBLog.Warn("PrepareVisitedLookup: error adding TravelButtonMod.Cities visited flags: " + exCities.Message); }
-
-                    // 2) Parse composite scene token entries in s_visitedKeysSet (e.g. "Emercar;200;4.13|Berg;400;4.33|")
-                    // We will scan the existing set entries and extract words before semicolons/pipe separators that look like scene names.
-                    var extraSceneNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var kv in s_visitedKeysSet.ToList()) // ToList to avoid modifying while enumerating
-                    {
-                        if (string.IsNullOrWhiteSpace(kv)) continue;
-                        // If it contains '|' or ';' it's likely a compact summary
-                        if (kv.IndexOf('|') >= 0 || kv.IndexOf(';') >= 0)
-                        {
-                            try
-                            {
-                                var parts = kv.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-                                foreach (var part in parts)
-                                {
-                                    var sub = part.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-                                    if (sub.Length > 0)
-                                    {
-                                        var sceneToken = sub[0].Trim();
-                                        if (!string.IsNullOrEmpty(sceneToken))
-                                            extraSceneNames.Add(sceneToken);
-                                    }
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                    foreach (var scene in extraSceneNames) s_visitedKeysSet.Add(scene);
                 }
-                catch (Exception exAug) { TBLog.Warn("PrepareVisitedLookup augmentation failed: " + exAug.Message);}
+                catch (System.Exception exCities)
+                {
+                    TBLog.Warn("PrepareVisitedLookup: error enumerating TravelButtonMod.Cities: " + exCities.Message);
+                }
 
+                // 3) include any plugin fallback names recorded by MarkCityVisited
+                try
+                {
+                    if (s_pluginVisitedNames != null)
+                    {
+                        foreach (var nm in s_pluginVisitedNames)
+                            pluginKeys.Add(nm);
+                    }
+                }
+                catch { /* ignore */ }
+
+                // 4) combine (pluginKeys first to be authoritative, then saveKeys)
+                var combined = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                foreach (var pk in pluginKeys) combined.Add(pk);
+                foreach (var sk in saveKeys) combined.Add(sk);
+
+                // 5) parse compact summary tokens present (e.g. "Emercar;200|Berg;400|") and extract scene names
+                var extraSceneNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in combined.ToList())
+                {
+                    if (string.IsNullOrWhiteSpace(kv)) continue;
+                    if (kv.IndexOf('|') >= 0 || kv.IndexOf(';') >= 0)
+                    {
+                        try
+                        {
+                            var parts = kv.Split(new char[] { '|' }, System.StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var part in parts)
+                            {
+                                var sub = part.Split(new char[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries);
+                                if (sub.Length > 0)
+                                {
+                                    var sceneToken = sub[0].Trim();
+                                    if (!string.IsNullOrEmpty(sceneToken))
+                                        extraSceneNames.Add(sceneToken);
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                foreach (var scene in extraSceneNames) combined.Add(scene);
+
+                // final assign
+                s_visitedKeysSet = combined;
                 s_visitedKeysSetInitialized = true;
-                TBLog.Info($"PrepareVisitedLookup: built visited lookup with {s_visitedKeysSet.Count} entr{(s_visitedKeysSet.Count == 1 ? "y" : "ies")}.");
+
+                TBLog.Info($"PrepareVisitedLookup: built visited lookup with {s_visitedKeysSet.Count} entries (pluginPersisted={pluginKeys.Count}, saveExtracted={saveKeys.Count}).");
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
-                TBLog.Warn("PrepareVisitedLookup: failed to build visited keys: " + ex);
-                s_visitedKeysSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                TBLog.Warn("PrepareVisitedLookup: failed to build visited keys: " + ex.Message);
+                s_visitedKeysSet = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
                 s_visitedKeysSetInitialized = true;
             }
         }
