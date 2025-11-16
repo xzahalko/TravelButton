@@ -244,7 +244,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     try
                     {
                         b.enabled = true;
-                        TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
+                        //TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
                     }
                     catch { }
                 }
@@ -267,7 +267,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                         if (tup.rb != null)
                         {
                             tup.rb.isKinematic = tup.originalIsKinematic;
-                            TBLog.Info($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
+                            //TBLog.Info($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
                         }
                     }
                     catch { }

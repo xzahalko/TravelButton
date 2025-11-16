@@ -7,7 +7,7 @@ public static class TeleportHelpers
 {
     // How high above the ground we place the player after grounding (meters).
     // Tune this once (0.5f was original). Lower if you want player closer to ground.
-    public static float TeleportGroundClearance = 0.5f;
+    public const float TeleportGroundClearance = 1.0f;
 
     // Flag set while ReenableComponentsAfterDelay is running (used by callers to wait).
     public static volatile bool ReenableInProgress = false;
@@ -518,7 +518,7 @@ public static class TeleportHelpers
                             {
                                 changedRigidbodies.Add((rb, rb.isKinematic));
                                 rb.isKinematic = true;
-                                TBLog.Info($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
+                                //TBLog.Info($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
                             }
                             catch { }
                         }
@@ -536,7 +536,7 @@ public static class TeleportHelpers
                                         {
                                             b.enabled = false;
                                             disabledBehaviours.Add(b);
-                                            TBLog.Info($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
+                                            //TBLog.Info($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
                                         }
                                     }
                                     catch { }

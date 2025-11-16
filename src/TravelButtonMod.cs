@@ -567,7 +567,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = false;
+        DebugConfig.IsDebug = true;
 
         try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
         }
@@ -1053,78 +1053,187 @@ public static class TravelButtonMod
         }
     }
 
-    public static void AutoAssignSceneNamesFromLoadedScenes()
+    // Auto-assign sceneName for a single city (by exact city.name match).
+    // Only assigns if both sceneName is null/empty AND coords are not available (null or length < 3).
+    public static void AutoAssignSceneNameForCity(string cityName)
+    {
+        if (string.IsNullOrEmpty(cityName)) return;
+
+        // Resolve Cities collection (if you're inside TravelButtonMod you can reference it directly)
+        var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        if (citiesField == null)
+        {
+            TBLog.Warn("AutoAssignSceneNameForCity: TravelButtonMod.Cities field not found.");
+            return;
+        }
+
+        var cities = citiesField.GetValue(null) as System.Collections.IList;
+        if (cities == null)
+        {
+            TBLog.Warn("AutoAssignSceneNameForCity: Cities list is null.");
+            return;
+        }
+
+        // Find the city object with matching name property
+        object targetCity = null;
+        foreach (var c in cities)
+        {
+            try
+            {
+                var nameProp = c.GetType().GetProperty("name");
+                var n = nameProp?.GetValue(c) as string;
+                if (string.Equals(n, cityName, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetCity = c;
+                    break;
+                }
+            }
+            catch { }
+        }
+
+        if (targetCity == null)
+        {
+            TBLog.Info($"AutoAssignSceneNameForCity: city '{cityName}' not found in TravelButtonMod.Cities.");
+            return;
+        }
+
+        // Check existing sceneName and coords
+        var sceneNameProp = targetCity.GetType().GetProperty("sceneName");
+        var coordsField = targetCity.GetType().GetField("coords");
+        var existingSceneName = sceneNameProp?.GetValue(targetCity) as string;
+        var coords = coordsField?.GetValue(targetCity) as float[];
+
+        bool hasCoords = (coords != null && coords.Length >= 3);
+        if (!string.IsNullOrEmpty(existingSceneName) || hasCoords)
+        {
+            TBLog.Info($"AutoAssignSceneNameForCity: city '{cityName}' already has sceneName or coords; skipping.");
+            return;
+        }
+
+        // Search loaded scenes for a scene whose name contains the city name (case-insensitive)
+        for (int i = 0; i < SceneManager.sceneCount; i++)
+        {
+            var scene = SceneManager.GetSceneAt(i);
+            var sName = scene.name ?? "";
+            if (!string.IsNullOrEmpty(sName) && sName.IndexOf(cityName, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                sceneNameProp?.SetValue(targetCity, sName);
+                TBLog.Info($"AutoAssignSceneNameForCity: assigned sceneName='{sName}' to city '{cityName}'.");
+                return;
+            }
+        }
+
+        TBLog.Info($"AutoAssignSceneNameForCity: no loaded scene matched city '{cityName}'.");
+    }
+
+    // add to TravelButtonMod (src/TravelButtonMod.cs)
+    public static void DumpCityInteractability()
     {
         try
         {
-            TBLog.Info("AutoAssignSceneNamesFromLoadedScenes: scanning loaded scenes for city anchors/names...");
+            TBLog.Info("DumpCityInteractability: activeScene=" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name);
+            long currentMoney = -1;
+            try { currentMoney = TravelButtonUI.GetPlayerCurrencyAmountOrMinusOne(); } catch { currentMoney = -1; }
+            TBLog.Info($"DumpCityInteractability: PlayerMoney={currentMoney}");
             if (Cities == null || Cities.Count == 0)
             {
-                TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: no cities available to scan.");
+                TBLog.Info("DumpCityInteractability: Cities list is empty or null.");
                 return;
             }
 
-            int assigned = 0;
-            // iterate loaded scenes
-            int sceneCount = SceneManager.sceneCount;
-            for (int si = 0; si < sceneCount; si++)
+            foreach (var city in Cities)
             {
-                var scene = SceneManager.GetSceneAt(si);
-                if (!scene.IsValid() || !scene.isLoaded) continue;
-
-                var roots = scene.GetRootGameObjects();
-                foreach (var root in roots)
+                try
                 {
-                    if (root == null) continue;
-                    var allTransforms = root.GetComponentsInChildren<Transform>(true);
-                    foreach (var tr in allTransforms)
-                    {
-                        if (tr == null) continue;
-                        string gname = tr.name ?? "";
-                        // try match by exact targetGameObjectName first, then city name substring
-                        foreach (var city in Cities)
-                        {
-                            try
-                            {
-                                if (!string.IsNullOrEmpty(city.targetGameObjectName) &&
-                                    string.Equals(gname, city.targetGameObjectName, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
-                                    {
-                                        city.sceneName = scene.name;
-                                        TBLog.Info($"AutoAssign: matched targetGameObjectName '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
-                                        assigned++;
-                                    }
-                                }
-                                else if (gname.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
-                                {
-                                    if (string.IsNullOrEmpty(city.sceneName) || city.sceneName != scene.name)
-                                    {
-                                        city.sceneName = scene.name;
-                                        TBLog.Info($"AutoAssign: matched name substring '{gname}' -> setting city '{city.name}'.sceneName = '{scene.name}'");
-                                        assigned++;
-                                    }
-                                }
-                            }
-                            catch { /* ignore per-city errors */ }
-                        }
-                    }
-                }
-            }
+                    string cname = city?.name ?? "(null)";
+                    bool enabledByConfig = IsCityEnabled(cname);
+                    bool visitedNow = false;
+                    try { visitedNow = TravelButtonUI.IsCityVisitedFallback(city); } catch { visitedNow = false; }
+                    bool coordsAvailable = !string.IsNullOrEmpty(city?.targetGameObjectName) || (city?.coords != null && city.coords.Length >= 3);
+                    bool targetSceneSpecified = city != null && !string.IsNullOrEmpty(city.sceneName);
+                    var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+                    bool isCurrentScene = targetSceneSpecified && string.Equals(city.sceneName, active, StringComparison.OrdinalIgnoreCase);
+                    bool haveMoneyInfo = currentMoney >= 0;
+                    int cost = city?.price ?? cfgTravelCost.Value;
+                    bool hasEnoughMoney = haveMoneyInfo ? (currentMoney >= cost) : true;
+                    bool canVisit = coordsAvailable || (targetSceneSpecified && !isCurrentScene);
+                    bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-            if (assigned > 0)
-            {
-                TBLog.Info($"AutoAssignSceneNamesFromLoadedScenes: assigned {assigned} sceneName(s). Persisting cities to config.");
-                try { PersistCitiesToConfig(); } catch { TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: PersistCitiesToConfig failed."); }
-            }
-            else
-            {
-                TBLog.Info("AutoAssignSceneNamesFromLoadedScenes: no matches found in loaded scenes. Make sure the correct scene is loaded and try again.");
+                    TBLog.Info($"City='{cname}': enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, playerMoney={currentMoney}, price={cost}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, targetScene='{city?.sceneName ?? "(null)"}', isCurrentScene={isCurrentScene}, canVisit={canVisit} -> shouldBeInteractableNow={shouldBeInteractableNow}");
+                }
+                catch (Exception e)
+                {
+                    TBLog.Warn("DumpCityInteractability: failed for a city: " + e.Message);
+                }
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes exception: " + ex.Message);
+            TBLog.Warn("DumpCityInteractability: top-level error: " + ex.Message);
+        }
+    }
+
+    // Sweep: Auto-assign sceneName for all cities that are missing both sceneName and coords.
+    public static void AutoAssignSceneNamesFromLoadedScenes()
+    {
+        var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        if (citiesField == null)
+        {
+            TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: TravelButtonMod.Cities field not found.");
+            return;
+        }
+
+        var cities = citiesField.GetValue(null) as System.Collections.IList;
+        if (cities == null)
+        {
+            TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: Cities list is null.");
+            return;
+        }
+
+        foreach (var city in cities)
+        {
+            try
+            {
+                var nameProp = city.GetType().GetProperty("name");
+                var sceneNameProp = city.GetType().GetProperty("sceneName");
+                var coordsField = city.GetType().GetField("coords");
+
+                var cityName = nameProp?.GetValue(city) as string;
+                var existingSceneName = sceneNameProp?.GetValue(city) as string;
+                var coords = coordsField?.GetValue(city) as float[];
+
+                bool hasCoords = (coords != null && coords.Length >= 3);
+                if (string.IsNullOrEmpty(cityName)) continue;
+
+                if (!string.IsNullOrEmpty(existingSceneName) || hasCoords)
+                {
+                    // skip: city already has explicit sceneName or coordinates
+                    continue;
+                }
+
+                // find a loaded scene whose name contains the city name
+                string matchedScene = null;
+                for (int i = 0; i < SceneManager.sceneCount; i++)
+                {
+                    var scene = SceneManager.GetSceneAt(i);
+                    var sname = scene.name ?? "";
+                    if (!string.IsNullOrEmpty(sname) && sname.IndexOf(cityName, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        matchedScene = sname;
+                        break;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(matchedScene))
+                {
+                    sceneNameProp?.SetValue(city, matchedScene);
+                    TBLog.Info($"AutoAssignSceneNamesFromLoadedScenes: set sceneName='{matchedScene}' for city '{cityName}'.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: exception: " + ex.Message);
+            }
         }
     }
 

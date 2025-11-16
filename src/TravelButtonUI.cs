@@ -2271,10 +2271,10 @@ public class TravelButtonUI : MonoBehaviour
             // Log canvases (existing helper)
             var canvases = FindAllCanvasesSafeImpl();
             TBLog.Info($"DebugLogToolbarCandidates: canvases found = {canvases.Length}");
-            foreach (var c in canvases)
-            {
-                TBLog.Info($" Canvas '{c.name}' renderMode={c.renderMode} scale={c.scaleFactor} worldCamera={(c.worldCamera != null ? c.worldCamera.name : "null")}");
-            }
+//            foreach (var c in canvases)
+//            {
+//                TBLog.Info($" Canvas '{c.name}' renderMode={c.renderMode} scale={c.scaleFactor} worldCamera={(c.worldCamera != null ? c.worldCamera.name : "null")}");
+//            }
 
             // Inspect RectTransforms across scene for likely toolbar candidates
             var allRts = FindAllRectTransformsSafeImpl(); // <-- important: RectTransform array, not Canvas array
@@ -2319,15 +2319,16 @@ public class TravelButtonUI : MonoBehaviour
         Vector3 before = (playerRoot != null) ? playerRoot.transform.position : Vector3.zero;
         TBLog.Info($"OpenTravelDialog: hrac pozice: ({before.x:F3}, {before.y:F3}, {before.z:F3})");
 
-        //        InventoryHelpers.SafeAddSilverToPlayer(50);
-        //        InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
+                InventoryHelpers.SafeAddSilverToPlayer(100);
+                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 1);
 //        var rescuePos = new Vector3(1204.881f, -12.5f, 1372.639f);
 //        TeleportHelpers.AttemptTeleportToPositionSafe(rescuePos);
 
         //DumpDetectedPositionsForActiveScene();
-        //        LogLoadedScenes();
+        LogLoadedScenes();
         //DebugLogCanvasHierarchy();
         DebugLogToolbarCandidates();
+        TravelButtonMod.DumpCityInteractability();
 
         try
         {
@@ -2797,6 +2798,110 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
+    // Add this method into the TravelButtonMod class (near other helpers)
+    public static void CloseOpenTravelDialog()
+    {
+        try
+        {
+            // 1) Prefer a typed TravelButtonUI instance if present and it exposes a close method/property.
+            var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+            if (ui != null)
+            {
+                // try known API: CloseDialog() or a public field/property named dialogRoot
+                var mi = ui.GetType().GetMethod("CloseDialog", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (mi != null)
+                {
+                    try { mi.Invoke(ui, null); return; } catch { /* ignore and continue */ }
+                }
+
+                var fd = ui.GetType().GetField("dialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (fd != null)
+                {
+                    var root = fd.GetValue(ui) as GameObject;
+                    if (root != null) { root.SetActive(false); return; }
+                }
+
+                var prop = ui.GetType().GetProperty("dialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (prop != null)
+                {
+                    var root = prop.GetValue(ui) as GameObject;
+                    if (root != null) { root.SetActive(false); return; }
+                }
+            }
+
+            // 2) Fallback: common dialog GameObject names used by the UI
+            var names = new[] { "TravelDialog", "TravelButtonDialog", "TravelButton_Dialog", "TravelButtonDialogRoot", "TravelButton_UI_Dialog" };
+            foreach (var n in names)
+            {
+                try
+                {
+                    var go = GameObject.Find(n);
+                    if (go != null)
+                    {
+                        go.SetActive(false);
+                        return;
+                    }
+                }
+                catch { }
+            }
+
+            // 3) As a last resort, try to find any active GameObject that looks like the dialog by searching for a Button named "Teleport" under a root named "TravelButton"
+            try
+            {
+                var allButtons = UnityEngine.Object.FindObjectsOfType<UnityEngine.UI.Button>();
+                foreach (var b in allButtons)
+                {
+                    if (b == null) continue;
+                    if (b.name != null && b.name.IndexOf("Teleport", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var root = b.transform.root?.gameObject;
+                        if (root != null)
+                        {
+                            // try disable a parent dialog-like object
+                            root.SetActive(false);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CloseOpenDialog failed: " + ex.Message);
+        }
+    }
+
+    // Best-effort player position probe used for debug logging
+    private bool TryGetPlayerPosition(out Vector3 outPos)
+    {
+        outPos = Vector3.zero;
+        try
+        {
+            try
+            {
+                var go = GameObject.FindWithTag("Player");
+                if (go != null && go.transform != null) { outPos = go.transform.position; return true; }
+            }
+            catch { }
+
+            try
+            {
+                if (Camera.main != null) { outPos = Camera.main.transform.position; return true; }
+            }
+            catch { }
+
+            try
+            {
+                var go2 = GameObject.Find("Player");
+                if (go2 != null && go2.transform != null) { outPos = go2.transform.position; return true; }
+            }
+            catch { }
+        }
+        catch { }
+        return false;
+    }
+
     // New: Teleport first, THEN attempt to charge player currency.
     // This mirrors the TravelDialog behavior: do not deduct before teleport.
     private void TryTeleportThenCharge(TravelButtonMod.City city, int cost)
@@ -2808,6 +2913,28 @@ public class TravelButtonUI : MonoBehaviour
             TBLog.Warn("TryTeleportThenCharge: city is null.");
             isTeleporting = false;
             return;
+        }
+
+        try
+        {
+            bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
+            bool visitedNow = false;
+            try { visitedNow = IsCityVisitedFallback(city); } catch { visitedNow = false; }
+            long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
+            bool haveMoneyInfo = currentMoney >= 0;
+            bool hasEnoughMoney = haveMoneyInfo ? currentMoney >= cost : true;
+            bool coordsAvailable = !string.IsNullOrEmpty(city.targetGameObjectName) || (city.coords != null && city.coords.Length >= 3);
+            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
+            bool isCurrentScene = targetSceneSpecified && string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
+            Vector3 playerPos;
+            bool havePlayerPos = TryGetPlayerPosition(out playerPos);
+
+            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryTeleportThenCharge debug logging failed: " + ex);
         }
 
         try
@@ -2896,6 +3023,7 @@ public class TravelButtonUI : MonoBehaviour
                     TBLog.Info($"TryTeleportThenCharge: performing immediate teleport (coords available in active scene). Initial coords: {coordsHint}");
                     Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
                     TBLog.Info($"TryTeleportThenCharge: Coords after GetGroundedPosition: {groundedCoords}");
+
                     bool ok = AttemptTeleportToPositionSafe(groundedCoords);
 
                     if (ok)
@@ -2962,7 +3090,7 @@ public class TravelButtonUI : MonoBehaviour
                     TBLog.Info("DBG: Teleport completed, dumping travel debug info now.");
                     try
                     {
-                        DumpTravelRelevantState("before-persist-fallback");
+                        //DumpTravelRelevantState("before-persist-fallback");
                         TravelButtonMod.PersistCitiesToConfig(); // whatever method you have
                         TBLog.Info("PersistCitiesToConfig: succeeded.");
                     }
@@ -3081,6 +3209,7 @@ public class TravelButtonUI : MonoBehaviour
     /// scene is ready to activate, activates the scene, performs the immediate probe/teleport,
     /// then restores cameras. This hides the intermediate wrong spawn (no blink).
     /// </summary>
+
     // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
@@ -3113,7 +3242,7 @@ public class TravelButtonUI : MonoBehaviour
 
         TBLog.Info($"LoadSceneAndTeleportCoroutine: starting async load for scene '{sceneName}'.");
 
-        // Start async load but DO NOT activate immediately � we'll fade to black and ensure the overlay is visible before activation.
+        // Start async load but DO NOT activate immediately — we'll fade to black and ensure the overlay is visible before activation.
         var loadOp = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
         loadOp.allowSceneActivation = false;
 
@@ -3152,7 +3281,7 @@ public class TravelButtonUI : MonoBehaviour
         }
         else
         {
-            // overlay was shown via ShowInstant() fallback � still guarantee a frame is rendered
+            // overlay was shown via ShowInstant() fallback — still guarantee a frame is rendered
             yield return null;
             yield return new WaitForEndOfFrame();
         }
@@ -3231,7 +3360,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 if (coordsArr == null || coordsArr.Length < 3)
                 {
-                    TBLog.Warn($"LoadSceneAndTeleportCoroutine: no coords available in city object for '{displayName}' � aborting teleport.");
+                    TBLog.Warn($"LoadSceneAndTeleportCoroutine: no coords available in city object for '{displayName}' — aborting teleport.");
                     yield break;
                 }
 
@@ -3289,7 +3418,7 @@ public class TravelButtonUI : MonoBehaviour
                 if (immediateOk)
                 {
                     finalPos = candidateSafe;
-                    TBLog.Info($"LoadSceneAndTeleportCoroutine: immediate finalPos resolved to {finalPos} � teleporting now.");
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine: immediate finalPos resolved to {finalPos} — teleporting now.");
                 }
                 else
                 {
@@ -3335,7 +3464,7 @@ public class TravelButtonUI : MonoBehaviour
                             Vector3 origin = new Vector3(sampleXZ.x, (TeleportHelpers.FindPlayerRoot()?.transform.position.y ?? sampleXZ.y) + 200f, sampleXZ.z);
                             if (Physics.Raycast(origin, Vector3.down, out hit, 1000f, ~0, QueryTriggerInteraction.Ignore))
                             {
-                                grounded = new Vector3(sampleXZ.x, hit.point.y + 0.5f, sampleXZ.z);
+                                grounded = new Vector3(sampleXZ.x, hit.point.y + TeleportHelpers.TeleportGroundClearance, sampleXZ.z);
                                 return true;
                             }
                         }
@@ -3392,7 +3521,23 @@ public class TravelButtonUI : MonoBehaviour
                 if (!ok)
                     TBLog.Warn("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe returned false (teleport reported failed).");
                 else
+                {
                     TBLog.Info("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe reported success.");
+
+                    // POST-SUCCESS: persist/mark visited and close the dialog so the UI isn't left open
+                    try { TravelButtonMod.OnSuccessfulTeleport(displayName ?? ""); } catch { }
+                    try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+
+                    // close the dialog after successful teleport
+                    try
+                    {
+                        CloseOpenTravelDialog();
+                    }
+                    catch (Exception exClose)
+                    {
+                        TBLog.Warn("LoadSceneAndTeleportCoroutine: CloseOpenTravelDialog failed: " + exClose.Message);
+                    }
+                }
             }
             catch (Exception exTeleport)
             {
@@ -3557,7 +3702,7 @@ public class TravelButtonUI : MonoBehaviour
                 // treat any returned value as candidate; but verify ground by a short downward raycast if possible
                 // We'll accept gp if a raycast from gp+0.5 down hits within small distance or gp.y is not 0 with reasonable check.
                 RaycastHit hit;
-                Vector3 rayStart = gp + Vector3.up * 0.5f;
+                Vector3 rayStart = gp + Vector3.up * TeleportHelpers.TeleportGroundClearance;
                 if (Physics.Raycast(rayStart, Vector3.down, out hit, 5f, Physics.DefaultRaycastLayers))
                 {
                     outPos = hit.point;
@@ -3844,7 +3989,7 @@ public class TravelButtonUI : MonoBehaviour
 
     // Helper: more robust visited detection with fallbacks.
     // Returns true if any reasonable indicator suggests the player has visited the city.
-    private bool IsCityVisitedFallback(TravelButtonMod.City city)
+    public static bool IsCityVisitedFallback(TravelButtonMod.City city)
     {
         try
         {
@@ -4398,7 +4543,7 @@ public class TravelButtonUI : MonoBehaviour
             try
             {
                 const float maxVerticalDelta = 100f;   // adjust to taste (meters)
-                const float extraGroundClearance = 0.5f;
+                const float extraGroundClearance = TeleportHelpers.TeleportGroundClearance;
 
                 float verticalDelta = Mathf.Abs(target.y - before.y);
                 if (verticalDelta > maxVerticalDelta)
@@ -4526,7 +4671,7 @@ public class TravelButtonUI : MonoBehaviour
                             {
                                 changedRigidbodies.Add((rb, rb.isKinematic));
                                 rb.isKinematic = true;
-                                TBLog.Info($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
+                                //TBLog.Info($"AttemptTeleportToPositionSafe: set Rigidbody.isKinematic=true on '{rb.gameObject.name}'.");
                             }
                             catch { }
                         }
@@ -4544,7 +4689,7 @@ public class TravelButtonUI : MonoBehaviour
                                         {
                                             b.enabled = false;
                                             disabledBehaviours.Add(b);
-                                            TBLog.Info($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
+                                            //TBLog.Info($"AttemptTeleportToPositionSafe: temporarily disabled {tname} on '{b.gameObject.name}'.");
                                         }
                                     }
                                     catch { }
@@ -5211,16 +5356,6 @@ public class TravelButtonUI : MonoBehaviour
                         // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
                         bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                        // Detailed debug log for each condition (include player coords if known)
-                        TBLog.Info($"Debug Refresh '{cityName}': " +
-                                                   $"enabledByConfig={enabledByConfig}, " +
-                                                   $"visitedNow={visitedNow}, " +
-                                                   $"hasEnoughMoney={hasEnoughMoney}, " +
-                                                   $"coordsAvailable={coordsAvailable}, " +
-                                                   $"isCurrentScene={isCurrentScene}, " +
-                                                   $"playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")} " +
-                                                   $"-> shouldBeInteractableNow={shouldBeInteractableNow}");
-
                         if (btn.interactable != shouldBeInteractableNow)
                         {
                             btn.interactable = shouldBeInteractableNow;
@@ -5344,7 +5479,7 @@ public class TravelButtonUI : MonoBehaviour
     // This function first tries the local player's inventory for known currency fields/properties and sums them.
     // If that fails, it falls back to scanning scene components but excludes obvious UI/display components
     // to avoid reading color/flag fields from CurrencyDisplay etc. Every candidate read is logged.
-    private long GetPlayerCurrencyAmountOrMinusOne()
+    public static long GetPlayerCurrencyAmountOrMinusOne()
     {
         try
         {

@@ -137,8 +137,8 @@ public static class ConfigManager
             { "Cierzo", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{1362.051f, 37.088f, 1652.189f},
-                targetGameObjectName = "Cierzo_Location",
+                coords = new float[]{1410.388f, 6.786f, 1665.642f},
+                targetGameObjectName = "",
                 sceneName="CierzoNewTerrain",
                 desc = "Cierzo - example description",
                 visited = false,
@@ -147,9 +147,9 @@ public static class ConfigManager
             { "Levant", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{-573f, 90f, -515f},
-                targetGameObjectName = "Levant_Location",
-                sceneName="LevantNewTerrain",
+                coords = new float[]{-55.212f, 10.056f, 79.379f},
+                targetGameObjectName = "",
+                sceneName="Levant",
                 desc = "Levant - example description",
                 visited = false,
                 note = "coords required"
@@ -157,9 +157,9 @@ public static class ConfigManager
             { "Monsoon", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{3f, 1.0f, -5f},
-                targetGameObjectName = "Monsoon_Location",
-                sceneName="MonsoonNewTerrain",
+                coords = new float[]{57.352f, -3.877f, 113.537f},
+                targetGameObjectName = "",
+                sceneName="Monsoon",
                 desc = "Monsoon - example description",
                 visited = false,
                 note = "coords required"
@@ -167,8 +167,8 @@ public static class ConfigManager
             { "Berg", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{1204.881f, -13.656f, 1372.639f}, 
-                targetGameObjectName = "Berg_SafeSpawn",
+                coords = new float[]{1202.414f, -13.071f, 1378.836f}, 
+                targetGameObjectName = "",
                 sceneName="Berg",
                 desc = "Berg - example description",
                 visited = false,
@@ -177,9 +177,9 @@ public static class ConfigManager
             { "Harmattan", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{500.0f, 3.0f, 80.0f},
-                targetGameObjectName = "Harmattan_Location",
-                sceneName="HarmattanNewTerrain",
+                coords = new float[]{93.757f, 65.474f, 767.849f},
+                targetGameObjectName = "",
+                sceneName="Harmattan",
                 desc = "Harmattan - example description",
                 visited = false,
                 note = "coords required"
@@ -187,9 +187,9 @@ public static class ConfigManager
             { "Sirocco", new CityConfig {
                 enabled = false,
                 price = 1,
-                coords = new float[]{600.0f, 1.2f, -300.0f},
-                targetGameObjectName = "Sirocco_Location",
-                sceneName="SiroccoNewTerrain",
+                coords = new float[]{100.0f, 1.2f, 300.0f},
+                targetGameObjectName = "",
+                sceneName="NewSirocco",
                 desc = "Sirocco - example description",
                 visited = false,
                 note = "coords required"
