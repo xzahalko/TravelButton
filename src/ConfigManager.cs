@@ -81,7 +81,7 @@ public static class ConfigManager
 
         cfg.cities["Sirocco"] = new LegacyCityConfig
         {
-            enabled = true,
+            enabled = false,
             price = 200,
             coords = new float[] { 62.530f, 56.805f, -54.049f },
             targetGameObjectName = "Sirocco_Location",

@@ -118,7 +118,7 @@ public class TravelDialog : MonoBehaviour
         // clear previous
         foreach (Transform t in content) Destroy(t.gameObject);
 
-        var cities = TravelButtonMod.Cities;
+        var cities = TravelButton.Cities;
         if (cities == null || cities.Count == 0)
         {
             TBLog.Warn("TravelDialog.RefreshList: no cities available");
@@ -156,7 +156,7 @@ public class TravelDialog : MonoBehaviour
             var priceGO = new GameObject("Price");
             priceGO.transform.SetParent(itemGO.transform, false);
             var ptxt = priceGO.AddComponent<Text>();
-            var priceToShow = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+            var priceToShow = city.price ?? TravelButton.cfgTravelCost.Value;
             ptxt.text = priceToShow.ToString();
             ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             ptxt.color = Color.black;
@@ -213,14 +213,14 @@ public class TravelDialog : MonoBehaviour
 
     private void OnCityClicked(string cityName)
     {
-        var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+        var city = TravelButton.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
         if (city == null)
         {
             ShowMessage($"City {cityName} not found.");
             return;
         }
         
-        int price = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+        int price = city.price ?? TravelButton.cfgTravelCost.Value;
 
         if ((city.coords == null || city.coords.Length < 3) && string.IsNullOrEmpty(city.targetGameObjectName))
         {
@@ -266,7 +266,7 @@ public class TravelDialog : MonoBehaviour
                 try { VisitedTracker.MarkVisited(cityName); } catch { }
 
                 // attempt to deduct using reflection heuristics and the configured currency item name
-                string currencyItem = TravelButtonMod.cfgCurrencyItem.Value;
+                string currencyItem = TravelButton.cfgCurrencyItem.Value;
                 bool charged = AttemptDeductAfterTeleport(price, currencyItem);
                 if (!charged)
                 {

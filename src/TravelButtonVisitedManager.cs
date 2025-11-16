@@ -203,10 +203,10 @@ public static class TravelButtonVisitedManager
             // Update in-memory TravelButtonMod.Cities if available so UI/teleport code sees the visit immediately
             try
             {
-                var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+                var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
                 if (citiesField != null)
                 {
-                    var cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
+                    var cities = citiesField.GetValue(null) as IList<TravelButton.City>;
                     if (cities != null)
                     {
                         foreach (var city in cities)
@@ -273,14 +273,14 @@ public static class TravelButtonVisitedManager
         try
         {
             EnsureLoaded();
-            var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+            var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
             if (citiesField == null)
             {
                 TBLog.Warn("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities field not found.");
                 return;
             }
 
-            var cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
+            var cities = citiesField.GetValue(null) as IList<TravelButton.City>;
             if (cities == null)
             {
                 TBLog.Warn("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities is null.");

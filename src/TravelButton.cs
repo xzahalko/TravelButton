@@ -12,6 +12,7 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using static TravelButton;
 
 //
 // TravelButtonMod.cs
@@ -26,13 +27,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
 {
 
     // BepInEx config entries (top-level)
-    private ConfigEntry<bool> bex_enableMod;
-    private ConfigEntry<int> bex_globalPrice;
-    private ConfigEntry<string> bex_currencyItem;
+    private BepInEx.Configuration.ConfigEntry<bool> bex_enableMod;
+    private BepInEx.Configuration.ConfigEntry<int> bex_globalPrice;
+    private BepInEx.Configuration.ConfigEntry<string> bex_currencyItem;
 
     // per-city config entries
-    private Dictionary<string, ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
-    private Dictionary<string, ConfigEntry<int>> bex_cityPrice = new Dictionary<string, ConfigEntry<int>>(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, BepInEx.Configuration.ConfigEntry<int>> bex_cityPrice = new Dictionary<string, BepInEx.Configuration.ConfigEntry<int>>(StringComparer.InvariantCultureIgnoreCase);
 
     // Optional prefix to make entries easy to find in BepInEx logs
     // Set by the plugin during Awake: e.g. TravelButtonPlugin.Initialize(this.Logger);
@@ -87,7 +88,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
             try
             {
-                var cfgPath = TravelButtonMod.ConfigFilePath;
+                var cfgPath = TravelButton.ConfigFilePath;
                 if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)")
                 {
                     var dir = cfgPath;
@@ -169,13 +170,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Map CityConfig entries into TravelButtonMod.City instances (metadata only)
             if (loaded != null && loaded.cities != null)
             {
-                var map = new Dictionary<string, TravelButtonMod.City>(StringComparer.OrdinalIgnoreCase);
+                var map = new Dictionary<string, TravelButton.City>(StringComparer.OrdinalIgnoreCase);
                 foreach (var cc in loaded.cities)
                 {
                     try
                     {
                         if (string.IsNullOrWhiteSpace(cc.name)) continue;
-                        var c = new TravelButtonMod.City(cc.name);
+                        var c = new TravelButton.City(cc.name);
 
                         if (cc.coords != null && cc.coords.Length >= 3)
                             c.coords = new float[] { cc.coords[0], cc.coords[1], cc.coords[2] };
@@ -200,8 +201,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                 if (map.Count > 0)
                 {
-                    TravelButtonMod.Cities = new List<TravelButtonMod.City>(map.Values);
-                    LInfo($"Loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
+                    TravelButton.Cities = new List<TravelButton.City>(map.Values);
+                    LInfo($"Loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
                 }
                 else
                 {
@@ -263,7 +264,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = false;
+        DebugConfig.IsDebug = true;
 
         try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
         }
@@ -289,10 +290,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             TBLog.Info("TravelButton: startup - loaded cities:");
-            if (TravelButtonMod.Cities == null) TBLog.Info(" - Cities == null");
+            if (TravelButton.Cities == null) TBLog.Info(" - Cities == null");
             else
             {
-                foreach (var c in TravelButtonMod.Cities)
+                foreach (var c in TravelButton.Cities)
                 {
                     try
                     {
@@ -310,10 +311,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             TBLog.Info("TravelButtonPlugin.Awake: plugin initializing.");
-            TravelButtonMod.InitFromConfig();
-            if (TravelButtonMod.Cities != null && TravelButtonMod.Cities.Count > 0)
+            TravelButton.InitFromConfig();
+            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
             {
-                TBLog.Info($"Successfully loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json.");
+                TBLog.Info($"Successfully loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json.");
             }
             else
             {
@@ -375,7 +376,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
             try
             {
-                initialized = TravelButtonMod.InitFromConfig();
+                initialized = TravelButton.InitFromConfig();
             }
             catch (Exception ex)
             {
@@ -390,18 +391,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
         if (!initialized)
         {
             TBLog.Warn("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
-            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
             {
                 // Try local Default() again as a deterministic fallback
                 try
                 {
-                    var localCfg = TravelButtonMod.GetLocalType("ConfigManager");
+                    var localCfg = TravelButton.GetLocalType("ConfigManager");
                     if (localCfg != null)
                     {
                         var def = localCfg.GetMethod("Default", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
                         if (def != null)
                         {
-                            TravelButtonMod.MapConfigInstanceToLocal(def);
+                            TravelButton.MapConfigInstanceToLocal(def);
                             TBLog.Info("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
                             initialized = true;
                         }
@@ -455,7 +456,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 return;
             }
 
-            var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+            var city = TravelButton.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
             if (city == null)
             {
                 TBLog.Warn($"LogCitySceneName: city '{cityName}' not found in TravelButtonMod.Cities.");
@@ -538,6 +539,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     // Named handler that runs when the file changes.
     // FileSystemWatcher callbacks are on a background thread so marshal to main thread.
+    // ConfigWatcher_Changed: called by FileSystemWatcher when the plugin cfg file changes on disk.
+    // This implementation:
+    // - debounces rapid duplicate events,
+    // - marshals work to the Unity main thread,
+    // - ensures BepInEx config bindings exist,
+    // - calls Config.Reload() so BepInEx ConfigEntry.Value instances update,
+    // - copies values from BepInEx entries into runtime City objects,
+    // - for cities that intentionally do not have an Enabled ConfigEntry (hidden from ConfigurationManager,
+    //   e.g., "Sirocco"), reads the Enabled value directly from the cfg file and applies it,
+    // - refreshes/rebuilds the UI so dialogs reflect updated values.
     private void ConfigWatcher_Changed(object sender, FileSystemEventArgs e)
     {
         try
@@ -547,11 +558,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
             if ((now - _lastConfigChange).TotalMilliseconds < 150) return;
             _lastConfigChange = now;
 
+            // Enqueue to main thread (FileSystemWatcher events run on background threads)
             MainThreadQueue.Enqueue(() =>
             {
                 try
                 {
                     // Ensure binds exist (if startup hasn't created them)
+                    if (bex_cityPrice == null) bex_cityPrice = new Dictionary<string, BepInEx.Configuration.ConfigEntry<int>>(StringComparer.InvariantCultureIgnoreCase);
+                    if (bex_cityEnabled == null) bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
                     if (bex_cityPrice.Count == 0 || bex_cityEnabled.Count == 0)
                     {
                         EnsureBepInExConfigBindings();
@@ -569,27 +583,107 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     }
 
                     // Update runtime city objects from the current ConfigEntry values
-                    if (TravelButtonMod.Cities != null)
+                    if (TravelButton.Cities != null)
                     {
-                        foreach (var city in TravelButtonMod.Cities)
+                        foreach (var city in TravelButton.Cities)
                         {
+                            if (string.IsNullOrEmpty(city?.name)) continue;
+
+                            // If we have a BepInEx-enabled entry for the city, use it.
                             if (bex_cityEnabled.TryGetValue(city.name, out var enabledEntry))
                             {
-                                city.enabled = enabledEntry.Value;
+                                try
+                                {
+                                    city.enabled = enabledEntry.Value;
+                                }
+                                catch (Exception ex) { TBLog.Warn($"ConfigWatcher_Changed: applying enabled for {city.name} failed: {ex.Message}"); }
                             }
 
+                            // If we have a BepInEx price entry for the city, use it.
                             if (bex_cityPrice.TryGetValue(city.name, out var priceEntry))
                             {
-                                city.price = priceEntry.Value;
+                                try
+                                {
+                                    city.price = priceEntry.Value;
+                                }
+                                catch (Exception ex) { TBLog.Warn($"ConfigWatcher_Changed: applying price for {city.name} failed: {ex.Message}"); }
                             }
-
-                            // If you persist cities to a file after changes, avoid doing that here repeatedly
-                            // TravelButtonMod.PersistCitiesToConfig();
                         }
                     }
 
-                    // Refresh UI so dialogs reflect the new prices immediately
-                    RefreshUI();
+                    // For cities that do NOT have a bex enabled binding (hidden from ConfigurationManager,
+                    // e.g. Sirocco), try to read their Enabled flag directly from the cfg file and apply it.
+                    try
+                    {
+                        // Attempt to resolve the exact cfg path:
+                        string cfgFile = null;
+                        try
+                        {
+                            // Try to get file path from Config object via common property names
+                            var cfgType = Config?.GetType();
+                            var prop = cfgType?.GetProperty("ConfigFilePath") ?? cfgType?.GetProperty("FilePath") ?? cfgType?.GetProperty("FileName");
+                            if (prop != null)
+                            {
+                                cfgFile = prop.GetValue(Config) as string;
+                            }
+                        }
+                        catch { /* ignore reflection failures */ }
+
+                        // Fallback: search for a travelbutton-related cfg in the BepInEx config dir
+                        if (string.IsNullOrEmpty(cfgFile))
+                        {
+                            try
+                            {
+                                var files = Directory.GetFiles(Paths.ConfigPath, "*travelbutton*.cfg", SearchOption.TopDirectoryOnly);
+                                if (files != null && files.Length > 0)
+                                    cfgFile = files[0];
+                            }
+                            catch { /* ignore */ }
+                        }
+
+                        // Final fallback: use the filename observed in logs (adjust if your install differs)
+                        if (string.IsNullOrEmpty(cfgFile))
+                        {
+                            cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                        }
+
+                        // Parse and apply hidden-enabled keys
+                        foreach (var city in TravelButton.Cities ?? Enumerable.Empty<City>())
+                        {
+                            if (string.IsNullOrEmpty(city?.name)) continue;
+
+                            // Only attempt file-read if there's no bex enabled entry for this city
+                            if (!bex_cityEnabled.ContainsKey(city.name))
+                            {
+                                if (TryReadBoolFromCfgFile(cfgFile, "TravelButton.Cities", $"{city.name}.Enabled", out bool enabledFromFile))
+                                {
+                                    try
+                                    {
+                                        city.enabled = enabledFromFile;
+                                        TBLog.Info($"ConfigWatcher_Changed: applied {city.name}.Enabled={enabledFromFile} from cfg file.");
+                                    }
+                                    catch (Exception ex) { TBLog.Warn($"ConfigWatcher_Changed: applying file-enabled for {city.name} failed: {ex.Message}"); }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exHidden)
+                    {
+                        TBLog.Warn("ConfigWatcher_Changed: applying hidden config entries failed: " + exHidden.Message);
+                    }
+
+                    // Refresh UI so dialogs reflect the new prices / enabled states immediately.
+                    try
+                    {
+                        // Try the dedicated UI refresh helper if present
+                        try { RefreshUI(); } catch { }
+                        // Also attempt the rebuilder fallback (defensive)
+                        try { TravelButtonUI.RebuildTravelDialog(); } catch { }
+                    }
+                    catch (Exception exRefresh)
+                    {
+                        TBLog.Warn("ConfigWatcher_Changed: UI refresh failed: " + exRefresh.Message);
+                    }
 
                     TBLog.Info($"[TravelButton] Config file changed on disk ({e.FullPath}); runtime values and UI refreshed.");
                 }
@@ -624,103 +718,195 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
-    // Create top-level and per-city BepInEx Config.Bind entries and wire change handlers.
-    // Call this once after TravelButtonMod.Cities is populated (InitFromConfig success or fallback).
+    // EnsureBepInExConfigBindings: create BepInEx ConfigEntry bindings for cities.
+    // - For normal cities: create both {City}.Enabled and {City}.Price entries and attach SettingChanged handlers.
+    // - For "Sirocco": DO NOT create an Enabled ConfigEntry (so ConfigurationManager won't show a toggle).
+    //     Instead: default the runtime value to false for in-game UI, but try to read an existing value
+    //     from the cfg file (so manual edits to the cfg can still control Sirocco.Enabled).
+    // EnsureBepInExConfigBindings: do NOT create any BepInEx ConfigEntry for "Sirocco" so it won't appear
+    // in the in-game ConfigurationManager UI. Do NOT remove or modify the cfg file; instead, read any
+    // existing Sirocco values from disk and apply them to the runtime model so manual edits still work.
     private void EnsureBepInExConfigBindings()
     {
         try
         {
-            // Top-level bindings (section: TravelButton)
-            bex_enableMod = Config.Bind("TravelButton", "EnableMod", TravelButtonMod.cfgEnableMod.Value, "Enable or disable the TravelButton mod");
-            bex_globalPrice = Config.Bind("TravelButton", "GlobalTravelPrice", TravelButtonMod.cfgTravelCost.Value, "Default cost for teleport (silver)");
-            bex_currencyItem = Config.Bind("TravelButton", "CurrencyItem", TravelButtonMod.cfgCurrencyItem.Value, "Item name used as currency");
-
-            // Apply values from ConfigEntries into runtime wrappers
-            TravelButtonMod.cfgEnableMod.Value = bex_enableMod.Value;
-            TravelButtonMod.cfgTravelCost.Value = bex_globalPrice.Value;
-            TravelButtonMod.cfgCurrencyItem.Value = bex_currencyItem.Value;
-
-            // Hook top-level changes so runtime values update when user edits via CM
-            bex_enableMod.SettingChanged += (s, e) =>
+            if (TravelButton.Cities == null)
             {
-                TravelButtonMod.cfgEnableMod.Value = bex_enableMod.Value;
-                TravelButtonMod.PersistCitiesToConfig();
-                TBLog.Info($"BepInEx config changed: EnableMod = {bex_enableMod.Value}");
-            };
-            bex_globalPrice.SettingChanged += (s, e) =>
+                TBLog.Warn("EnsureBepInExConfigBindings: TravelButton.Cities is null.");
+                return;
+            }
+
+            const string section = "TravelButton.Cities";
+
+            // Ensure dictionaries exist
+            if (bex_cityEnabled == null) bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
+            if (bex_cityPrice == null) bex_cityPrice = new Dictionary<string, BepInEx.Configuration.ConfigEntry<int>>(StringComparer.InvariantCultureIgnoreCase);
+
+            // Iterate cities and create bindings
+            foreach (var city in TravelButton.Cities)
             {
-                TravelButtonMod.cfgTravelCost.Value = bex_globalPrice.Value;
-                TBLog.Info($"BepInEx config changed: GlobalTravelPrice = {bex_globalPrice.Value}");
-            };
-            bex_currencyItem.SettingChanged += (s, e) =>
-            {
-                TravelButtonMod.cfgCurrencyItem.Value = bex_currencyItem.Value;
-            };
-
-            // Per-city bindings (section: TravelButton.Cities)
-            if (TravelButtonMod.Cities == null) TravelButtonMod.Cities = new List<TravelButtonMod.City>();
-
-            foreach (var city in TravelButtonMod.Cities)
-            {
-                // Avoid duplicate binds
-                if (bex_cityEnabled.ContainsKey(city.name)) continue;
-
-                string section = "TravelButton.Cities";
-
-                // For enabled: always default to false (cities start disabled until user enables them)
-                // BepInEx config is authoritative
-                var enabledKey = Config.Bind(section, $"{city.name}.Enabled", true, $"Enable teleport destination {city.name}");
-
-                // For price: if JSON provided a price, use it as the default seed for new config entries
-                // Otherwise use global travel cost as default
-                bool hasJsonPrice = city.price.HasValue;
-                int priceDefaultValue = city.price ?? TravelButtonMod.cfgTravelCost.Value;
-                var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefaultValue, $"Price to teleport to {city.name} (overrides global)");
-
-                bex_cityEnabled[city.name] = enabledKey;
-                bex_cityPrice[city.name] = priceKey;
-
-                // BepInEx config is authoritative: assign ConfigEntry values to runtime city object
-                city.enabled = enabledKey.Value;
-                city.price = priceKey.Value;
-
-                TBLog.Info($"City '{city.name}': enabled={city.enabled} (from BepInEx config), price={city.price} (from BepInEx config)");
-
-                // Log whether values were seeded from JSON or provided by BepInEx
-                if (hasJsonPrice && priceKey.Value == priceDefaultValue)
+                try
                 {
-                    TBLog.Info($"City '{city.name}': price seeded from JSON ({priceDefaultValue}), enabled from BepInEx ({enabledKey.Value})");
+                    if (string.IsNullOrEmpty(city?.name)) continue;
+
+                    // Special-case "Sirocco": hide the Enabled toggle (and Price) from ConfigurationManager by NOT binding any ConfigEntry.
+                    // Do NOT remove lines from the cfg file — the file remains authoritative for manual edits.
+                    if (string.Equals(city.name, "Sirocco", StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        // Default in-game value: hidden/disabled. We'll override from the cfg file if a value exists.
+                        city.enabled = false;
+
+                        try
+                        {
+                            // Determine cfg filename (adjust if your plugin uses a different filename)
+                            string cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+
+                            // Read Enabled from cfg file if present (manual edits will still be honored)
+                            if (TryReadBoolFromCfgFile(cfgFile, section, $"{city.name}.Enabled", out bool enabledFromFile))
+                            {
+                                city.enabled = enabledFromFile;
+                                TBLog.Info($"EnsureBepInExConfigBindings: applied Sirocco.Enabled from cfg file: {enabledFromFile}");
+                            }
+
+                            // Read Price from cfg file if present (so manual edits to price are also honored)
+                            if (TryReadIntFromCfgFile(cfgFile, section, $"{city.name}.Price", out int priceFromFile))
+                            {
+                                city.price = priceFromFile;
+                                TBLog.Info($"EnsureBepInExConfigBindings: applied Sirocco.Price from cfg file: {priceFromFile}");
+                            }
+                        }
+                        catch (Exception exRead)
+                        {
+                            TBLog.Warn("EnsureBepInExConfigBindings: reading Sirocco values from cfg failed: " + exRead.Message);
+                        }
+
+                        // IMPORTANT: do NOT bind any ConfigEntry for Sirocco (neither Enabled nor Price).
+                        // This prevents ConfigurationManager from showing Sirocco in the in-game config GUI.
+                        continue;
+                    }
+
+                    // Normal cities: create Enabled and Price bindings
+                    var enabledKey = Config.Bind(section, $"{city.name}.Enabled", city.enabled,
+                        new ConfigDescription($"Enable teleport destination {city.name}"));
+                    bex_cityEnabled[city.name] = enabledKey;
+
+                    int defaultPriceNormal = city.price ?? 0;
+                    var priceKeyNormal = Config.Bind<int>(section, $"{city.name}.Price", defaultPriceNormal,
+                        new ConfigDescription($"Price for {city.name}"));
+                    bex_cityPrice[city.name] = priceKeyNormal;
+
+                    // Immediately apply the bound price value to runtime model (ensures we reflect file value)
+                    try
+                    {
+                        city.price = priceKeyNormal.Value;
+                        TBLog.Info($"EnsureBepInExConfigBindings: bound {city.name}.Price = {priceKeyNormal.Value}");
+                    }
+                    catch (Exception exApply)
+                    {
+                        TBLog.Warn($"EnsureBepInExConfigBindings: applying bound price for {city.name} failed: {exApply.Message}");
+                    }
+
+                    // Attach SettingChanged handlers that update runtime values and refresh UI
+                    {
+                        var localCity = city;
+                        var localEnabledKey = enabledKey;
+                        localEnabledKey.SettingChanged += (s, e) =>
+                        {
+                            try
+                            {
+                                localCity.enabled = localEnabledKey.Value;
+                                TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Enabled = {localEnabledKey.Value}");
+                                try { TravelButtonUI.RebuildTravelDialog(); } catch { }
+                                try { TravelButton.PersistCitiesToConfig(); } catch { }
+                            }
+                            catch (Exception ex) { TBLog.Warn("Enabled SettingChanged handler failed: " + ex.Message); }
+                        };
+                    }
+
+                    {
+                        var localCity = city;
+                        var localPriceKey = priceKeyNormal;
+                        localPriceKey.SettingChanged += (s, e) =>
+                        {
+                            try
+                            {
+                                localCity.price = localPriceKey.Value;
+                                TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Price = {localPriceKey.Value}");
+                                try { TravelButtonUI.RebuildTravelDialog(); } catch { }
+                                try { TravelButton.PersistCitiesToConfig(); } catch { }
+                            }
+                            catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
+                        };
+                    }
                 }
-                else if (hasJsonPrice)
+                catch (Exception exCity)
                 {
-                    TBLog.Info($"City '{city.name}': price from BepInEx config ({priceKey.Value}, JSON had {priceDefaultValue}), enabled from BepInEx ({enabledKey.Value})");
+                    TBLog.Warn($"EnsureBepInExConfigBindings: failed binding for city {city?.name}: {exCity}");
                 }
-                else
+            } // foreach city
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("EnsureBepInExConfigBindings: top-level failure: " + ex);
+        }
+    }
+
+    /// <summary>
+    /// Try to read an integer value (e.g. Price) from a BepInEx-style cfg file inside the given section.
+    /// Returns true if a value was found and parsed.
+    /// </summary>
+    private static bool TryReadIntFromCfgFile(string cfgFilePath, string sectionName, string keyName, out int value)
+    {
+        value = 0;
+        try
+        {
+            if (string.IsNullOrEmpty(cfgFilePath) || !File.Exists(cfgFilePath))
+                return false;
+
+            bool inSection = false;
+            foreach (var raw in File.ReadLines(cfgFilePath))
+            {
+                var line = raw?.Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+                if (line.StartsWith(";") || line.StartsWith("#")) continue;
+
+                // Section header
+                if (line.StartsWith("[") && line.EndsWith("]"))
                 {
-                    TBLog.Info($"City '{city.name}': price defaulted to global ({priceDefaultValue}), enabled from BepInEx ({enabledKey.Value})");
+                    var sec = line.Substring(1, line.Length - 2).Trim();
+                    inSection = string.Equals(sec, sectionName, StringComparison.InvariantCultureIgnoreCase);
+                    continue;
                 }
 
-                enabledKey.SettingChanged += (s, e) =>
-                {
-                    city.enabled = enabledKey.Value;
-                    TBLog.Info($"Config changed: {city.name}.Enabled = {enabledKey.Value}");
-                    TravelButtonMod.PersistCitiesToConfig();
-                    try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                };
+                if (!inSection) continue;
 
-                priceKey.SettingChanged += (s, e) =>
+                // Key = value  (split on first '=')
+                var idx = line.IndexOf('=');
+                if (idx <= 0) continue;
+                var left = line.Substring(0, idx).Trim();
+                var right = line.Substring(idx + 1).Trim();
+
+                // Remove inline comments after ';' if present
+                var semicolon = right.IndexOf(';');
+                if (semicolon >= 0) right = right.Substring(0, semicolon).Trim();
+
+                if (string.Equals(left, keyName, StringComparison.InvariantCultureIgnoreCase))
                 {
-                    city.price = priceKey.Value;
-                    TBLog.Info($"Config changed: {city.name}.Price = {priceKey.Value}");
-                    TravelButtonMod.PersistCitiesToConfig();
-                    try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                };
+                    if (int.TryParse(right, out var parsed))
+                    {
+                        value = parsed;
+                        return true;
+                    }
+                    // sometimes price could be stored as "null" or empty; treat those as not found
+                    return false;
+                }
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("EnsureBepInExConfigBindings failed: " + ex);
+            try { TBLog.Warn($"TryReadIntFromCfgFile failed: {ex.Message}"); } catch { }
         }
+        return false;
     }
 
     /// <summary>
@@ -823,17 +1009,19 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         try
         {
-            if (TravelButtonMod.Cities == null) return;
-            foreach (var city in TravelButtonMod.Cities)
+            if (TravelButton.Cities == null) return;
+            foreach (var city in TravelButton.Cities)
             {
                 if (bex_cityEnabled.ContainsKey(city.name)) continue;
                 string section = "TravelButton.Cities";
                 
-                var priceDefault = city.price ?? TravelButtonMod.cfgTravelCost.Value;
+                var priceDefault = city.price ?? TravelButton.cfgTravelCost.Value;
                 var enabledDefault = city.enabled;
                 
                 var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
-                var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefault, $"Price to teleport to {city.name} (overrides global)");
+//                var priceKey = Config.Bind(section, $"{city.name}.Price", priceDefault, $"Price to teleport to {city.name} (overrides global)");
+                var priceKey = Config.Bind<int>(section, $"{city.name}.Price", (int)city.price,
+                    new ConfigDescription($"Price for {city.name}"));
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
@@ -852,12 +1040,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 enabledKey.SettingChanged += (s, e) =>
                 {
                     city.enabled = enabledKey.Value;
-                    TravelButtonMod.PersistCitiesToConfig();
+                    TravelButton.PersistCitiesToConfig();
                 };
                 priceKey.SettingChanged += (s, e) =>
                 {
                     city.price = priceKey.Value;
-                    TravelButtonMod.PersistCitiesToConfig();
+                    TravelButton.PersistCitiesToConfig();
                 };
             }
         }
@@ -883,7 +1071,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     }
 }
 
-public static class TravelButtonMod
+public static class TravelButton
 {
     public static bool TeleportInProgress = false;
 
@@ -1053,7 +1241,7 @@ public static class TravelButtonMod
         if (string.IsNullOrEmpty(cityName)) return;
 
         // Resolve Cities collection (if you're inside TravelButtonMod you can reference it directly)
-        var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        var citiesField = typeof(TravelButton).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
         if (citiesField == null)
         {
             TBLog.Warn("AutoAssignSceneNameForCity: TravelButtonMod.Cities field not found.");
@@ -1166,17 +1354,67 @@ public static class TravelButtonMod
         }
     }
 
+    // Try to locate a public or non-public static field/property named "Cities" in any loaded assembly
+    // and return its value as IList (or null if not found). Logs helpful diagnostics.
+    // Reflection helper: find a static "Cities" field or property in loaded assemblies and return it as an IList.
+    // Uses FieldInfo / PropertyInfo correctly so GetValue is called on reflection objects, not on IList.
+    // Returns the static Cities collection (as IList) or null if not found.
+    private static System.Collections.IList FindStaticCitiesCollection()
+    {
+        try
+        {
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            foreach (var asm in assemblies)
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch { continue; }
+
+                foreach (var t in types)
+                {
+                    if (t.IsNestedPrivate) continue;
+
+                    var field = t.GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase);
+                    if (field != null)
+                    {
+                        var val = field.GetValue(null);
+                        if (val is System.Collections.IList list) return list;
+                        if (val is System.Collections.IEnumerable enumv)
+                        {
+                            var temp = new System.Collections.ArrayList();
+                            foreach (var item in enumv) temp.Add(item);
+                            return temp;
+                        }
+                    }
+
+                    var prop = t.GetProperty("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase);
+                    if (prop != null)
+                    {
+                        var val = prop.GetValue(null, null);
+                        if (val is System.Collections.IList list2) return list2;
+                        if (val is System.Collections.IEnumerable enumv2)
+                        {
+                            var temp = new System.Collections.ArrayList();
+                            foreach (var item in enumv2) temp.Add(item);
+                            return temp;
+                        }
+                    }
+                }
+            }
+
+            TBLog.Warn("[TravelButton] FindStaticCitiesCollection: static member named 'Cities' not found in loaded assemblies.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] FindStaticCitiesCollection failed: " + ex.Message);
+        }
+
+        return null;
+    }
+
     // Sweep: Auto-assign sceneName for all cities that are missing both sceneName and coords.
     public static void AutoAssignSceneNamesFromLoadedScenes()
     {
-        var citiesField = typeof(TravelButtonMod).GetField("Cities", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-        if (citiesField == null)
-        {
-            TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: TravelButtonMod.Cities field not found.");
-            return;
-        }
-
-        var cities = citiesField.GetValue(null) as System.Collections.IList;
+        var cities = FindStaticCitiesCollection();
         if (cities == null)
         {
             TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes: Cities list is null.");
@@ -1291,7 +1529,7 @@ public static class TravelButtonMod
         // compatibility method name used previously in code: isCityEnabled()
         public bool isCityEnabled()
         {
-            return TravelButtonMod.IsCityEnabled(this.name);
+            return TravelButton.IsCityEnabled(this.name);
         }
     }
 
@@ -1382,7 +1620,7 @@ public static class TravelButtonMod
             if (cfgInstance == null && cfgMgrType != null)
             {
                 bool callLoad = false;
-                bool isLocalConfigMgr = cfgMgrType.Assembly == typeof(TravelButtonMod).Assembly;
+                bool isLocalConfigMgr = cfgMgrType.Assembly == typeof(TravelButton).Assembly;
 
                 if (isLocalConfigMgr)
                 {
@@ -1608,7 +1846,7 @@ public static class TravelButtonMod
         {
             try
             {
-                if (asm == typeof(TravelButtonMod).Assembly)
+                if (asm == typeof(TravelButton).Assembly)
                 {
                     var t = asm.GetTypes().FirstOrDefault(x => x.Name == simpleName);
                     if (t != null) return t;
@@ -2038,6 +2276,1284 @@ public static class TravelButtonMod
         {
             TBLog.Warn("DumpTravelButtonState exception: " + ex.Message);
         }
+    }
+
+    // Helper: try to read a bool key in a specific [section] from a BepInEx .cfg file.
+    // Example cfg snippet:
+    // [TravelButton.Cities]
+    // Sirocco.Enabled = true
+    // Returns true if a boolean value was found and parsed; false otherwise.
+    public static bool TryReadBoolFromCfgFile(string cfgFilePath, string sectionName, string keyName, out bool value)
+    {
+        value = false;
+        try
+        {
+            if (string.IsNullOrEmpty(cfgFilePath) || !File.Exists(cfgFilePath))
+                return false;
+
+            bool inSection = false;
+            foreach (var raw in File.ReadLines(cfgFilePath))
+            {
+                var line = raw?.Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+                if (line.StartsWith(";") || line.StartsWith("#")) continue;
+
+                // Section header
+                if (line.StartsWith("[") && line.EndsWith("]"))
+                {
+                    var sec = line.Substring(1, line.Length - 2).Trim();
+                    inSection = string.Equals(sec, sectionName, StringComparison.InvariantCultureIgnoreCase);
+                    continue;
+                }
+
+                if (!inSection) continue;
+
+                // Key = value  (split on first '=')
+                var idx = line.IndexOf('=');
+                if (idx <= 0) continue;
+                var left = line.Substring(0, idx).Trim();
+                var right = line.Substring(idx + 1).Trim();
+
+                // Remove inline comments after ';' if present
+                var semicolon = right.IndexOf(';');
+                if (semicolon >= 0) right = right.Substring(0, semicolon).Trim();
+
+                if (string.Equals(left, keyName, StringComparison.InvariantCultureIgnoreCase))
+                {
+                    // Try parse boolean
+                    if (bool.TryParse(right, out var parsed))
+                    {
+                        value = parsed;
+                        return true;
+                    }
+                    // sometimes values are stored like "1" or "0"
+                    if (int.TryParse(right, out var ival))
+                    {
+                        value = ival != 0;
+                        return true;
+                    }
+                    // unknown format -> ignore
+                    return false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            try { TBLog.Warn($"TryReadBoolFromCfgFile failed: {ex.Message}"); } catch { }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true if the current player save indicates the given cityId/name has been visited.
+    /// This is best-effort reflection: it will search loaded assemblies for likely SaveManager/PlayerSave types
+    /// and look for member collections that match common names. Comparison is case-insensitive.
+    /// </summary>
+    // Added: runtime check whether the player has visited a given city.
+    // Usage: call HasPlayerVisited(city.name) when building the dialog.
+    // This will try several identifiers (city.name, city.sceneName, city.targetGameObjectName)
+    // and will log the discovered save root, visited member and sample values to help debug mismatches.
+    // Return the inner per-character save object (e.g. CharacterSaveInstanceHolder.Save / CharacterSaveInstanceHolder.characterSave / .SaveData).
+    // Looks up SaveManager.Instance -> m_charSaves (dictionary) -> first value -> inner save object.
+    private static object GetFirstCharacterInnerSave()
+    {
+        try
+        {
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null) return null;
+
+            var rootType = saveRoot.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            // Get the charSaves container
+            object charSaves = null;
+            var f = rootType.GetField("m_charSaves", flags) ?? rootType.GetField("charSaves", flags);
+            if (f != null) charSaves = f.GetValue(saveRoot);
+            else
+            {
+                var p = rootType.GetProperty("CharacterSaves", flags) ?? rootType.GetProperty("characterSaves", flags);
+                if (p != null) charSaves = p.GetValue(saveRoot, null);
+            }
+            if (charSaves == null) return null;
+
+            // If dictionary-like, try to obtain Values or m_values
+            if (charSaves is System.Collections.IDictionary dict)
+            {
+                // get first value
+                foreach (System.Collections.DictionaryEntry kv in dict)
+                {
+                    var holder = kv.Value;
+                    if (holder == null) continue;
+                    // try to get holder inner save
+                    var inner = TryGetMemberValue(holder, "Save") ?? TryGetMemberValue(holder, "characterSave")
+                                ?? TryGetMemberValue(holder, "CharacterSave") ?? TryGetMemberValue(holder, "SaveData")
+                                ?? TryGetMemberValue(holder, "data");
+                    if (inner != null) return inner;
+                    // if inner not found, return holder itself (we can probe it later)
+                    return holder;
+                }
+                return null;
+            }
+
+            // If it exposes Values/ValuesArray property (DictionaryExt)
+            var valuesProp = charSaves.GetType().GetProperty("Values", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+            if (valuesProp != null)
+            {
+                var valuesObj = valuesProp.GetValue(charSaves, null);
+                if (valuesObj is System.Collections.IEnumerable valuesEnum)
+                {
+                    foreach (var holder in valuesEnum)
+                    {
+                        if (holder == null) continue;
+                        var inner = TryGetMemberValue(holder, "Save") ?? TryGetMemberValue(holder, "characterSave")
+                                    ?? TryGetMemberValue(holder, "CharacterSave") ?? TryGetMemberValue(holder, "SaveData")
+                                    ?? TryGetMemberValue(holder, "data");
+                        if (inner != null) return inner;
+                        return holder;
+                    }
+                }
+            }
+
+            // As fallback, if object has m_values list/array field
+            var mValuesField = charSaves.GetType().GetField("m_values", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+            if (mValuesField != null)
+            {
+                var mv = mValuesField.GetValue(charSaves);
+                if (mv is System.Collections.IEnumerable mvEnum)
+                {
+                    foreach (var holder in mvEnum)
+                    {
+                        if (holder == null) continue;
+                        var inner = TryGetMemberValue(holder, "Save") ?? TryGetMemberValue(holder, "characterSave")
+                                    ?? TryGetMemberValue(holder, "CharacterSave") ?? TryGetMemberValue(holder, "SaveData")
+                                    ?? TryGetMemberValue(holder, "data");
+                        if (inner != null) return inner;
+                        return holder;
+                    }
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("GetFirstCharacterInnerSave failed: " + ex.Message);
+            return null;
+        }
+    }
+
+    // Try to extract a visited/discovered collection from the provided save-like object.
+    // Returns flattened List<object> or null.
+    private static List<object> GetVisitedCollectionFromSaveObject(object saveObj)
+    {
+        if (saveObj == null) return null;
+        try
+        {
+            var t = saveObj.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            // Candidate names (common in many games)
+            var visitedCandidates = new[]
+            {
+            "visitedLocations","discoveredLocations","discovered","visitedCities","discoveredCities",
+            "knownLocations","knownDestinations","visited","discoveredIds","visitedIds","visitedLocationNames",
+            "visitedNodes","discoveredNodes","visitedLocationDictionary","visitedLocationsByName"
+        };
+
+            foreach (var name in visitedCandidates)
+            {
+                try
+                {
+                    var f = t.GetField(name, flags);
+                    if (f != null)
+                    {
+                        var val = f.GetValue(saveObj);
+                        var items = ConvertToObjectList(val);
+                        if (items != null && items.Count > 0) return items;
+                    }
+                    var p = t.GetProperty(name, flags);
+                    if (p != null)
+                    {
+                        var val = p.GetValue(saveObj, null);
+                        var items = ConvertToObjectList(val);
+                        if (items != null && items.Count > 0) return items;
+                    }
+                }
+                catch { /* ignore per-member errors */ }
+            }
+
+            // If none matched by name, scan for dictionaries and lists and prefer Dictionary<string, ?> or HashSet-like
+            foreach (var f in t.GetFields(flags))
+            {
+                try
+                {
+                    var val = f.GetValue(saveObj);
+                    var items = ConvertToObjectList(val);
+                    if (items != null && items.Count > 0)
+                    {
+                        // prefer dictionary keys if dictionary
+                        if (val is System.Collections.IDictionary) return items;
+                        // otherwise keep as candidate (return first found)
+                        return items;
+                    }
+                }
+                catch { }
+            }
+            foreach (var p in t.GetProperties(flags))
+            {
+                try
+                {
+                    if (p.GetIndexParameters().Length > 0) continue;
+                    var val = p.GetValue(saveObj, null);
+                    var items = ConvertToObjectList(val);
+                    if (items != null && items.Count > 0)
+                    {
+                        if (val is System.Collections.IDictionary) return items;
+                        return items;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("GetVisitedCollectionFromSaveObject failed: " + ex.Message);
+        }
+        return null;
+    }
+
+    private static readonly string[] SaveManagerTypeNameCandidates = new[]
+    {
+    "SaveManager", "PlayerSave", "PlayerProfile", "SaveData", "SaveSystem", "ProfileManager",
+    "GameSave", "WorldState", "SaveManagerBase"
+    };
+
+    private static readonly string[] SaveInstanceMemberCandidates = new[]
+    {
+    "Instance", "instance", "Current", "CurrentSave", "Save", "SaveData", "Profile", "Data"
+    };
+
+    private static readonly string[] VisitedMemberCandidates = new[]
+    {
+    "visitedLocations", "discoveredLocations", "discovered", "visitedCities", "discoveredCities",
+    "knownLocations", "knownDestinations", "visited", "discoveredIds", "visitedIds"
+    };
+
+    private static readonly string[] HasVisitedAlternateKeys = new[]
+    {
+    "name", "sceneName", "targetGameObjectName"
+    };
+
+    // City-aware overload: try multiple candidate identifiers (name, sceneName, targetGameObjectName)
+    // Uses the fast string-based lookup HasPlayerVisitedFast(string) to avoid overload ambiguity.
+    public static bool HasPlayerVisited(TravelButton.City city)
+    {
+        if (city == null) return false;
+
+        try
+        {
+            // Build candidate strings to try
+            var candidates = new List<string>();
+            if (!string.IsNullOrEmpty(city.name)) candidates.Add(city.name);
+            if (!string.IsNullOrEmpty(city.sceneName)) candidates.Add(city.sceneName);
+            if (!string.IsNullOrEmpty(city.targetGameObjectName)) candidates.Add(city.targetGameObjectName);
+
+            // Add normalized variants
+            var extras = new List<string>();
+            foreach (var c in candidates)
+            {
+                if (string.IsNullOrEmpty(c)) continue;
+                extras.Add(c);
+                extras.Add(c.ToLowerInvariant());
+                extras.Add(c.Replace(" ", "").ToLowerInvariant());
+            }
+
+            // Try each candidate using the fast string-based check
+            foreach (var cand in extras.Distinct())
+            {
+                try
+                {
+                    if (HasPlayerVisitedFast(cand)) // <-- explicit string-based call
+                    {
+                        TBLog.Info($"HasPlayerVisited(City): matched candidate '{cand}' for city '{city.name}'.");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("HasPlayerVisited(City) candidate check failed: " + ex.Message);
+                }
+            }
+
+            // If the save root does not exist, fall back to legacy delegate for compatibility
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null)
+            {
+                var fallback = TravelButtonUI.IsCityVisitedFallback;
+                if (fallback != null)
+                {
+                    TBLog.Info($"HasPlayerVisited(City): no save root; calling legacy fallback for '{city.name}'.");
+                    return fallback(city);
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("HasPlayerVisited(City) failed: " + ex.Message);
+            return false;
+        }
+    }
+
+    // PERFORMANCE: cache of visited keys to avoid repeated reflection per city
+    private static object s_visitedLock = new object();
+    private static HashSet<string> s_cachedVisitedKeys = null; // case-insensitive
+    private static object s_cachedSaveRootRef = null; // reference to SaveManager.Instance used to build the cache
+
+    // Build or reuse a HashSet of visited identifiers. Call once per dialog open.
+    public static void PrepareVisitedLookup()
+    {
+        try
+        {
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null)
+            {
+                // no save available -> clear cache so fallback behaviour can be used if desired
+                lock (s_visitedLock)
+                {
+                    s_cachedVisitedKeys = null;
+                    s_cachedSaveRootRef = null;
+                }
+                TBLog.Info("PrepareVisitedLookup: no save root found; cleared cached visited keys.");
+                return;
+            }
+
+            // If cache already built for this exact save root object, reuse it
+            lock (s_visitedLock)
+            {
+                if (ReferenceEquals(s_cachedSaveRootRef, saveRoot) && s_cachedVisitedKeys != null)
+                {
+                    // already prepared for this save root instance
+                    TBLog.Info("PrepareVisitedLookup: reuse existing visited lookup cache.");
+                    return;
+                }
+
+                // Build a new visited set
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // 1) per-character save (first char)
+                try
+                {
+                    var charInner = GetFirstCharacterInnerSave();
+                    if (charInner != null)
+                    {
+                        var list = GetVisitedCollectionFromSaveObject(charInner);
+                        if (list != null)
+                        {
+                            foreach (var item in list)
+                            {
+                                if (item == null) continue;
+                                var s = item.ToString().Trim();
+                                if (s.Length == 0) continue;
+                                // add several normalized variants for matching
+                                set.Add(s);
+                                set.Add(s.ToLowerInvariant());
+                                set.Add(s.Replace(" ", "").ToLowerInvariant());
+                            }
+                        }
+                    }
+                }
+                catch (Exception exChar)
+                {
+                    TBLog.Warn("PrepareVisitedLookup: error reading per-character visited collection: " + exChar.Message);
+                }
+
+                // 2) world save
+                try
+                {
+                    var rootType = saveRoot.GetType();
+                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+                    var worldSaveProp = rootType.GetProperty("WorldSave", flags) ?? rootType.GetProperty("worldSave", flags);
+                    if (worldSaveProp != null)
+                    {
+                        var worldSave = worldSaveProp.GetValue(saveRoot, null);
+                        if (worldSave != null)
+                        {
+                            var list = GetVisitedCollectionFromSaveObject(worldSave);
+                            if (list != null)
+                            {
+                                foreach (var item in list)
+                                {
+                                    if (item == null) continue;
+                                    var s = item.ToString().Trim();
+                                    if (s.Length == 0) continue;
+                                    set.Add(s);
+                                    set.Add(s.ToLowerInvariant());
+                                    set.Add(s.Replace(" ", "").ToLowerInvariant());
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception exWorld)
+                {
+                    TBLog.Warn("PrepareVisitedLookup: error reading WorldSave visited collection: " + exWorld.Message);
+                }
+
+                // Save the cache and reference
+                s_cachedVisitedKeys = set;
+                s_cachedSaveRootRef = saveRoot;
+                TBLog.Info($"PrepareVisitedLookup: built visited lookup with {s_cachedVisitedKeys.Count} entries.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PrepareVisitedLookup failed: " + ex.Message);
+            lock (s_visitedLock)
+            {
+                s_cachedVisitedKeys = null;
+                s_cachedSaveRootRef = null;
+            }
+        }
+    }
+
+    // Fast per-city check using precomputed set. Very cheap (O(1) per city).
+    // If cache is missing, it can optionally call legacy HasPlayerVisited as a fallback.
+    // Fast cached lookup. If the cache is missing, try to build it once and re-check.
+    // Returns false if no match and no cache could be built.
+    public static bool HasPlayerVisitedFast(string cityId)
+    {
+        if (string.IsNullOrEmpty(cityId)) return false;
+
+        // take a snapshot of the cache
+        HashSet<string> snapshot = null;
+        lock (s_visitedLock) snapshot = s_cachedVisitedKeys;
+
+        if (snapshot != null && snapshot.Count > 0)
+        {
+            // try direct and a couple normalized variants
+            if (snapshot.Contains(cityId)) return true;
+            var lower = cityId.ToLowerInvariant();
+            if (snapshot.Contains(lower)) return true;
+            var nospace = lower.Replace(" ", "");
+            if (snapshot.Contains(nospace)) return true;
+
+            return false;
+        }
+
+        // No cache available: attempt to build it now (single, cheap attempt)
+        try
+        {
+            PrepareVisitedLookup();
+
+            // re-check cache after building
+            lock (s_visitedLock) snapshot = s_cachedVisitedKeys;
+            if (snapshot != null && snapshot.Count > 0)
+            {
+                if (snapshot.Contains(cityId)) return true;
+                var lower = cityId.ToLowerInvariant();
+                if (snapshot.Contains(lower)) return true;
+                var nospace = lower.Replace(" ", "");
+                if (snapshot.Contains(nospace)) return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("HasPlayerVisitedFast: failed to build/inspect visited cache: " + ex.Message);
+        }
+
+        // Give up — no cache and no match. Returning false is safer than recursing into heavier code.
+        return false;
+    }
+
+    // Helper to clear cache (call when save is modified externally or when you want to force rebuild)
+    private static void ClearVisitedLookupCache()
+    {
+        lock (s_visitedLock)
+        {
+            s_cachedVisitedKeys = null;
+            s_cachedSaveRootRef = null;
+        }
+        TBLog.Info("ClearVisitedLookupCache: cleared cached visited keys.");
+    }
+
+    // Diagnostic: robustly inspect CharacterSaves entries and their inner save objects to locate "visited"/"discovered" members.
+    public static void DumpCharacterSaveHoldersDetailed()
+    {
+        try
+        {
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null)
+            {
+                TBLog.Info("DumpCharacterSaveHoldersDetailed: SaveManager.Instance not found.");
+                return;
+            }
+
+            var rootType = saveRoot.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            // Try field m_charSaves or property CharacterSaves
+            object charSavesObj = null;
+            try
+            {
+                var field = rootType.GetField("m_charSaves", flags) ?? rootType.GetField("charSaves", flags);
+                if (field != null) charSavesObj = field.GetValue(saveRoot);
+                else
+                {
+                    var prop = rootType.GetProperty("CharacterSaves", flags) ?? rootType.GetProperty("characterSaves", flags);
+                    if (prop != null) charSavesObj = prop.GetValue(saveRoot, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("DumpCharacterSaveHoldersDetailed: error retrieving CharacterSaves: " + ex.Message);
+                charSavesObj = null;
+            }
+
+            if (charSavesObj == null)
+            {
+                TBLog.Info("DumpCharacterSaveHoldersDetailed: CharacterSaves not found on SaveManager.");
+                return;
+            }
+
+            // Handle Dictionary-like container (DictionaryExt or IDictionary)
+            if (charSavesObj is System.Collections.IDictionary dict)
+            {
+                TBLog.Info($"DumpCharacterSaveHoldersDetailed: CharacterSaves is IDictionary with count={dict.Count}. Listing up to 3 entries...");
+                int i = 0;
+                foreach (System.Collections.DictionaryEntry kv in dict)
+                {
+                    if (i++ >= 3) break;
+                    TBLog.Info($" CharacterSave entry key={kv.Key}, valueType={(kv.Value != null ? kv.Value.GetType().FullName : "<null>")}");
+                    if (kv.Value != null)
+                    {
+                        DumpObjectMembersSample(kv.Value, 12);
+                        // probe inner save object
+                        var inner = TryGetMemberValue(kv.Value, "Save") ?? TryGetMemberValue(kv.Value, "characterSave") ?? TryGetMemberValue(kv.Value, "SaveData") ?? TryGetMemberValue(kv.Value, "data");
+                        if (inner != null)
+                        {
+                            TBLog.Info($"  Inner save type = {inner.GetType().FullName}");
+                            DumpObjectMembersSample(inner, 20);
+                            // probe for visited-like members on inner
+                            ProbeForVisitedMembers(inner);
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Handle enumerable (IList or IEnumerable)
+            if (charSavesObj is System.Collections.IEnumerable enumerable && !(charSavesObj is string))
+            {
+                TBLog.Info("DumpCharacterSaveHoldersDetailed: CharacterSaves is IEnumerable - enumerating up to 3 elements...");
+                int idx = 0;
+                foreach (var entry in enumerable)
+                {
+                    if (idx++ >= 3) break;
+                    if (entry == null)
+                    {
+                        TBLog.Info($" CharacterSave[{idx - 1}] = <null>");
+                        continue;
+                    }
+                    TBLog.Info($" CharacterSave[{idx - 1}] type = {entry.GetType().FullName}");
+                    DumpObjectMembersSample(entry, 12);
+                    var inner = TryGetMemberValue(entry, "Save") ?? TryGetMemberValue(entry, "characterSave") ?? TryGetMemberValue(entry, "SaveData") ?? TryGetMemberValue(entry, "data");
+                    if (inner != null)
+                    {
+                        TBLog.Info($"  Inner save type = {inner.GetType().FullName}");
+                        DumpObjectMembersSample(inner, 20);
+                        ProbeForVisitedMembers(inner);
+                    }
+                }
+                return;
+            }
+
+            // Fallback: not enumerable and not dictionary
+            TBLog.Info($"DumpCharacterSaveHoldersDetailed: CharacterSaves has unexpected type {charSavesObj.GetType().FullName}. Dumping object sample:");
+            DumpObjectMembersSample(charSavesObj, 20);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpCharacterSaveHoldersDetailed failed: " + ex.Message);
+        }
+    }
+
+    // Probe an object for likely visited/discovered members and log their contents (small sample)
+    private static void ProbeForVisitedMembers(object obj)
+    {
+        if (obj == null) return;
+        try
+        {
+            var visitedNames = new[] {
+            "visitedLocations","discoveredLocations","discovered","visitedCities","discoveredCities",
+            "knownLocations","knownDestinations","visited","discoveredIds","visitedIds","visitedLocationNames",
+            "visitedNodes","discoveredNodes","visitedLocationDictionary"
+        };
+
+            var t = obj.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+            foreach (var name in visitedNames)
+            {
+                try
+                {
+                    var f = t.GetField(name, flags);
+                    if (f != null)
+                    {
+                        var val = f.GetValue(obj);
+                        var list = ConvertToObjectList(val);
+                        TBLog.Info($"ProbeForVisitedMembers: found field '{name}' ({f.FieldType.FullName}) -> items={(list == null ? 0 : list.Count)}, sample=[{(list == null ? "" : string.Join(", ", list.Take(8).Select(x => x?.ToString() ?? "<null>")))}]");
+                        continue;
+                    }
+                    var p = t.GetProperty(name, flags);
+                    if (p != null)
+                    {
+                        var val = p.GetValue(obj, null);
+                        var list = ConvertToObjectList(val);
+                        TBLog.Info($"ProbeForVisitedMembers: found prop '{name}' ({p.PropertyType.FullName}) -> items={(list == null ? 0 : list.Count)}, sample=[{(list == null ? "" : string.Join(", ", list.Take(8).Select(x => x?.ToString() ?? "<null>")))}]");
+                        continue;
+                    }
+                }
+                catch { /* ignore per member */ }
+            }
+
+            // Also look for any Dictionary<string, ?> or HashSet-like fields/properties and report a sample
+            foreach (var f in t.GetFields(flags))
+            {
+                try
+                {
+                    var val = f.GetValue(obj);
+                    if (val is System.Collections.IDictionary dict)
+                    {
+                        TBLog.Info($"ProbeForVisitedMembers: dictionary field '{f.Name}' type={val.GetType().FullName} count={dict.Count} sampleKeys=[{string.Join(", ", dict.Keys.Cast<object>().Take(8).Select(k => k?.ToString() ?? "<null>"))}]");
+                    }
+                }
+                catch { }
+            }
+            foreach (var p in t.GetProperties(flags))
+            {
+                try
+                {
+                    if (p.GetIndexParameters().Length > 0) continue;
+                    var val = p.GetValue(obj, null);
+                    if (val is System.Collections.IDictionary dict)
+                    {
+                        TBLog.Info($"ProbeForVisitedMembers: dictionary prop '{p.Name}' type={val.GetType().FullName} count={dict.Count} sampleKeys=[{string.Join(", ", dict.Keys.Cast<object>().Take(8).Select(k => k?.ToString() ?? "<null>"))}]");
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ProbeForVisitedMembers failed: " + ex.Message);
+        }
+    }
+
+    // Diagnostic: dump first character save holder and its nested members
+    public static void DumpFirstCharacterSaveHolder()
+    {
+        try
+        {
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null)
+            {
+                TBLog.Info("DumpFirstCharacterSaveHolder: saveRoot null");
+                return;
+            }
+
+            // Try to get CharacterSaves property/field
+            var t = saveRoot.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            object charSavesObj = null;
+            var field = t.GetField("m_charSaves", flags) ?? t.GetField("charSaves", flags);
+            if (field != null) charSavesObj = field.GetValue(saveRoot);
+            else
+            {
+                var prop = t.GetProperty("CharacterSaves", flags) ?? t.GetProperty("characterSaves", flags);
+                if (prop != null) charSavesObj = prop.GetValue(saveRoot, null);
+            }
+
+            if (charSavesObj == null)
+            {
+                TBLog.Info("DumpFirstCharacterSaveHolder: CharacterSaves not present on save root");
+                return;
+            }
+
+            // charSavesObj is IList<CharacterSaveInstanceHolder> or similar
+            var list = charSavesObj as System.Collections.IEnumerable;
+            if (list == null)
+            {
+                TBLog.Info("DumpFirstCharacterSaveHolder: CharacterSaves is not enumerable");
+                return;
+            }
+
+            // take first element
+            object first = null;
+            foreach (var it in list)
+            {
+                first = it;
+                break;
+            }
+
+            if (first == null)
+            {
+                TBLog.Info("DumpFirstCharacterSaveHolder: CharacterSaves empty");
+                return;
+            }
+
+            TBLog.Info($"DumpFirstCharacterSaveHolder: first holder type = {first.GetType().FullName}");
+            // Dump its fields/properties (limited)
+            DumpObjectMembersSample(first, 6);
+            // If there is an inner Save or SaveData or CharacterSave member, dump it too
+            var inner = TryGetMemberValue(first, "Save") ?? TryGetMemberValue(first, "characterSave") ?? TryGetMemberValue(first, "SaveData") ?? TryGetMemberValue(first, "data");
+            if (inner != null)
+            {
+                TBLog.Info($"DumpFirstCharacterSaveHolder: inner save/object type = {inner.GetType().FullName}");
+                DumpObjectMembersSample(inner, 12);
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpFirstCharacterSaveHolder failed: " + ex.Message);
+        }
+    }
+
+    // Diagnostic: dump WorldSave object (if present)
+    public static void DumpWorldSave()
+    {
+        try
+        {
+            var saveRoot = FindSaveRootInstance();
+            if (saveRoot == null) { TBLog.Info("DumpWorldSave: saveRoot null"); return; }
+
+            var t = saveRoot.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            var worldSaveProp = t.GetProperty("WorldSave", flags) ?? t.GetProperty("worldSave", flags);
+            object worldSave = null;
+            if (worldSaveProp != null) worldSave = worldSaveProp.GetValue(saveRoot, null);
+
+            if (worldSave == null)
+            {
+                TBLog.Info("DumpWorldSave: WorldSave not present on save root");
+                return;
+            }
+
+            TBLog.Info($"DumpWorldSave: WorldSave type = {worldSave.GetType().FullName}");
+            DumpObjectMembersSample(worldSave, 12);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpWorldSave failed: " + ex.Message);
+        }
+    }
+
+    // Small utility: dump up to 'maxMembers' fields/properties of an object with collection sampling
+    private static void DumpObjectMembersSample(object obj, int maxMembers)
+    {
+        if (obj == null) { TBLog.Info("DumpObjectMembersSample: obj null"); return; }
+        try
+        {
+            var t = obj.GetType();
+            TBLog.Info($"DumpObjectMembersSample: type={t.FullName}");
+
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            int count = 0;
+
+            foreach (var f in t.GetFields(flags))
+            {
+                if (++count > maxMembers) break;
+                object val = null;
+                try { val = f.GetValue(obj); } catch (Exception ex) { TBLog.Info($" Field {f.Name}: <error {ex.Message}>"); continue; }
+                DumpMemberSample($"Field {f.Name}", f.FieldType, val);
+            }
+
+            foreach (var p in t.GetProperties(flags))
+            {
+                if (p.GetIndexParameters().Length > 0) continue;
+                if (++count > maxMembers) break;
+                object val = null;
+                try { val = p.GetValue(obj, null); } catch (Exception ex) { TBLog.Info($" Prop {p.Name}: <error {ex.Message}>"); continue; }
+                DumpMemberSample($"Prop {p.Name}", p.PropertyType, val);
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpObjectMembersSample failed: " + ex.Message);
+        }
+    }
+
+    public static void DumpMemberSample(string label, Type memberType, object val)
+    {
+        try
+        {
+            if (val == null)
+            {
+                TBLog.Info($"{label} ({memberType.FullName}): null");
+                return;
+            }
+
+            if (val is System.Collections.IDictionary dict)
+            {
+                var keys = new List<string>();
+                int i = 0;
+                foreach (var k in dict.Keys) { if (i++ >= 8) break; keys.Add(k?.ToString() ?? "<null>"); }
+                TBLog.Info($"{label} ({memberType.FullName}): IDictionary count={dict.Count}, sampleKeys=[{string.Join(", ", keys)}]");
+                return;
+            }
+
+            if (val is System.Collections.IEnumerable ie && !(val is string))
+            {
+                var items = new List<string>();
+                int i = 0;
+                foreach (var it in ie) { if (i++ >= 8) break; items.Add(it?.ToString() ?? "<null>"); }
+                // try Count
+                string cnt = "unknown";
+                try { var cp = val.GetType().GetProperty("Count"); if (cp != null) cnt = cp.GetValue(val, null)?.ToString() ?? "0"; } catch { }
+                TBLog.Info($"{label} ({memberType.FullName}): IEnumerable count={cnt}, sample=[{string.Join(", ", items)}]");
+                return;
+            }
+
+            TBLog.Info($"{label} ({memberType.FullName}): value={val.ToString()}");
+        }
+        catch { /* ignore */ }
+    }
+
+    // Utility: try to read a field or property by several common names
+    private static object TryGetMemberValue(object obj, string memberName)
+    {
+        if (obj == null) return null;
+        try
+        {
+            var t = obj.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+            var f = t.GetField(memberName, flags);
+            if (f != null) return f.GetValue(obj);
+            var p = t.GetProperty(memberName, flags);
+            if (p != null) return p.GetValue(obj, null);
+        }
+        catch { }
+        return null;
+    }
+
+    // Reflection helper: find a runtime "save root" instance (SaveManager / PlayerProfile / SaveData etc.).
+    // This is the implementation referenced by HasPlayerVisited(...) and related helpers.
+    // Paste this method into the same class/file where HasPlayerVisited and other helpers live.
+    public static object FindSaveRootInstance()
+    {
+        try
+        {
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            foreach (var asm in assemblies)
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch { continue; }
+
+                foreach (var t in types)
+                {
+                    if (string.IsNullOrEmpty(t.Name)) continue;
+
+                    // Prefer types that look like SaveManager/PlayerProfile/etc.
+                    if (!SaveManagerTypeNameCandidates.Any(c => t.Name.IndexOf(c, StringComparison.InvariantCultureIgnoreCase) >= 0))
+                        continue;
+
+                    var flagsStatic = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase;
+
+                    // Try common static instance/property names (Instance, instance, Current, Save, etc.)
+                    foreach (var instName in SaveInstanceMemberCandidates)
+                    {
+                        try
+                        {
+                            var prop = t.GetProperty(instName, flagsStatic);
+                            if (prop != null)
+                            {
+                                var inst = prop.GetValue(null, null);
+                                if (inst != null)
+                                {
+                                    TBLog.Info($"FindSaveRootInstance: found save root via property {t.FullName}.{instName}");
+                                    return inst;
+                                }
+                            }
+
+                            var field = t.GetField(instName, flagsStatic);
+                            if (field != null)
+                            {
+                                var inst = field.GetValue(null);
+                                if (inst != null)
+                                {
+                                    TBLog.Info($"FindSaveRootInstance: found save root via field {t.FullName}.{instName}");
+                                    return inst;
+                                }
+                            }
+                        }
+                        catch { /* ignore and continue trying other members */ }
+                    }
+
+                    // Try common static "Save" / "Data" properties
+                    try
+                    {
+                        var otherProp = t.GetProperty("Save", flagsStatic) ?? t.GetProperty("Data", flagsStatic);
+                        if (otherProp != null)
+                        {
+                            var inst = otherProp.GetValue(null, null);
+                            if (inst != null)
+                            {
+                                TBLog.Info($"FindSaveRootInstance: found save root via property {t.FullName}.Save/Data");
+                                return inst;
+                            }
+                        }
+                    }
+                    catch { /* ignore */ }
+                }
+            }
+
+            // As a fallback, also search for player-related singletons (LocalPlayer / Player.Instance etc.)
+            var playerTypeCandidates = new[] { "Player", "PlayerManager", "PlayerCharacter", "LocalPlayer", "Character", "PlayerController" };
+            var playerInstanceCandidates = new[] { "LocalPlayer", "localPlayer", "Instance", "instance", "m_LocalPlayer", "Player" };
+
+            foreach (var asm in assemblies)
+            {
+                Type[] types;
+                try { types = asm.GetTypes(); } catch { continue; }
+
+                foreach (var t in types)
+                {
+                    if (!playerTypeCandidates.Any(c => t.Name.IndexOf(c, StringComparison.InvariantCultureIgnoreCase) >= 0))
+                        continue;
+
+                    var flagsStatic = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase;
+                    foreach (var instName in playerInstanceCandidates)
+                    {
+                        try
+                        {
+                            var prop = t.GetProperty(instName, flagsStatic);
+                            if (prop != null)
+                            {
+                                var inst = prop.GetValue(null, null);
+                                if (inst != null)
+                                {
+                                    TBLog.Info($"FindSaveRootInstance: found player singleton via property {t.FullName}.{instName}");
+                                    return inst;
+                                }
+                            }
+
+                            var field = t.GetField(instName, flagsStatic);
+                            if (field != null)
+                            {
+                                var inst = field.GetValue(null);
+                                if (inst != null)
+                                {
+                                    TBLog.Info($"FindSaveRootInstance: found player singleton via field {t.FullName}.{instName}");
+                                    return inst;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("FindSaveRootInstance failed: " + ex.Message);
+        }
+
+        TBLog.Info("FindSaveRootInstance: no save root or player singleton found.");
+        return null;
+    }
+
+    // Diagnostic: dump fields/properties of the provided saveRoot (safe, limited sampling)
+    public static void DumpSaveRootMembers(object saveRoot)
+    {
+        try
+        {
+            if (saveRoot == null)
+            {
+                TBLog.Info("DumpSaveRootMembers: saveRoot is null.");
+                return;
+            }
+
+            var t = saveRoot.GetType();
+            TBLog.Info($"DumpSaveRootMembers: saveRoot type = {t.FullName}");
+
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            int maxItemsSample = 8;
+
+            // Fields
+            foreach (var f in t.GetFields(flags))
+            {
+                object val = null;
+                try { val = f.GetValue(saveRoot); } catch (Exception ex) { TBLog.Info($"Field {f.Name} ({f.FieldType.Name}): <error reading: {ex.Message}>"); continue; }
+
+                if (val == null)
+                {
+                    TBLog.Info($"Field {f.Name} ({f.FieldType.FullName}): null");
+                    continue;
+                }
+
+                // If IDictionary -> log count and sample keys
+                if (val is System.Collections.IDictionary dict)
+                {
+                    var keys = new List<string>();
+                    int i = 0;
+                    foreach (var k in dict.Keys)
+                    {
+                        if (i++ >= maxItemsSample) break;
+                        keys.Add(k?.ToString() ?? "<null>");
+                    }
+                    TBLog.Info($"Field {f.Name} ({f.FieldType.FullName}): IDictionary count={dict.Count}, sample keys=[{string.Join(", ", keys)}]");
+                    continue;
+                }
+
+                // If IEnumerable (but not string) -> log count (if possible) and sample items
+                if (val is System.Collections.IEnumerable ie && !(val is string))
+                {
+                    var items = new List<string>();
+                    int cnt = 0;
+                    foreach (var it in ie)
+                    {
+                        if (cnt++ >= maxItemsSample) break;
+                        items.Add(it?.ToString() ?? "<null>");
+                    }
+                    // Try to get Count property if exists
+                    int? maybeCount = null;
+                    try
+                    {
+                        var countProp = val.GetType().GetProperty("Count");
+                        if (countProp != null) maybeCount = (int)countProp.GetValue(val, null);
+                    }
+                    catch { maybeCount = null; }
+                    TBLog.Info($"Field {f.Name} ({f.FieldType.FullName}): IEnumerable count={(maybeCount.HasValue ? maybeCount.Value.ToString() : "unknown")}, sample=[{string.Join(", ", items)}]");
+                    continue;
+                }
+
+                // Scalar / object -> log type and ToString sample
+                TBLog.Info($"Field {f.Name} ({f.FieldType.FullName}): value={val.ToString()}");
+            }
+
+            // Properties
+            foreach (var p in t.GetProperties(flags))
+            {
+                // skip indexers
+                if (p.GetIndexParameters().Length > 0) continue;
+                object val = null;
+                try { val = p.GetValue(saveRoot, null); } catch (Exception ex) { TBLog.Info($"Prop {p.Name} ({p.PropertyType.Name}): <error reading: {ex.Message}>"); continue; }
+
+                if (val == null)
+                {
+                    TBLog.Info($"Prop {p.Name} ({p.PropertyType.FullName}): null");
+                    continue;
+                }
+
+                if (val is System.Collections.IDictionary dict)
+                {
+                    var keys = new List<string>();
+                    int i = 0;
+                    foreach (var k in dict.Keys)
+                    {
+                        if (i++ >= maxItemsSample) break;
+                        keys.Add(k?.ToString() ?? "<null>");
+                    }
+                    TBLog.Info($"Prop {p.Name} ({p.PropertyType.FullName}): IDictionary count={dict.Count}, sample keys=[{string.Join(", ", keys)}]");
+                    continue;
+                }
+
+                if (val is System.Collections.IEnumerable ie && !(val is string))
+                {
+                    var items = new List<string>();
+                    int cnt = 0;
+                    foreach (var it in ie)
+                    {
+                        if (cnt++ >= maxItemsSample) break;
+                        items.Add(it?.ToString() ?? "<null>");
+                    }
+                    int? maybeCount = null;
+                    try
+                    {
+                        var countProp = val.GetType().GetProperty("Count");
+                        if (countProp != null) maybeCount = (int)countProp.GetValue(val, null);
+                    }
+                    catch { maybeCount = null; }
+                    TBLog.Info($"Prop {p.Name} ({p.PropertyType.FullName}): IEnumerable count={(maybeCount.HasValue ? maybeCount.Value.ToString() : "unknown")}, sample=[{string.Join(", ", items)}]");
+                    continue;
+                }
+
+                TBLog.Info($"Prop {p.Name} ({p.PropertyType.FullName}): value={val.ToString()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpSaveRootMembers failed: " + ex.Message);
+        }
+    }
+
+    // Tries to find visited collection on the given object; returns the flattened list and the member name used.
+    // Also logs which member was selected for diagnostics.
+    private static bool TryFindVisitedCollectionWithDiagnostics(object root, out List<object> outList, out string usedMemberName)
+    {
+        outList = null;
+        usedMemberName = null;
+        if (root == null) return false;
+
+        try
+        {
+            var list = FindVisitedCollectionInObject(root);
+            if (list != null && list.Count > 0)
+            {
+                outList = list;
+                usedMemberName = "direct"; // best-effort; specific member logged inside FindVisitedCollectionInObject when found
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryFindVisitedCollectionWithDiagnostics failed: " + ex.Message);
+        }
+
+        return false;
+    }
+
+    // This function is the same basic scan used previously but it will log which field/property provided the collection.
+    private static List<object> FindVisitedCollectionInObject(object root)
+    {
+        if (root == null) return null;
+
+        try
+        {
+            var rootType = root.GetType();
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
+
+            // Candidate member names we check first (helps us find the correct visited member quickly)
+            var visitedCandidates = new[]
+            {
+            "visitedLocations", "discoveredLocations", "discovered", "visitedCities", "discoveredCities",
+            "knownLocations", "knownDestinations", "visited", "discoveredIds", "visitedIds", "visitedLocationsByName"
+        };
+
+            foreach (var name in visitedCandidates)
+            {
+                try
+                {
+                    var field = rootType.GetField(name, flags);
+                    if (field != null)
+                    {
+                        var val = field.GetValue(root);
+                        var items = ConvertToObjectList(val);
+                        if (items != null && items.Count > 0)
+                        {
+                            TBLog.Info($"FindVisitedCollectionInObject: found visited collection on field '{rootType.FullName}.{name}' with {items.Count} items.");
+                            return items;
+                        }
+                    }
+
+                    var prop = rootType.GetProperty(name, flags);
+                    if (prop != null)
+                    {
+                        object val = null;
+                        try { val = prop.GetValue(root, null); } catch { val = null; }
+                        var items = ConvertToObjectList(val);
+                        if (items != null && items.Count > 0)
+                        {
+                            TBLog.Info($"FindVisitedCollectionInObject: found visited collection on property '{rootType.FullName}.{name}' with {items.Count} items.");
+                            return items;
+                        }
+                    }
+                }
+                catch { /* ignore per-candidate failures */ }
+            }
+
+            // Check nested containers (common patterns)
+            var nestedCandidates = new[] { "Save", "SaveData", "Profile", "Data", "CurrentSave", "PlayerSave" };
+            foreach (var nestedName in nestedCandidates)
+            {
+                try
+                {
+                    var field = rootType.GetField(nestedName, flags);
+                    object nested = null;
+                    if (field != null) nested = field.GetValue(root);
+                    else
+                    {
+                        var prop = rootType.GetProperty(nestedName, flags);
+                        if (prop != null) nested = prop.GetValue(root, null);
+                    }
+
+                    if (nested != null)
+                    {
+                        var nestedItems = FindVisitedCollectionInObject(nested); // recursion
+                        if (nestedItems != null && nestedItems.Count > 0) return nestedItems;
+                    }
+                }
+                catch { /* ignore nested errors */ }
+            }
+
+            // Last resort: scan all fields/properties and return the first plausible collection (but log candidate names)
+            foreach (var field in rootType.GetFields(flags))
+            {
+                try
+                {
+                    var val = field.GetValue(root);
+                    var items = ConvertToObjectList(val);
+                    if (items != null && items.Count > 0)
+                    {
+                        TBLog.Info($"FindVisitedCollectionInObject: heuristically selected field '{rootType.FullName}.{field.Name}' as visited collection with {items.Count} items.");
+                        return items;
+                    }
+                }
+                catch { }
+            }
+
+            foreach (var prop in rootType.GetProperties(flags))
+            {
+                try
+                {
+                    if (prop.GetIndexParameters().Length > 0) continue;
+                    object val = null;
+                    try { val = prop.GetValue(root, null); } catch { continue; }
+                    var items = ConvertToObjectList(val);
+                    if (items != null && items.Count > 0)
+                    {
+                        TBLog.Info($"FindVisitedCollectionInObject: heuristically selected property '{rootType.FullName}.{prop.Name}' as visited collection with {items.Count} items.");
+                        return items;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("FindVisitedCollectionInObject failed: " + ex.Message);
+        }
+
+        return null;
+    }
+
+    // Convert various collection types to a List<object>. For IDictionary return keys (commonly used for visited sets).
+    private static List<object> ConvertToObjectList(object val)
+    {
+        if (val == null) return null;
+
+        try
+        {
+            if (val is System.Collections.IDictionary dict)
+            {
+                var keys = new List<object>();
+                foreach (var key in dict.Keys) keys.Add(key);
+                if (keys.Count > 0) return keys;
+                return null;
+            }
+
+            if (val is System.Collections.IEnumerable ie && !(val is string))
+            {
+                var list = new List<object>();
+                foreach (var item in ie) list.Add(item);
+                if (list.Count > 0) return list;
+            }
+        }
+        catch { /* ignore conversion errors */ }
+
+        return null;
     }
 
 }

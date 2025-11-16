@@ -29,6 +29,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using static MapMagic.SpatialHash;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -1599,10 +1600,10 @@ public class TravelButtonUI : MonoBehaviour
 
             var img = buttonObject.AddComponent<Image>();
             img.color = new Color(0.45f, 0.26f, 0.13f, 1f);
-            img.raycastTarget = true;
-
+            
             travelButton.targetGraphic = img;
             travelButton.interactable = true;
+            img.raycastTarget = true;
 
             var rt = buttonObject.GetComponent<RectTransform>();
             if (rt == null) rt = buttonObject.AddComponent<RectTransform>();
@@ -2319,32 +2320,50 @@ public class TravelButtonUI : MonoBehaviour
         Vector3 before = (playerRoot != null) ? playerRoot.transform.position : Vector3.zero;
         TBLog.Info($"OpenTravelDialog: hrac pozice: ({before.x:F3}, {before.y:F3}, {before.z:F3})");
 
-//                InventoryHelpers.SafeAddSilverToPlayer(100);
-//                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 1);
-//        var rescuePos = new Vector3(1204.881f, -12.5f, 1372.639f);
-//        TeleportHelpers.AttemptTeleportToPositionSafe(rescuePos);
+        //                InventoryHelpers.SafeAddSilverToPlayer(100);
+        //                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 1);
+        //        var rescuePos = new Vector3(1204.881f, -12.5f, 1372.639f);
+        //        TeleportHelpers.AttemptTeleportToPositionSafe(rescuePos);
 
         //DumpDetectedPositionsForActiveScene();
         LogLoadedScenes();
         //DebugLogCanvasHierarchy();
         DebugLogToolbarCandidates();
-        TravelButtonMod.DumpCityInteractability();
+        TravelButton.DumpCityInteractability();
+
+        // Ensure visited lookup/cache is prepared (or refreshed) before building UI.
+        // If dialogRoot is null we must (re)build the cache; otherwise refresh the visible buttons from cache.
+        try
+        {
+            if (dialogRoot == null)
+            {
+                try
+                {
+                    // Auto-assign scene names (best-effort) before preparing lookup
+                    TravelButton.AutoAssignSceneNamesFromLoadedScenes();
+                }
+                catch (Exception exAssign)
+                {
+                    TBLog.Warn("OpenTravelDialog: AutoAssignSceneNamesFromLoadedScenes failed: " + exAssign.Message);
+                }
+
+                try
+                {
+                    TravelButton.PrepareVisitedLookup();
+                }
+                catch (Exception exPrep)
+                {
+                    TBLog.Warn("OpenTravelDialog: PrepareVisitedLookup failed: " + exPrep.Message);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OpenTravelDialog: visited-cache prepare/refresh failed: " + ex.Message);
+        }
 
         try
         {
-            // Auto-assign scene names and log anchors (best-effort diagnostic)
-            try
-            {
-                if (dialogRoot == null)
-                    TravelButtonMod.AutoAssignSceneNamesFromLoadedScenes();
-//                TravelButtonMod.LogLoadedScenesAndRootObjects();
-//                TravelButtonMod.LogCityAnchorsFromLoadedScenes();
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("OpenTravelDialog: auto-scan for anchors failed: " + ex.Message);
-            }
-
             // Stop any previous refresh coroutine
             if (refreshButtonsCoroutine != null)
             {
@@ -2381,9 +2400,10 @@ public class TravelButtonUI : MonoBehaviour
                 dialogCanvas.AddComponent<CanvasGroup>();
                 UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
                 TBLog.Info("OpenTravelDialog: created dedicated TravelDialogCanvas (top-most).");
-            } else
+            }
+            else
             {
-                TBLog.Info("OpenTravelDialog: (dialogCanvas == null).");
+                TBLog.Info("OpenTravelDialog: (dialogCanvas != null).");
             }
 
             // Root
@@ -2393,7 +2413,7 @@ public class TravelButtonUI : MonoBehaviour
             dialogRoot.AddComponent<CanvasRenderer>();
             var rootRt = dialogRoot.AddComponent<RectTransform>();
 
-            TBLog.Info("OpenTravelDialog: (dialogCanvas == null).");
+            TBLog.Info("OpenTravelDialog: (dialogRoot created).");
 
             // center the dialog explicitly
             rootRt.anchorMin = new Vector2(0.5f, 0.5f);
@@ -2406,7 +2426,7 @@ public class TravelButtonUI : MonoBehaviour
             var bg = dialogRoot.AddComponent<Image>();
             bg.color = new Color(0f, 0f, 0f, 0.95f);
 
-            TBLog.Info("OpenTravelDialog: (dialogCanvas == null).");
+            TBLog.Info("OpenTravelDialog: (dialog root configured).");
 
             // Title
             var titleGO = new GameObject("Title");
@@ -2419,7 +2439,7 @@ public class TravelButtonUI : MonoBehaviour
             titleRt.sizeDelta = new Vector2(0, 32);
             var titleText = titleGO.AddComponent<Text>();
             titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (default cost {TravelButtonMod.cfgTravelCost.Value} silver)";
+            titleText.text = $"Select destination (default cost {TravelButton.cfgTravelCost.Value} silver)";
             titleText.alignment = TextAnchor.MiddleCenter;
             titleText.fontSize = 18;
             titleText.color = Color.white;
@@ -2497,20 +2517,20 @@ public class TravelButtonUI : MonoBehaviour
             scrollRect.vertical = true;
 
             // --- Populate items ---
-            TBLog.Info($"OpenTravelDialog: TravelButtonMod.Cities.Count = {(TravelButtonMod.Cities == null ? 0 : TravelButtonMod.Cities.Count)}");
+            TBLog.Info($"OpenTravelDialog: TravelButtonMod.Cities.Count = {(TravelButton.Cities == null ? 0 : TravelButton.Cities.Count)}");
             bool anyCity = false;
 
             // read player money once per dialog opening
             long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
-//            TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'.");
+            //            TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'.");
 
-            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
             {
                 TBLog.Warn("OpenTravelDialog: No cities configured (TravelButtonMod.Cities empty).");
             }
             else
             {
-                foreach (var city in TravelButtonMod.Cities)
+                foreach (var city in TravelButton.Cities)
                 {
                     anyCity = true;
 
@@ -2529,13 +2549,23 @@ public class TravelButtonUI : MonoBehaviour
                     bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
 
                     var bbtn = bgo.AddComponent<Button>();
-                    bbtn.targetGraphic = bimg;
-                    bbtn.interactable = true;
                     var cb = bbtn.colors;
                     cb.normalColor = new Color(0.45f, 0.26f, 0.13f, 1f);
                     cb.highlightedColor = new Color(0.55f, 0.33f, 0.16f, 1f);
                     cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
+                    cb.disabledColor = new Color(0.18f, 0.18f, 0.18f, 1f);
+                    cb.colorMultiplier = 1f;
                     bbtn.colors = cb;
+
+                    bbtn.interactable = false;
+                    bimg.raycastTarget = false;
+
+                    bbtn.transition = Selectable.Transition.ColorTint;
+                    bbtn.targetGraphic = bimg;
+
+                    // disable Animator if present (animator can override tint)
+                    var animator = bbtn.GetComponent<Animator>();
+                    if (animator != null) animator.enabled = false;
 
                     // Label left
                     var lgo = new GameObject("Label");
@@ -2551,11 +2581,10 @@ public class TravelButtonUI : MonoBehaviour
                     ltxt.color = new Color(0.98f, 0.94f, 0.87f, 1.0f);
                     ltxt.alignment = TextAnchor.MiddleLeft;
                     ltxt.fontSize = 14;
-                    ltxt.raycastTarget = false;
 
                     // determine per-city cost
-                    int cost = TravelButtonMod.cfgTravelCost.Value;
-//                    TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'. cost= '{cost}'");
+                    int cost = TravelButton.cfgTravelCost.Value;
+                    //                    TBLog.Warn($"OpenTravelDialog: hrac ma '{playerMoney}'. cost= '{cost}'")
 
                     try
                     {
@@ -2594,11 +2623,48 @@ public class TravelButtonUI : MonoBehaviour
                     pRect.offsetMax = new Vector2(-10, 0);
 
                     // config flag
-                    bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
+                    bool enabledByConfig = TravelButton.IsCityEnabled(city.name);
 
                     // visited check (robust)
                     bool visited = false;
-                    try { visited = IsCityVisitedFallback(city); } catch { visited = false; }
+                    try
+                    {
+                        var saveRoot = TravelButton.FindSaveRootInstance();
+                        if (saveRoot != null)
+                        {
+                            // Save is readable — rely only on save-based check
+                            visited = TravelButton.HasPlayerVisitedFast(city.name);
+                            TBLog.Info($"Visited check (save-based): city='{city.name}', visited={visited}");
+                        }
+                        else
+                        {
+                            // Save not available — fall back for compatibility
+                            try
+                            {
+                                var fallback = TravelButtonUI.IsCityVisitedFallback;
+                                if (fallback != null)
+                                {
+                                    visited = fallback(city); // legacy fallback expects City object
+                                    TBLog.Info($"Visited check (fallback): city='{city.name}', visited={visited}");
+                                }
+                                else
+                                {
+                                    visited = false;
+                                    TBLog.Info($"Visited check: no save root and no fallback; defaulting visited=false for '{city.name}'");
+                                }
+                            }
+                            catch (Exception exFb)
+                            {
+                                visited = false;
+                                TBLog.Warn("Visited check: fallback invocation failed: " + exFb.Message);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        visited = false;
+                        TBLog.Warn("Visited check: unexpected error: " + ex.Message);
+                    }
 
                     // coords available?
                     bool coordsAvailable = false;
@@ -2629,12 +2695,20 @@ public class TravelButtonUI : MonoBehaviour
                     // ONZA
                     bool initialInteractable = enabledByConfig && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney;
 
+                    // set interactable and raycast target
                     bbtn.interactable = initialInteractable;
-                    if (!initialInteractable)
-                    {
-                        bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
-                    }
+                    bimg.raycastTarget = initialInteractable;
 
+                    // set explicit visuals to match the state so initial look is correct
+                    if (initialInteractable)
+                    {
+                        bimg.color = cb.normalColor;
+                    } else {
+                        bimg.color = new Color(0.18f, 0.18f, 0.18f, 1f);
+                    } 
+
+                    // log diagnostic info
+                    TBLog.Info($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}) Button.transition={bbtn.transition}, animatorPresent={(animator != null)}, imageType={bimg.type}, imageMat={bimg.material?.name ?? "<null>"} color.normal={cb.normalColor} color.disabled={cb.disabledColor} imageColor={bimg.color} textColor={ltxt.color}");
                     TBLog.Info($"OpenTravelDialog: created UI button for '{city.name}' (interactable={bbtn.interactable}, enabledByConfig={enabledByConfig}, visited={visited}, coordsAvailable={coordsAvailable}, allowWithoutCoords={allowWithoutCoords}, hasEnoughMoney={hasEnoughMoney}, playerMoney={playerMoney}, price={cost}, targetGameObjectName='{city.targetGameObjectName}', sceneName='{city.sceneName}')");
 
                     var capturedCity = city;
@@ -2650,7 +2724,7 @@ public class TravelButtonUI : MonoBehaviour
                                 return;
                             }
 
-                            bool cfgEnabled = TravelButtonMod.IsCityEnabled(capturedCity.name);
+                            bool cfgEnabled = TravelButton.IsCityEnabled(capturedCity.name);
                             bool visitedNow = false;
                             try { visitedNow = IsCityVisitedFallback(capturedCity); } catch { visitedNow = false; }
                             long pm = GetPlayerCurrencyAmountOrMinusOne();
@@ -2979,7 +3053,7 @@ public class TravelButtonUI : MonoBehaviour
 
     // New: Teleport first, THEN attempt to charge player currency.
     // This mirrors the TravelDialog behavior: do not deduct before teleport.
-    private void TryTeleportThenCharge(TravelButtonMod.City city, int cost)
+    private void TryTeleportThenCharge(TravelButton.City city, int cost)
     {
         LogCityConfig(city.name);
 
@@ -2992,7 +3066,7 @@ public class TravelButtonUI : MonoBehaviour
 
         try
         {
-            bool enabledByConfig = TravelButtonMod.IsCityEnabled(city.name);
+            bool enabledByConfig = TravelButton.IsCityEnabled(city.name);
             bool visitedNow = false;
             try { visitedNow = IsCityVisitedFallback(city); } catch { visitedNow = false; }
             long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
@@ -3104,7 +3178,7 @@ public class TravelButtonUI : MonoBehaviour
                     if (ok)
                     {
                         TBLog.Info($"TryTeleportThenCharge: immediate teleport to '{city.name}' completed successfully.");
-                        try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
+                        try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
 
                         try
                         {
@@ -3112,7 +3186,7 @@ public class TravelButtonUI : MonoBehaviour
                             if (!charged)
                             {
                                 TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
-                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
                             }
                             else
                             {
@@ -3125,7 +3199,7 @@ public class TravelButtonUI : MonoBehaviour
                             ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                         }
 
-                        try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+                        try { TravelButton.PersistCitiesToConfig(); } catch { }
 
                         try
                         {
@@ -3166,7 +3240,7 @@ public class TravelButtonUI : MonoBehaviour
                     try
                     {
                         //DumpTravelRelevantState("before-persist-fallback");
-                        TravelButtonMod.PersistCitiesToConfig(); // whatever method you have
+                        TravelButton.PersistCitiesToConfig(); // whatever method you have
                         TBLog.Info("PersistCitiesToConfig: succeeded.");
                     }
                     catch (Exception ex)
@@ -3199,7 +3273,7 @@ public class TravelButtonUI : MonoBehaviour
                     if (success)
                     {
                         TBLog.Info($"TryTeleportThenCharge: teleport to '{city.name}' completed successfully (helper).");
-                        try { TravelButtonMod.OnSuccessfulTeleport(city.name); } catch { }
+                        try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
 
                         try
                         {
@@ -3207,7 +3281,7 @@ public class TravelButtonUI : MonoBehaviour
                             if (!charged)
                             {
                                 TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
-                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButtonMod.cfgCurrencyItem.Value})");
+                                ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
                             }
                             else
                             {
@@ -3220,7 +3294,7 @@ public class TravelButtonUI : MonoBehaviour
                             ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                         }
 
-                        try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+                        try { TravelButton.PersistCitiesToConfig(); } catch { }
 
                         try
                         {
@@ -3608,8 +3682,8 @@ public class TravelButtonUI : MonoBehaviour
                     TBLog.Info("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe reported success.");
 
                     // POST-SUCCESS: persist/mark visited and close the dialog so the UI isn't left open
-                    try { TravelButtonMod.OnSuccessfulTeleport(displayName ?? ""); } catch { }
-                    try { TravelButtonMod.PersistCitiesToConfig(); } catch { }
+                    try { TravelButton.OnSuccessfulTeleport(displayName ?? ""); } catch { }
+                    try { TravelButton.PersistCitiesToConfig(); } catch { }
 
                     // close the dialog after successful teleport
                     try
@@ -3884,7 +3958,7 @@ public class TravelButtonUI : MonoBehaviour
                 return;
             }
 
-            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
             {
                 TBLog.Info("DumpDetectedPositionsForActiveScene: no cities configured, skipping.");
                 return;
@@ -3894,7 +3968,7 @@ public class TravelButtonUI : MonoBehaviour
 
             // Prepare map of cityName -> list of positions
             var detected = new Dictionary<string, List<Vector3>>(StringComparer.OrdinalIgnoreCase);
-            foreach (var c in TravelButtonMod.Cities)
+            foreach (var c in TravelButton.Cities)
                 detected[c.name] = new List<Vector3>();
 
             // Find all transforms in loaded scenes (includes inactive)
@@ -3916,7 +3990,7 @@ public class TravelButtonUI : MonoBehaviour
                 if (string.IsNullOrEmpty(objName)) continue;
 
                 // For each city, check exact targetGameObjectName match, then substring match
-                foreach (var city in TravelButtonMod.Cities)
+                foreach (var city in TravelButton.Cities)
                 {
                     try
                     {
@@ -4068,7 +4142,7 @@ public class TravelButtonUI : MonoBehaviour
 
     // Helper: more robust visited detection with fallbacks.
     // Returns true if any reasonable indicator suggests the player has visited the city.
-    public static bool IsCityVisitedFallback(TravelButtonMod.City city)
+    public static bool IsCityVisitedFallback(TravelButton.City city)
     {
         try
         {
@@ -4146,7 +4220,7 @@ public class TravelButtonUI : MonoBehaviour
 
     // Try to determine target position for a city without moving anything.
     // Returns true and sets out position when found (coords or GameObject), false otherwise.
-    private bool TryGetTargetPosition(TravelButtonMod.City city, out Vector3 pos)
+    private bool TryGetTargetPosition(TravelButton.City city, out Vector3 pos)
     {
         pos = Vector3.zero;
         try
@@ -4494,7 +4568,7 @@ public class TravelButtonUI : MonoBehaviour
     {
         try
         {
-            var c = TravelButtonMod.Cities?.Find(x => string.Equals(x.name, cityName, StringComparison.OrdinalIgnoreCase));
+            var c = TravelButton.Cities?.Find(x => string.Equals(x.name, cityName, StringComparison.OrdinalIgnoreCase));
             if (c == null)
             {
                 TBLog.Info($"LogCityConfig: city '{cityName}' not found in in-memory Cities.");
@@ -5131,10 +5205,10 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private void TryPayAndTeleport(TravelButtonMod.City city)
+    private void TryPayAndTeleport(TravelButton.City city)
     {
         // Kept for compatibility with older callers; but the new flow uses TryTeleportThenCharge.
-        TryTeleportThenCharge(city, city.price ?? TravelButtonMod.cfgTravelCost.Value);
+        TryTeleportThenCharge(city, city.price ?? TravelButton.cfgTravelCost.Value);
     }
 
     /*   // Older implementation preserved as comment for reference...
@@ -5345,13 +5419,13 @@ public class TravelButtonUI : MonoBehaviour
                         string cityName = objName.Substring("CityButton_".Length);
 
                         // 1) config flag
-                        bool enabledByConfig = TravelButtonMod.IsCityEnabled(cityName);
+                        bool enabledByConfig = TravelButton.IsCityEnabled(cityName);
 
                         // 2) find the TravelButtonMod.City entry for this city (if any)
-                        TravelButtonMod.City foundCity = null;
-                        if (TravelButtonMod.Cities != null)
+                        TravelButton.City foundCity = null;
+                        if (TravelButton.Cities != null)
                         {
-                            foreach (var c in TravelButtonMod.Cities)
+                            foreach (var c in TravelButton.Cities)
                             {
                                 if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
                                 {
@@ -5362,7 +5436,7 @@ public class TravelButtonUI : MonoBehaviour
                         }
 
                         // 3) determine per-city cost (fallback to global)
-                        int cost = TravelButtonMod.cfgTravelCost.Value;
+                        int cost = TravelButton.cfgTravelCost.Value;
                         if (foundCity != null)
                         {
                             TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen foundCity found");
@@ -5836,7 +5910,7 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private bool AttemptTeleportToCity(TravelButtonMod.City city)
+    private bool AttemptTeleportToCity(TravelButton.City city)
     {
         TBLog.Info($"AttemptTeleportToCity: trying to teleport to {city.name}");
 
