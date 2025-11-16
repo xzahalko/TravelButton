@@ -266,6 +266,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         DebugConfig.IsDebug = true;
 
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
+
         try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
         }
 
@@ -361,6 +363,65 @@ public class TravelButtonPlugin : BaseUnityPlugin
         catch (Exception ex)
         {
             TBLog.Warn("OnDestroy cleanup failed: " + ex);
+        }
+    }
+
+    // handler
+    private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
+    {
+        try
+        {
+            string sceneName = scene.name ?? "";
+            if (string.IsNullOrEmpty(sceneName)) return;
+            MarkCityVisitedByScene(sceneName);
+        }
+        catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
+    }
+
+    // mark and persist
+    private static void MarkCityVisitedByScene(string sceneName)
+    {
+        if (TravelButton.Cities == null) return;
+        bool anyChange = false;
+        foreach (var city in TravelButton.Cities)
+        {
+            try
+            {
+                // compare against city.sceneName and maybe other identifiers
+                if (string.Equals(city.sceneName, sceneName, StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(city.targetGameObjectName, sceneName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // set visited (use available property/field or reflection)
+                    var p = city.GetType().GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
+                    {
+                        if (!(bool)p.GetValue(city, null))
+                        {
+                            p.SetValue(city, true, null);
+                            anyChange = true;
+                        }
+                    }
+                    else
+                    {
+                        var f = city.GetType().GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (f != null && f.FieldType == typeof(bool))
+                        {
+                            if (!(bool)f.GetValue(city))
+                            {
+                                f.SetValue(city, true);
+                                anyChange = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { /* ignore per-city reflection errors */ }
+        }
+
+        if (anyChange)
+        {
+            try { TravelButton.PersistCitiesToConfig(); } catch (Exception ex) { TBLog.Warn("MarkCityVisitedByScene: persist failed: " + ex.Message); }
+            TBLog.Info($"MarkCityVisitedByScene: marked and persisted visited for scene {sceneName}");
         }
     }
 
@@ -2346,16 +2407,49 @@ public static class TravelButton
     }
 
     // Called by UI after successful teleport to mark visited and persist if needed
+    // file: src/TravelButtonMod.cs (or wherever TravelButtonMod is implemented)
+    // add or update OnSuccessfulTeleport
     public static void OnSuccessfulTeleport(string cityName)
     {
         try
         {
-            if (string.IsNullOrEmpty(cityName)) return;
-            try { VisitedTracker.MarkVisited(cityName); } catch { }
+            if (string.IsNullOrWhiteSpace(cityName)) return;
+            if (Cities == null) return;
+
+            var city = Cities.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+            if (city != null)
+            {
+                // set a persistent visited flag on the city configuration
+                // If your City class has a field/property named 'visited' or similar, set it; otherwise add one.
+                try
+                {
+                    var f = city.GetType().GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (f != null && f.FieldType == typeof(bool))
+                    {
+                        f.SetValue(city, true);
+                    }
+                    else
+                    {
+                        var p = city.GetType().GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
+                            p.SetValue(city, true, null);
+                        else
+                        {
+                            // fallback: try to set a field named 'enabled' or 'discovered' if you use different naming
+                            var f2 = city.GetType().GetField("enabled", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (f2 != null && (f2.FieldType == typeof(bool))) f2.SetValue(city, true);
+                        }
+                    }
+                }
+                catch { /* ignore reflection issues; still attempt persistence below */ }
+
+                // persist the city config (existing plugin method)
+                try { PersistCitiesToConfig(); } catch (Exception ex) { TBLog.Warn("OnSuccessfulTeleport: PersistCitiesToConfig failed: " + ex.Message); }
+            }
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("OnSuccessfulTeleport exception: " + ex);
+            TBLog.Warn("OnSuccessfulTeleport exception: " + ex);
         }
     }
 
@@ -2773,25 +2867,43 @@ public static class TravelButton
             }
             else
             {
-                // Also try matching against common city identifiers: name, sceneName and known variants.
+                PrepareVisitedLookup();
+
+                // Precompute normalized forms so they're in scope for all checks
                 string keyLower = key.ToLowerInvariant();
+                string keyNoSpace = keyLower.Replace("_", "").Replace(" ", "");
 
                 // direct substring match: visited-key may contain city name as part of string
                 if (s_visitedKeysSet != null && s_visitedKeysSet.Count > 0)
                 {
-                    foreach (var k in s_visitedKeysSet)
+                    // Direct contains checks (s_visitedKeysSet was built with OrdinalIgnoreCase so case is not important)
+                    if (s_visitedKeysSet.Contains(key) || s_visitedKeysSet.Contains(keyLower) || s_visitedKeysSet.Contains(keyNoSpace))
                     {
-                        if (string.IsNullOrEmpty(k)) continue;
-                        try
+                        result = true;
+                    }
+                    else
+                    {
+                        // Iterate saved keys and try more flexible matches (substring, normalized no-space)
+                        foreach (var saved in s_visitedKeysSet)
                         {
-                            var kl = k.ToLowerInvariant();
-                            if (kl == keyLower || kl.Contains(keyLower) || keyLower.Contains(kl))
+                            if (string.IsNullOrEmpty(saved)) continue;
+                            var savedLower = saved.ToLowerInvariant();
+
+                            // exact / substring / reverse-substring checks
+                            if (savedLower == keyLower || savedLower.Contains(keyLower) || keyLower.Contains(savedLower))
+                            {
+                                result = true;
+                                break;
+                            }
+
+                            // also try matching ignoring separators/underscores
+                            var savedNoSpace = savedLower.Replace("_", "").Replace(" ", "");
+                            if (savedNoSpace == keyNoSpace)
                             {
                                 result = true;
                                 break;
                             }
                         }
-                        catch { /* ignore string errors */ }
                     }
                 }
 
@@ -3703,6 +3815,9 @@ public static class TravelButton
 
     // Generic extractor: try to pull persistent "visited" keys from save root / character saves via reflection.
     // Returns a HashSet<string> of raw visited-like keys (may be empty if none found).
+    // Improved reflection-based extractor: recursively scan likely save-root objects and collect string keys.
+    // This is best-effort: it filters out obvious file-paths and short/generic tokens.
+    // Returns a set of raw strings found in save-like containers.
     private static HashSet<string> BuildVisitedKeysFromSave()
     {
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3710,184 +3825,195 @@ public static class TravelButton
         {
             var assemblies = AppDomain.CurrentDomain.GetAssemblies();
 
-            // Try common SaveManager patterns first
+            // Try to find a SaveManager / SaveRoot instance first
             Type saveManagerType = assemblies.SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
-                                             .FirstOrDefault(t => t.Name == "SaveManager" || t.Name == "SaveSystem" || t.Name == "SaveRootManager");
+                                             .FirstOrDefault(t => t.Name.IndexOf("SaveManager", StringComparison.OrdinalIgnoreCase) >= 0
+                                                               || t.Name.IndexOf("SaveRoot", StringComparison.OrdinalIgnoreCase) >= 0
+                                                               || t.Name.IndexOf("SaveSystem", StringComparison.OrdinalIgnoreCase) >= 0);
 
-            object saveManagerInstance = null;
-            if (saveManagerType != null)
-            {
-                // try static Instance property
-                var instProp = saveManagerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-                if (instProp != null)
-                {
-                    try { saveManagerInstance = instProp.GetValue(null); } catch { saveManagerInstance = null; }
-                }
-                // fallback: try FindObjectOfType if it is a UnityEngine.Object
-                if (saveManagerInstance == null && typeof(UnityEngine.Object).IsAssignableFrom(saveManagerType))
-                {
-                    try { saveManagerInstance = UnityEngine.Object.FindObjectOfType(saveManagerType); } catch { saveManagerInstance = null; }
-                }
-            }
-
-            // Candidate roots to scan for visited lists
             var roots = new List<object>();
-            if (saveManagerInstance != null) roots.Add(saveManagerInstance);
 
-            // Also try to find common save-root objects by name
-            var rootCandidates = assemblies.SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
-                                           .Where(t => t.Name.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0
-                                                    || t.Name.IndexOf("CharacterSave", StringComparison.OrdinalIgnoreCase) >= 0
-                                                    || t.Name.IndexOf("PlayerSave", StringComparison.OrdinalIgnoreCase) >= 0)
-                                           .ToArray();
-            foreach (var t in rootCandidates)
+            if (saveManagerType != null)
             {
                 try
                 {
                     // try static Instance
-                    var ip = t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-                    if (ip != null)
+                    var instProp = saveManagerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                    if (instProp != null)
                     {
-                        try { var v = ip.GetValue(null); if (v != null) roots.Add(v); } catch { }
+                        try { var v = instProp.GetValue(null); if (v != null) roots.Add(v); } catch { }
                     }
-
-                    // try FindObjectOfType for scene objects
-                    if (typeof(UnityEngine.Object).IsAssignableFrom(t))
+                    // try scene instance
+                    if (typeof(UnityEngine.Object).IsAssignableFrom(saveManagerType))
                     {
-                        try
-                        {
-                            var o = UnityEngine.Object.FindObjectOfType(t);
-                            if (o != null) roots.Add(o);
-                        }
-                        catch { }
+                        try { var sceneInst = UnityEngine.Object.FindObjectOfType(saveManagerType); if (sceneInst != null) roots.Add(sceneInst); } catch { }
                     }
                 }
                 catch { }
             }
 
-            // If no roots found, also try SaveManager.Instance-like properties across assemblies
-            if (roots.Count == 0 && saveManagerType != null)
+            // Also search for types with "CharacterSave" or "WorldSave" in their name
+            var candidateTypes = assemblies.SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                                           .Where(t => t.Name.IndexOf("CharacterSave", StringComparison.OrdinalIgnoreCase) >= 0
+                                                    || t.Name.IndexOf("WorldSave", StringComparison.OrdinalIgnoreCase) >= 0
+                                                    || t.Name.IndexOf("SaveData", StringComparison.OrdinalIgnoreCase) >= 0)
+                                           .ToArray();
+            foreach (var t in candidateTypes)
             {
                 try
                 {
-                    // look for property named CurrentSave / SaveRoot / ActiveSave
-                    var propNames = new[] { "CurrentSave", "SaveRoot", "ActiveSave", "Save" };
-                    foreach (var pn in propNames)
+                    // static Instance
+                    var p = t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                    if (p != null) { try { var v = p.GetValue(null); if (v != null) roots.Add(v); } catch { } }
+                    // scene instance
+                    if (typeof(UnityEngine.Object).IsAssignableFrom(t))
                     {
-                        try
-                        {
-                            var p = saveManagerType.GetProperty(pn, BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic);
-                            if (p != null)
-                            {
-                                var holder = saveManagerInstance ?? Activator.CreateInstance(saveManagerType);
-                                try { var v = p.GetValue(holder); if (v != null) roots.Add(v); } catch { }
-                            }
-                        }
-                        catch { }
+                        try { var o = UnityEngine.Object.FindObjectOfType(t); if (o != null) roots.Add(o); } catch { }
                     }
                 }
                 catch { }
             }
 
-            // Also include any object named CharacterSaveInstanceHolder that we saw in logs
+            // If still empty, include any object named CharacterSaveInstanceHolder (we saw that token in logs)
             try
             {
-                var charHolder = UnityEngine.Object.FindObjectOfType(
-                    assemblies.SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
-                              .FirstOrDefault(tt => tt.Name == "CharacterSaveInstanceHolder"));
-                if (charHolder != null) roots.Add(charHolder);
+                var csType = assemblies.SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                                       .FirstOrDefault(tt => string.Equals(tt.Name, "CharacterSaveInstanceHolder", StringComparison.OrdinalIgnoreCase));
+                if (csType != null)
+                {
+                    try { var obj = UnityEngine.Object.FindObjectOfType(csType); if (obj != null) roots.Add(obj); } catch { }
+                }
             }
             catch { }
 
-            // Scan each root: inspect fields/properties for strings or IEnumerable<string>
-            foreach (var root in roots.Distinct().Where(x => x != null))
+            // If nothing found, bail with empty set
+            if (roots.Count == 0)
             {
-                Type rt = root.GetType();
+                return result;
+            }
+
+            // Recursively scan objects up to a limited depth and collect string-like entries
+            void ScanObject(object obj, int depth)
+            {
+                if (obj == null || depth <= 0) return;
                 try
                 {
-                    // inspect fields
-                    foreach (var fi in rt.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    // Strings
+                    if (obj is string s)
+                    {
+                        if (!string.IsNullOrWhiteSpace(s)) result.Add(s.Trim());
+                        return;
+                    }
+
+                    // IDictionary: add keys and values
+                    if (obj is System.Collections.IDictionary dict)
+                    {
+                        foreach (var k in dict.Keys)
+                        {
+                            if (k != null) ScanObject(k, depth - 1);
+                        }
+                        foreach (var v in dict.Values)
+                        {
+                            if (v != null) ScanObject(v, depth - 1);
+                        }
+                        return;
+                    }
+
+                    // IEnumerable: add items (but ignore UnityEngine.Object enumerations like GameObjects)
+                    if (obj is System.Collections.IEnumerable ie && !(obj is UnityEngine.Object))
+                    {
+                        foreach (var it in ie)
+                        {
+                            if (it == null) continue;
+                            ScanObject(it, depth - 1);
+                        }
+                        return;
+                    }
+
+                    // Reflection: inspect fields & properties
+                    var t = obj.GetType();
+
+                    // Prefer likely-named fields/properties first
+                    string[] likelyNames = new[] { "visited", "visitedLocations", "visitedCities", "discovered", "discoveredScenes", "visitedList", "visitedIds", "visitedNames" };
+                    foreach (var name in likelyNames)
                     {
                         try
                         {
-                            if (fi.FieldType == typeof(string))
-                            {
-                                var s = fi.GetValue(root) as string;
-                                if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
-                            }
-                            else if (typeof(System.Collections.IEnumerable).IsAssignableFrom(fi.FieldType) && fi.FieldType != typeof(string))
-                            {
-                                var val = fi.GetValue(root) as System.Collections.IEnumerable;
-                                if (val != null)
-                                {
-                                    foreach (var it in val)
-                                    {
-                                        if (it == null) continue;
-                                        if (it is string ss)
-                                        {
-                                            if (!string.IsNullOrWhiteSpace(ss)) result.Add(ss);
-                                        }
-                                        else
-                                        {
-                                            // try ToString for object entries
-                                            var ts = it.ToString();
-                                            if (!string.IsNullOrWhiteSpace(ts)) result.Add(ts);
-                                        }
-                                    }
-                                }
-                            }
+                            var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (f != null) { var fv = f.GetValue(obj); if (fv != null) ScanObject(fv, depth - 1); }
+                        }
+                        catch { }
+                        try
+                        {
+                            var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (p != null && p.GetIndexParameters().Length == 0) { var pv = p.GetValue(obj, null); if (pv != null) ScanObject(pv, depth - 1); }
                         }
                         catch { }
                     }
 
-                    // inspect properties (no indexers)
-                    foreach (var pi in rt.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    // Generic scan of fields/properties
+                    foreach (var fi in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        try
+                        {
+                            var v = fi.GetValue(obj);
+                            if (v != null) ScanObject(v, depth - 1);
+                        }
+                        catch { }
+                    }
+                    foreach (var pi in t.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
                     {
                         if (pi.GetIndexParameters().Length > 0) continue;
                         try
                         {
                             if (!pi.CanRead) continue;
-                            var t = pi.PropertyType;
-                            if (t == typeof(string))
-                            {
-                                var s = pi.GetValue(root, null) as string;
-                                if (!string.IsNullOrWhiteSpace(s)) result.Add(s);
-                            }
-                            else if (typeof(System.Collections.IEnumerable).IsAssignableFrom(t) && t != typeof(string))
-                            {
-                                var val = pi.GetValue(root, null) as System.Collections.IEnumerable;
-                                if (val != null)
-                                {
-                                    foreach (var it in val)
-                                    {
-                                        if (it == null) continue;
-                                        if (it is string ss)
-                                        {
-                                            if (!string.IsNullOrWhiteSpace(ss)) result.Add(ss);
-                                        }
-                                        else
-                                        {
-                                            var ts = it.ToString();
-                                            if (!string.IsNullOrWhiteSpace(ts)) result.Add(ts);
-                                        }
-                                    }
-                                }
-                            }
+                            var v = pi.GetValue(obj, null);
+                            if (v != null) ScanObject(v, depth - 1);
                         }
                         catch { }
                     }
                 }
-                catch { }
+                catch { /* swallow */ }
             }
 
-            // If we still found nothing, return empty set (caller will fall back to legacy)
+            // Run scan on each root with limited depth to avoid explosion
+            foreach (var r in roots.Distinct().Where(x => x != null))
+                ScanObject(r, 4);
+
+            // Heuristic filter: remove file paths, tiny tokens, and known generic tokens
+            var cleaned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var genericBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".char","savegames","charactersaveinstanceholder","saveroot","savemetadata"
+        };
+
+            foreach (var raw in result)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                string s = raw.Trim();
+
+                // skip obvious file paths (windows path containing ':' or backslash)
+                if (s.IndexOf(':') >= 0 || s.IndexOf('\\') >= 0 || s.IndexOf('/') >= 0)
+                {
+                    // allow if it contains a city name later (we'll rely on secondary matching)
+                    continue;
+                }
+
+                var norm = new string(s.Where(c => char.IsLetterOrDigit(c)).ToArray());
+                if (string.IsNullOrEmpty(norm)) continue;
+                if (norm.Length < 3) continue;
+                if (genericBlacklist.Contains(norm.ToLowerInvariant())) continue;
+
+                cleaned.Add(s);
+            }
+
+            return cleaned;
         }
         catch (Exception ex)
         {
             TBLog.Warn("BuildVisitedKeysFromSave exception: " + ex.Message);
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
-
-        return result;
     }
 
     // --- ADD PrepareVisitedLookup() TO TravelButton CLASS ---
@@ -3922,6 +4048,75 @@ public static class TravelButton
                 }
 
                 s_visitedKeysSet = cleaned;
+                // After s_visitedKeysSet = cleaned; inside PrepareVisitedLookup
+                try
+                {
+                    // 1) Add city names from plugin's persisted city config (if any are marked visited)
+                    try
+                    {
+                        if (TravelButton.Cities != null)
+                        {
+                            foreach (var c in TravelButton.Cities)
+                            {
+                                bool visitedFlag = false;
+                                // Try to read common visited-like fields/properties
+                                var ct = c.GetType();
+                                var fv = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                if (fv != null && fv.FieldType == typeof(bool))
+                                {
+                                    try { visitedFlag = (bool)fv.GetValue(c); } catch { visitedFlag = false; }
+                                }
+                                else
+                                {
+                                    var pv = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                    if (pv != null && pv.PropertyType == typeof(bool) && pv.CanRead)
+                                    {
+                                        try { visitedFlag = (bool)pv.GetValue(c, null); } catch { visitedFlag = false; }
+                                    }
+                                }
+
+                                if (visitedFlag)
+                                {
+                                    var name = (c.name ?? "").Trim();
+                                    if (!string.IsNullOrEmpty(name)) s_visitedKeysSet.Add(name);
+                                    var scene = (c.sceneName ?? "").Trim();
+                                    if (!string.IsNullOrEmpty(scene)) s_visitedKeysSet.Add(scene);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exCities) { TBLog.Warn("PrepareVisitedLookup: error adding TravelButtonMod.Cities visited flags: " + exCities.Message); }
+
+                    // 2) Parse composite scene token entries in s_visitedKeysSet (e.g. "Emercar;200;4.13|Berg;400;4.33|")
+                    // We will scan the existing set entries and extract words before semicolons/pipe separators that look like scene names.
+                    var extraSceneNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kv in s_visitedKeysSet.ToList()) // ToList to avoid modifying while enumerating
+                    {
+                        if (string.IsNullOrWhiteSpace(kv)) continue;
+                        // If it contains '|' or ';' it's likely a compact summary
+                        if (kv.IndexOf('|') >= 0 || kv.IndexOf(';') >= 0)
+                        {
+                            try
+                            {
+                                var parts = kv.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
+                                foreach (var part in parts)
+                                {
+                                    var sub = part.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                                    if (sub.Length > 0)
+                                    {
+                                        var sceneToken = sub[0].Trim();
+                                        if (!string.IsNullOrEmpty(sceneToken))
+                                            extraSceneNames.Add(sceneToken);
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    foreach (var scene in extraSceneNames) s_visitedKeysSet.Add(scene);
+                }
+                catch (Exception exAug) { TBLog.Warn("PrepareVisitedLookup augmentation failed: " + exAug.Message);}
+
                 s_visitedKeysSetInitialized = true;
                 TBLog.Info($"PrepareVisitedLookup: built visited lookup with {s_visitedKeysSet.Count} entr{(s_visitedKeysSet.Count == 1 ? "y" : "ies")}.");
             }

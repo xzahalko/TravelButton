@@ -4358,6 +4358,7 @@ public class TravelButtonUI : MonoBehaviour
                 if (VisitedTracker.HasVisited(city.name))
                 {
                     TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.name) => true for '{city.name}'");
+                    MarkCityVisitedFromFallback(city);
                     return true;
                 }
             }
@@ -4374,6 +4375,7 @@ public class TravelButtonUI : MonoBehaviour
                     if (VisitedTracker.HasVisited(city.sceneName))
                     {
                         TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(sceneName) => true for '{city.sceneName}' (city='{city.name}')");
+                        MarkCityVisitedFromFallback(city);
                         return true;
                     }
                 }
@@ -4392,6 +4394,7 @@ public class TravelButtonUI : MonoBehaviour
                     if (go != null)
                     {
                         TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: target GameObject '{city.targetGameObjectName}' found -> treat '{city.name}' as visited.");
+                        MarkCityVisitedFromFallback(city);
                         return true;
                     }
                 }
@@ -4408,6 +4411,7 @@ public class TravelButtonUI : MonoBehaviour
                     if (t.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: found scene transform '{t.name}' containing city name '{city.name}' -> treat as visited.");
+                        MarkCityVisitedFromFallback(city);
                         return true;
                     }
                 }
@@ -4420,6 +4424,27 @@ public class TravelButtonUI : MonoBehaviour
         }
 
         return false;
+    }
+
+    // Called when you discover IsCityVisitedFallback(city) returned true
+    private static void MarkCityVisitedFromFallback(TravelButton.City city)
+    {
+        if (city == null) return;
+        try
+        {
+            // If your City type exposes a 'visited' bool field/property, set it directly:
+            // e.g., if TravelButton.City has public bool visited;
+            if (!city.visited) // use direct member if it exists
+            {
+                city.visited = true;
+                TravelButton.PersistCitiesToConfig();
+                TBLog.Info($"Marked and persisted visited for '{city.name}' (simple).");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("MarkCityVisitedFromFallback_Simple exception: " + ex.Message);
+        }
     }
 
     // Try to determine target position for a city without moving anything.
