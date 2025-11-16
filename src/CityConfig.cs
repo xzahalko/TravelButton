@@ -383,71 +383,18 @@ public class TravelConfig
             return false;
         }
     }
-    
-    /// <summary>
-    /// Return default TravelConfig with city metadata
-    /// </summary>
+
+    // Provide a default TravelConfig (seeded with user-provided defaults)
+    // NOTE: Does not set 'visited' field - visited state is managed by VisitedTracker, not JSON
     public static TravelConfig Default()
     {
-        TravelConfig config = new TravelConfig();
-        config.cities = new CityConfig[]
-        {
-            new CityConfig
-            {
-                name = "Cierzo",
-                coords = new float[] { 1410.388f, 6.786f, 1665.642f },
-                targetGameObjectName = "Cierzo",
-                sceneName = "CierzoNewTerrain",
-                desc = "Cierzo - example description",
-                price = 200
-            },
-            new CityConfig
-            {
-                name = "Levant",
-                coords = new float[] { -55.212f, 1.056f, 79.379f },
-                targetGameObjectName = "WarpLocation_HM",
-                sceneName = "Levant",
-                desc = "Levant - example description",
-                price = 200
-            },
-            new CityConfig
-            {
-                name = "Monsoon",
-                coords = new float[] { 61.553f, -3.743f, 167.599f },
-                targetGameObjectName = "Monsoon_Location",
-                sceneName = "Monsoon",
-                desc = "Monsoon - example description",
-                price = 200
-            },
-            new CityConfig
-            {
-                name = "Berg",
-                coords = new float[] { 1202.414f, -13.071f, 1378.836f },
-                targetGameObjectName = "Berg",
-                sceneName = "Berg",
-                desc = "Berg - example description",
-                price = 200
-            },
-            new CityConfig
-            {
-                name = "Harmattan",
-                coords = new float[] { 93.757f, 65.474f, 767.849f },
-                targetGameObjectName = "Harmattan_Location",
-                sceneName = "Harmattan",
-                desc = "Harmattan - example description",
-                price = 200
-            },
-            new CityConfig
-            {
-                name = "Sirocco",
-                coords = new float[] { 600.0f, 1.2f, -300.0f },
-                targetGameObjectName = "Sirocco_Location",
-                sceneName = "NewSirocco",
-                desc = "Sirocco - example description",
-                price = 200
-            }
-        };
-        
-        return config;
+        var tc = new TravelConfig();
+        tc.cities.Add(new CityConfig("Cierzo") { price = 200, coords = new float[] { 1410.388f, 6.786f, 1665.642f }, targetGameObjectName = "Cierzo", sceneName = "CierzoNewTerrain", desc = "Cierzo - example description" });
+        tc.cities.Add(new CityConfig("Levant") { price = 200, coords = new float[] { -55.212f, 1.056f, 79.379f }, targetGameObjectName = "WarpLocation_HM", sceneName = "Levant", desc = "Levant - example description" });
+        tc.cities.Add(new CityConfig("Monsoon") { price = 200, coords = new float[] { 61.553f, -3.743f, 167.599f }, targetGameObjectName = "Monsoon_Location", sceneName = "Monsoon", desc = "Monsoon - example description" });
+        tc.cities.Add(new CityConfig("Berg") { price = 200, coords = new float[] { 1202.414f, -13.071f, 1378.836f }, targetGameObjectName = "Berg", sceneName = "Berg", desc = "Berg - example description" });
+        tc.cities.Add(new CityConfig("Harmattan") { price = 200, coords = new float[] { 93.757f, 65.474f, 767.849f }, targetGameObjectName = "Harmattan_Location", sceneName = "Harmattan", desc = "Harmattan - example description" });
+        tc.cities.Add(new CityConfig("Sirocco") { price = 200, coords = new float[] { 600.0f, 1.2f, -300.0f }, targetGameObjectName = "Sirocco_Location", sceneName = "NewSirocco", desc = "Sirocco - example description" });
+        return tc;
     }
 }

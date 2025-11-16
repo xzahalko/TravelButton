@@ -2,18 +2,14 @@ using System;
 using System.IO;
 using UnityEngine;
 
-// ConfigManager.cs
-// - DTO classes for TravelButton_Cities.json (array-based, metadata only)
-// - JSON helpers for loading/saving
-// - Default configuration factory
-// - Backward compatibility with legacy dictionary-based schema
+// ConfigManager: load/save travel_config.json (per-city config).
+// - Creates default config if missing.
+// - Fills missing cities (from Default()) for backward compatibility.
+// - Exposes the TravelConfig object for other code to use.
+// NOTE: This is a legacy config manager that uses Newtonsoft.Json and dictionary-based cities.
+// The new system uses CityConfig.cs with JsonUtility and array-based cities.
 
-/// <summary>
-/// Represents a single city's metadata from TravelButton_Cities.json.
-/// Contains only metadata fields - no runtime state like enabled or visited.
-/// </summary>
-[Serializable]
-public class CityConfig
+public class LegacyCityConfig
 {
     public string name;
     public int price;
@@ -22,25 +18,12 @@ public class CityConfig
     public string sceneName;
     public string desc;
 
-    public CityConfig()
-    {
-        name = "";
-        price = 200;
-        coords = null;
-        targetGameObjectName = "";
-        sceneName = "";
-        desc = "";
-    }
-
-    public CityConfig(string name, int price, float[] coords, string targetGameObjectName, string sceneName, string desc)
-    {
-        this.name = name;
-        this.price = price;
-        this.coords = coords;
-        this.targetGameObjectName = targetGameObjectName;
-        this.sceneName = sceneName;
-        this.desc = desc;
-    }
+public class LegacyTravelConfig
+{
+    public bool enabled = true;
+    public string currencyItem = "Silver";
+    public int globalTeleportPrice = 100;
+    public Dictionary<string, LegacyCityConfig> cities = new Dictionary<string, LegacyCityConfig>();
 }
 
 /// <summary>
@@ -52,10 +35,8 @@ public class TravelConfig
 {
     public List<CityConfig> cities;
 
-    public TravelConfig()
-    {
-        cities = new List<CityConfig>();
-    }
+    // Runtime-held config instance
+    public static LegacyTravelConfig Config { get; set; } = null;
 
     /// <summary>
     /// Returns the default TravelConfig with all 6 cities configured.
@@ -143,8 +124,18 @@ public class TravelConfig
                 return null;
             }
 
-            // Try to parse as array-form first
-            try
+            var json = File.ReadAllText(DefaultConfigPath);
+            var des = JsonConvert.DeserializeObject<LegacyTravelConfig>(json);
+            if (des == null) des = Default();
+
+            // fill missing keys with defaults for backward compatibility
+            var defaults = Default();
+            if (des.cities == null) des.cities = defaults.cities;
+            if (string.IsNullOrEmpty(des.currencyItem)) des.currencyItem = defaults.currencyItem;
+            if (des.globalTeleportPrice == 0) des.globalTeleportPrice = defaults.globalTeleportPrice;
+
+            // ensure known city entries exist (so config always contains the known city keys)
+            foreach (var kv in defaults.cities)
             {
                 var config = JsonConvert.DeserializeObject<TravelConfig>(json);
                 if (config != null && config.cities != null && config.cities.Count > 0)
@@ -265,9 +256,76 @@ public static class ConfigManager
         catch { }
     }
 
-    // Legacy Default method kept for backward compatibility
-    public static object Default()
+    // Return a default TravelConfig populated with the exact values you provided.
+    public static LegacyTravelConfig Default()
     {
-        return TravelConfig.Default();
+        var t = new LegacyTravelConfig();
+        t.enabled = true;
+        t.currencyItem = "Silver";
+        t.globalTeleportPrice = 100;
+        t.cities = new Dictionary<string, LegacyCityConfig>
+        {
+            { "Cierzo", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{1410.388f, 6.786f, 1665.642f},
+                targetGameObjectName = "",
+                sceneName="CierzoNewTerrain",
+                desc = "Cierzo - example description",
+                visited = false,
+                note = "coords required"
+            } },
+            { "Levant", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{-55.212f, 10.056f, 79.379f},
+                targetGameObjectName = "",
+                sceneName="Levant",
+                desc = "Levant - example description",
+                visited = false,
+                note = "coords required"
+            } },
+            { "Monsoon", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{57.352f, -3.877f, 113.537f},
+                targetGameObjectName = "",
+                sceneName="Monsoon",
+                desc = "Monsoon - example description",
+                visited = false,
+                note = "coords required"
+            } },
+            { "Berg", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{1202.414f, -13.071f, 1378.836f}, 
+                targetGameObjectName = "",
+                sceneName="Berg",
+                desc = "Berg - example description",
+                visited = false,
+                note = "coords required"
+            } },
+            { "Harmattan", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{93.757f, 65.474f, 767.849f},
+                targetGameObjectName = "",
+                sceneName="Harmattan",
+                desc = "Harmattan - example description",
+                visited = false,
+                note = "coords required"
+            } },
+            { "Sirocco", new LegacyCityConfig {
+                enabled = false,
+                price = 1,
+                coords = new float[]{100.0f, 1.2f, 300.0f},
+                targetGameObjectName = "",
+                sceneName="NewSirocco",
+                desc = "Sirocco - example description",
+                visited = false,
+                note = "coords required"
+            } }
+        };
+        return t;
     }
 }
