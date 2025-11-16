@@ -2321,17 +2321,14 @@ public class TravelButtonUI : MonoBehaviour
     {
         try
         {
-            // clear the request first so coroutine loop exits promptly
             refreshRequested = false;
-
             if (refreshButtonsCoroutine != null)
             {
-                try { StopCoroutine(refreshButtonsCoroutine); } catch { /* ignore */ }
+                try { StopCoroutine(refreshButtonsCoroutine); } catch { }
                 refreshButtonsCoroutine = null;
             }
-
-            // cleanup any UI registration if you track buttons
-            TBLog.Info("StopRefreshCoroutine: stopped refresh coroutine.");
+            try { UnregisterCityButtons(); } catch { }
+            TBLog.Info("StopRefreshCoroutine: stopped refresh and cleared registrations.");
         }
         catch (Exception ex)
         {
@@ -2339,22 +2336,28 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    // ... inside the same file where OpenTravelDialog is defined — this is the updated method body
+    // Robust, simplified OpenTravelDialog implementation.
+    // Replace your current OpenTravelDialog body with this version (keep the same signature).
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
 
-        // locate player (best-effort) and log position
-        Vector3 playerPos = Vector3.zero;
+        ClearSaveRootCache(); 
+        ClearVisitedCache();
+
+        // quick player position log (best-effort)
         try
         {
             var playerRoot = TeleportHelpers.FindPlayerRoot();
-            if (playerRoot != null) playerPos = playerRoot.transform.position;
+            if (playerRoot != null)
+            {
+                var p = playerRoot.transform.position;
+                TBLog.Info($"OpenTravelDialog: player pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
+            }
         }
         catch { /* ignore */ }
-        TBLog.Info($"OpenTravelDialog: player pos ({playerPos.x:F3}, {playerPos.y:F3}, {playerPos.z:F3})");
 
-        // Diagnostics
+        // diagnostics
         LogLoadedScenes();
         DebugLogToolbarCandidates();
         TravelButton.DumpCityInteractability();
@@ -2364,18 +2367,18 @@ public class TravelButtonUI : MonoBehaviour
         {
             if (dialogRoot == null)
             {
-                try { TravelButton.AutoAssignSceneNamesFromLoadedScenes(); } catch (Exception ex) { TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes failed: " + ex.Message); }
+                try { TravelButton.AutoAssignSceneNamesFromLoadedScenes(); } catch (Exception ex) { TBLog.Warn("AutoAssign failed: " + ex.Message); }
                 try { TravelButton.PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed: " + ex.Message); }
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("visited-cache prepare failed: " + ex.Message);
+            TBLog.Warn("OpenTravelDialog: visited-cache prepare error: " + ex.Message);
         }
 
         try
         {
-            // If dialog already exists, reactivate & start refresh
+            // Re-activate existing dialog: ensure single refresh coroutine
             if (dialogRoot != null)
             {
                 dialogRoot.SetActive(true);
@@ -2384,18 +2387,26 @@ public class TravelButtonUI : MonoBehaviour
                 dialogRoot.transform.SetAsLastSibling();
                 TBLog.Info("OpenTravelDialog: re-activated existing dialogRoot.");
 
-                // small protection frame for click-through
+                // brief protective frame
                 StartCoroutine(TemporarilyDisableDialogRaycasts());
 
-                // restart refresh coroutine
-                StopRefreshCoroutine();
-                refreshRequested = true;
-                refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                // restart refresh coroutine reliably
+                // Guarded start of refresh coroutine (replace direct StartCoroutine(...) calls)
+                if (refreshButtonsCoroutine == null)
+                {
+                    refreshRequested = true;
+                    refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                }
+                else
+                {
+                    TBLog.Info("OpenTravelDialog: refresh coroutine already running; skipping StartCoroutine.");
+                }
+
                 dialogOpenedTime = Time.time;
                 return;
             }
 
-            // Create top-level canvas if needed
+            // create canvas if needed
             if (dialogCanvas == null)
             {
                 dialogCanvas = new GameObject("TravelDialogCanvas");
@@ -2409,7 +2420,7 @@ public class TravelButtonUI : MonoBehaviour
                 TBLog.Info("OpenTravelDialog: created TravelDialogCanvas.");
             }
 
-            // Build dialog root
+            // build dialog root and simple layout (kept compact)
             dialogRoot = new GameObject("TravelDialog");
             dialogRoot.transform.SetParent(dialogCanvas.transform, false);
             dialogRoot.transform.SetAsLastSibling();
@@ -2422,20 +2433,19 @@ public class TravelButtonUI : MonoBehaviour
             var bg = dialogRoot.AddComponent<Image>();
             bg.color = new Color(0f, 0f, 0f, 0.95f);
 
-            // Title
+            // Title and message (minimal)
             var titleGO = new GameObject("Title");
             titleGO.transform.SetParent(dialogRoot.transform, false);
-            var titleText = titleGO.AddComponent<Text>();
+            var titleText = titleGO.AddComponent<UnityEngine.UI.Text>();
             titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (default cost {TravelButton.cfgTravelCost.Value} silver)";
+            titleText.text = $"Select destination (cost {TravelButton.cfgTravelCost.Value} silver)";
             titleText.alignment = TextAnchor.MiddleCenter;
             titleText.fontSize = 18;
             titleText.color = Color.white;
 
-            // Inline message
             var inlineMsgGO = new GameObject("InlineMessage");
             inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
-            var inlineText = inlineMsgGO.AddComponent<Text>();
+            var inlineText = inlineMsgGO.AddComponent<UnityEngine.UI.Text>();
             inlineText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             inlineText.text = "";
             inlineText.alignment = TextAnchor.MiddleCenter;
@@ -2443,7 +2453,7 @@ public class TravelButtonUI : MonoBehaviour
             inlineText.fontSize = 14;
             inlineText.raycastTarget = false;
 
-            // Scroll area / content
+            // Scroll area + content
             var scrollGO = new GameObject("ScrollArea");
             scrollGO.transform.SetParent(dialogRoot.transform, false);
             var scrollRect = scrollGO.AddComponent<ScrollRect>();
@@ -2473,24 +2483,20 @@ public class TravelButtonUI : MonoBehaviour
             scrollRect.horizontal = false;
             scrollRect.vertical = true;
 
-            TBLog.Info($"OpenTravelDialog: TravelButtonMod.Cities.Count = {(TravelButton.Cities?.Count ?? 0)}");
-
-            // read player money once per dialog opening
+            // populate buttons
+            TBLog.Info($"OpenTravelDialog: cities={TravelButton.Cities?.Count ?? 0}");
             long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
 
-            // Populate city buttons (compact / single-pass)
             if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
             {
                 foreach (var city in TravelButton.Cities)
                 {
+                    // build button
                     var bgo = new GameObject("CityButton_" + city.name);
                     bgo.transform.SetParent(content.transform, false);
                     bgo.AddComponent<CanvasRenderer>();
-                    var brt = bgo.AddComponent<RectTransform>();
-                    brt.sizeDelta = new Vector2(0, 44);
-                    var ble = bgo.AddComponent<LayoutElement>();
-                    ble.preferredHeight = 44f;
-                    ble.flexibleWidth = 1f;
+                    var brt = bgo.AddComponent<RectTransform>(); brt.sizeDelta = new Vector2(0, 44);
+                    bgo.AddComponent<LayoutElement>().preferredHeight = 44f;
 
                     var bimg = bgo.AddComponent<Image>();
                     bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
@@ -2504,48 +2510,43 @@ public class TravelButtonUI : MonoBehaviour
                     cb.colorMultiplier = 1f;
                     bbtn.colors = cb;
 
-                    // start non-interactable until we set proper state
-                    bbtn.interactable = false;
+                    bbtn.interactable = false;            // will set after computing state
                     bimg.raycastTarget = false;
                     bbtn.transition = Selectable.Transition.ColorTint;
                     bbtn.targetGraphic = bimg;
-
-                    // disable Animator if present
-                    var animator = bbtn.GetComponent<Animator>();
-                    if (animator != null) animator.enabled = false;
+                    var animator = bbtn.GetComponent<Animator>(); if (animator != null) animator.enabled = false;
 
                     // label
-                    var ltxt = new GameObject("Label").AddComponent<Text>();
-                    ltxt.transform.SetParent(bgo.transform, false);
+                    var lgo = new GameObject("Label"); lgo.transform.SetParent(bgo.transform, false);
+                    var ltxt = lgo.AddComponent<UnityEngine.UI.Text>();
                     ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
                     ltxt.text = city.name;
                     ltxt.alignment = TextAnchor.MiddleLeft;
                     ltxt.fontSize = 14;
                     ltxt.raycastTarget = false;
 
-                    // price text
+                    // price
                     int cost = TravelButton.cfgTravelCost.Value;
                     try { if (city.price.HasValue) cost = city.price.Value; } catch { }
-                    var ptxt = new GameObject("Price").AddComponent<Text>();
-                    ptxt.transform.SetParent(bgo.transform, false);
+                    var pgo = new GameObject("Price"); pgo.transform.SetParent(bgo.transform, false);
+                    var ptxt = pgo.AddComponent<UnityEngine.UI.Text>();
                     ptxt.text = cost.ToString();
                     ptxt.alignment = TextAnchor.MiddleRight;
                     ptxt.raycastTarget = false;
 
-                    // Compute interactable via central helper
+                    // compute interactable via central helper
                     bool initialInteractable = IsCityInteractable(city, playerMoney);
 
-                    // ensure CanvasGroup exists and block raycasts when disabled
-                    var bgoCg = bgo.GetComponent<CanvasGroup>() ?? bgo.AddComponent<CanvasGroup>();
-                    bgoCg.blocksRaycasts = initialInteractable;
-                    bgoCg.interactable = initialInteractable;
+                    // CanvasGroup and visuals
+                    var cg = bgo.GetComponent<CanvasGroup>() ?? bgo.AddComponent<CanvasGroup>();
+                    cg.blocksRaycasts = initialInteractable;
+                    cg.interactable = initialInteractable;
 
-                    // apply visuals
                     bbtn.interactable = initialInteractable;
-                    bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor;
-                    ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f);
+                    try { bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor; } catch { }
+                    try { ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f); } catch { }
 
-                    // register for refresh (if mapping exists)
+                    // register button for refresh
                     try { RegisterCityButton(city, bbtn); } catch { }
 
                     var capturedCity = city;
@@ -2555,7 +2556,6 @@ public class TravelButtonUI : MonoBehaviour
                         {
                             if (isTeleporting) return;
 
-                            // authoritative checks at click-time
                             bool cfgEnabled = TravelButton.IsCityEnabled(capturedCity.name);
                             bool visitedNow = TravelButton.HasPlayerVisited(capturedCity);
                             long pm = GetPlayerCurrencyAmountOrMinusOne();
@@ -2567,8 +2567,7 @@ public class TravelButtonUI : MonoBehaviour
                             if (pm < 0) { ShowInlineDialogMessage("Could not determine your currency amount; travel blocked"); return; }
                             if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true)) { ShowInlineDialogMessage("not enough resources to travel"); return; }
 
-                            // disable background refresh and buttons
-                            StopRefreshCoroutine();
+                            // disable refresh and buttons, then teleport
                             var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
                             if (contentParent != null)
                             {
@@ -2593,11 +2592,30 @@ public class TravelButtonUI : MonoBehaviour
                 TBLog.Warn("OpenTravelDialog: No cities configured.");
             }
 
-            // Layout and start refresh
+            // force Unity to rebuild layout immediately so sizes and positions are valid right away
+            try
+            {
+                var contentRt = content.GetComponent<RectTransform>();
+                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(contentRt);
+                TBLog.Info($"OpenTravelDialog: content child count after populate = {content.transform.childCount}");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: ForceRebuildLayoutImmediate failed: " + ex.Message);
+            }
+
+            // layout and start refresh
             StartCoroutine(FinishDialogLayoutAndShow(scrollRect, viewport.GetComponent<RectTransform>(), content.GetComponent<RectTransform>()));
-            StopRefreshCoroutine();
-            refreshRequested = true;
-            refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+            // Guarded start of refresh coroutine (replace direct StartCoroutine(...) calls)
+            if (refreshButtonsCoroutine == null)
+            {
+                refreshRequested = true;
+                refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+            }
+            else
+            {
+                TBLog.Info("OpenTravelDialog: refresh coroutine already running; skipping StartCoroutine.");
+            }
             dialogOpenedTime = Time.time;
 
             // Close button
@@ -2607,15 +2625,10 @@ public class TravelButtonUI : MonoBehaviour
             cbtn.targetGraphic = closeGO.AddComponent<Image>();
             cbtn.onClick.AddListener(() =>
             {
-                try
-                {
-                    StopRefreshCoroutine();
-                    if (dialogRoot != null) dialogRoot.SetActive(false);
-                }
-                catch (Exception ex) { TravelButtonPlugin.LogError("Close click failed: " + ex); }
+                try { StopRefreshCoroutine(); if (dialogRoot != null) dialogRoot.SetActive(false); } catch (Exception ex) { TravelButtonPlugin.LogError("Close click failed: " + ex); }
             });
 
-            // Prevent immediate click-through
+            // brief protection against immediate click-through
             StartCoroutine(TemporarilyDisableDialogRaycasts());
 
             TBLog.Info("OpenTravelDialog: created dialog.");
@@ -5267,313 +5280,90 @@ public class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialog)
+    // Coroutine that refreshes button states while dialog is open.
+    // NOTE: yields are outside try/catch to satisfy C# iterator restrictions.
+    private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialogRoot)
     {
-        // signal consumer that we're running
         refreshRequested = true;
+        TBLog.Info("RefreshCityButtonsWhileOpen: started");
 
-        TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen start");
-        while (refreshRequested && dialog != null && dialog.activeInHierarchy)
+        while (refreshRequested && dialogRoot != null && dialogRoot.activeInHierarchy)
         {
-            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen activeInHierarchy");
+            // quick guard: find content; if missing wait and continue (yield outside try)
+            var contentTransform = dialogRoot.transform.Find("ScrollArea/Viewport/Content");
+            if (contentTransform == null)
+            {
+                yield return new WaitForSeconds(0.5f);
+                continue;
+            }
+
             try
             {
-                // --- Player position logging (best-effort multi-strategy) ---
-                Vector3 playerPos = Vector3.zero;
-                bool havePlayerPos = false;
-                try
+                long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
+                var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+
+                for (int i = 0; i < contentTransform.childCount; i++)
                 {
-                    // local helper to try several common strategies for locating the local player
-                    bool TryGetPlayerPosition(out Vector3 outPos)
+                    var child = contentTransform.GetChild(i);
+                    if (child == null) continue;
+
+                    var btn = child.GetComponent<Button>();
+                    var img = child.GetComponent<Image>();
+                    if (btn == null || img == null) continue;
+
+                    // derive city name from GameObject name "CityButton_<name>"
+                    var goName = child.name ?? "";
+                    if (!goName.StartsWith("CityButton_")) continue;
+                    string cityName = goName.Substring("CityButton_".Length);
+
+                    var city = TravelButton.FindCity(cityName);
+
+                    // compute required flags (reuse central helper where possible)
+                    bool initialInteractable = false;
+                    try { initialInteractable = IsCityInteractable(city, playerMoney); }
+                    catch { initialInteractable = false; }
+
+                    // apply state only when changed
+                    if (btn.interactable != initialInteractable)
                     {
-                        outPos = Vector3.zero;
+                        btn.interactable = initialInteractable;
+
+                        // Image raycast target follows interactable
+                        img.raycastTarget = initialInteractable;
+
+                        // ensure CanvasGroup present and update blocksRaycasts + interactable
+                        var cg = btn.GetComponent<CanvasGroup>() ?? btn.gameObject.AddComponent<CanvasGroup>();
+                        cg.blocksRaycasts = initialInteractable;
+                        cg.interactable = initialInteractable;
+
+                        // update label color
+                        var txt = btn.GetComponentInChildren<UnityEngine.UI.Text>();
+                        if (txt != null) txt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f);
+
+                        // update image color to match states (use button colors where possible)
                         try
                         {
-                            // 1) Common Unity tag
-                            try
-                            {
-                                var go = GameObject.FindWithTag("Player");
-                                if (go != null && go.transform != null)
-                                {
-                                    outPos = go.transform.position;
-                                    return true;
-                                }
-                            }
-                            catch { /* ignore tag errors */ }
-
-                            // 2) Common object name(s)
-                            string[] candidateNames = new[] { "Player", "player", "LocalPlayer", "localPlayer", "Character" };
-                            foreach (var nm in candidateNames)
-                            {
-                                try
-                                {
-                                    var go = GameObject.Find(nm);
-                                    if (go != null && go.transform != null)
-                                    {
-                                        outPos = go.transform.position;
-                                        return true;
-                                    }
-                                }
-                                catch { }
-                            }
-
-                            // 3) Try to find a game-specific "local player" static (e.g., Player.m_localPlayer or LocalPlayer.Instance)
-                            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                            {
-                                try
-                                {
-                                    Type playerType = null;
-                                    try { playerType = asm.GetTypes().FirstOrDefault(t => t.Name == "Player" || t.Name == "LocalPlayer"); } catch { }
-                                    if (playerType == null) continue;
-
-                                    // look for common static fields/properties
-                                    var fld = playerType.GetField("m_localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-                                              ?? playerType.GetField("localPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                                    if (fld != null)
-                                    {
-                                        var inst = fld.GetValue(null);
-                                        if (inst != null)
-                                        {
-                                            // if instance is a Component or has a 'transform' property
-                                            var comp = inst as UnityEngine.Component;
-                                            if (comp != null)
-                                            {
-                                                outPos = comp.transform.position;
-                                                return true;
-                                            }
-                                            // attempt to get a 'transform' property or field via reflection
-                                            var tProp = inst.GetType().GetProperty("transform");
-                                            if (tProp != null)
-                                            {
-                                                var t = tProp.GetValue(inst) as Transform;
-                                                if (t != null) { outPos = t.position; return true; }
-                                            }
-                                            var tField = inst.GetType().GetField("transform");
-                                            if (tField != null)
-                                            {
-                                                var t = tField.GetValue(inst) as Transform;
-                                                if (t != null) { outPos = t.position; return true; }
-                                            }
-                                        }
-                                    }
-
-                                    var prop = playerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-                                               ?? playerType.GetProperty("instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-                                               ?? playerType.GetProperty("LocalPlayer", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                                    if (prop != null)
-                                    {
-                                        var inst = prop.GetValue(null);
-                                        if (inst != null)
-                                        {
-                                            var comp = inst as UnityEngine.Component;
-                                            if (comp != null)
-                                            {
-                                                outPos = comp.transform.position;
-                                                return true;
-                                            }
-                                            var tProp = inst.GetType().GetProperty("transform");
-                                            if (tProp != null)
-                                            {
-                                                var t = tProp.GetValue(inst) as Transform;
-                                                if (t != null) { outPos = t.position; return true; }
-                                            }
-                                            var tField = inst.GetType().GetField("transform");
-                                            if (tField != null)
-                                            {
-                                                var t = tField.GetValue(inst) as Transform;
-                                                if (t != null) { outPos = t.position; return true; }
-                                            }
-                                        }
-                                    }
-                                }
-                                catch { /* ignore assembly/type reflection errors */ }
-                            }
-
-                            // 4) Fallback: search all Transforms for likely player-like names (inefficient but safe)
-                            try
-                            {
-                                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-                                foreach (var t in allTransforms)
-                                {
-                                    if (t == null || string.IsNullOrEmpty(t.name)) continue;
-                                    var nmLower = t.name.ToLowerInvariant();
-                                    if (nmLower.Contains("player") || nmLower.Contains("local") || nmLower.Contains("character"))
-                                    {
-                                        outPos = t.position;
-                                        return true;
-                                    }
-                                }
-                            }
-                            catch { }
+                            var cb = btn.colors;
+                            img.color = initialInteractable ? cb.normalColor : cb.disabledColor;
                         }
-                        catch { }
-                        return false;
-                    }
-
-                    havePlayerPos = TryGetPlayerPosition(out playerPos);
-                }
-                catch { havePlayerPos = false; }
-
-                // Log player coordinates (if found) or note that we couldn't locate player
-                try
-                {
-                    if (havePlayerPos)
-                    {
-                        TBLog.Info($"Player position: ({playerPos.x:F3}, {playerPos.y:F3}, {playerPos.z:F3})");
-                    }
-                    else
-                    {
-                        TBLog.Info("Player position: (not found)");
-                    }
-                }
-                catch { /* swallow logging errors */ }
-
-                // fetch current player money (best-effort)
-                long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
-                bool haveMoneyInfo = currentMoney >= 0;
-
-                // If dialog was just opened, give the game a small grace period to update inventory after a scene load.
-                bool enforceMoneyNow = true;
-                try
-                {
-                    enforceMoneyNow = (Time.time - dialogOpenedTime) > 0.15f;
-                }
-                catch { enforceMoneyNow = true; }
-
-                var content = dialog.transform.Find("ScrollArea/Viewport/Content");
-                if (content != null)
-                {
-                    TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen content found");
-                    for (int i = 0; i < content.childCount; i++)
-                    {
-                        var child = content.GetChild(i);
-                        var btn = child.GetComponent<Button>();
-                        var img = child.GetComponent<Image>();
-                        if (btn == null || img == null) continue;
-
-                        // extract city name from GameObject name "CityButton_<name>"
-                        string objName = child.name;
-                        if (!objName.StartsWith("CityButton_")) continue;
-                        string cityName = objName.Substring("CityButton_".Length);
-
-                        // 1) config flag
-                        bool enabledByConfig = TravelButton.IsCityEnabled(cityName);
-
-                        // 2) find the TravelButtonMod.City entry for this city (if any)
-                        TravelButton.City foundCity = null;
-                        if (TravelButton.Cities != null)
-                        {
-                            foreach (var c in TravelButton.Cities)
-                            {
-                                if (string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    foundCity = c;
-                                    break;
-                                }
-                            }
-                        }
-
-                        // 3) determine per-city cost (fallback to global)
-                        int cost = TravelButton.cfgTravelCost.Value;
-                        if (foundCity != null)
-                        {
-                            TravelButtonPlugin.LogDebug("RefreshCityButtonsWhileOpen foundCity found");
-
-                            try
-                            {
-                                var priceField = foundCity.GetType().GetField("price");
-                                if (priceField != null)
-                                {
-                                    var pv = priceField.GetValue(foundCity);
-                                    if (pv is int) cost = (int)pv;
-                                    else if (pv is long) cost = (int)(long)pv;
-                                }
-                                else
-                                {
-                                    var priceProp = foundCity.GetType().GetProperty("price");
-                                    if (priceProp != null)
-                                    {
-                                        var pv = priceProp.GetValue(foundCity);
-                                        if (pv is int) cost = (int)pv;
-                                        else if (pv is long) cost = (int)(long)pv;
-                                    }
-                                }
-                            }
-                            catch { /* ignore reflection issues; fallback to global */ }
-                        }
-
-                        // 4) coords/anchor availability (configuration check only)
-                        bool coordsAvailable = false;
-                        if (foundCity != null)
-                        {
-                            // This check now only verifies that coordinates are *configured*, not if the target GameObject is currently loaded.
-                            // This is the key change to prevent buttons from becoming disabled after a scene change.
-                            coordsAvailable = !string.IsNullOrEmpty(foundCity.targetGameObjectName) || (foundCity.coords != null && foundCity.coords.Length >= 3);
-                        }
-
-                        // 5) money checks
-                        // If we cannot read money, do not treat it as a hard "not enough" while dialog is fresh.
-                        bool hasEnoughMoney;
-                        if (!haveMoneyInfo)
-                        {
-                            // If we are enforcing money now (after the grace window), be conservative and require money;
-                            // otherwise allow while unknown (so transient -1 does not disable UI).
-                            hasEnoughMoney = !enforceMoneyNow || (currentMoney >= cost);
-                        }
-                        else
-                        {
-                            hasEnoughMoney = currentMoney >= cost;
-                        }
-
-                        // 6) visited check (use the robust fallback helper if available)
-                        bool visitedNow = false;
-                        if (foundCity != null)
-                        {
-                            try { visitedNow = IsCityVisitedFallback(foundCity); } catch { visitedNow = false; }
-                        }
-
-                        // 7) scene-aware coords logic & current location check
-                        bool targetSceneSpecified = foundCity != null && !string.IsNullOrEmpty(foundCity.sceneName);
-                        var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                        bool isCurrentScene = targetSceneSpecified && (foundCity != null && string.Equals(foundCity.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase));
-
-                        // A city is visitable if it has coordinates OR if it's in a different scene (where coords will be found after load)
-                        bool canVisit = coordsAvailable || (targetSceneSpecified && !isCurrentScene);
-
-                        // final interactable decision: mesto je aktivni v pripade, ze je povoleno v configu (enabledByConfig) a zaroven
-                        // mesto bylo navstiveno v minulosti hracem ve hre (visited) a zaroven
-                        // hrac ma dostatek prostredku v inventari ( hasEnoughMoney ) a zaroven
-                        // existuji souradnice pro teleport (canVisit) a zaroven
-                        // mesto neni aktivni v pripade, ze se v nem hrac nachazi (!isCurrentScene)
-                        bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
-
-                        if (btn.interactable != shouldBeInteractableNow)
-                        {
-                            btn.interactable = shouldBeInteractableNow;
-                            img.color = shouldBeInteractableNow ? new Color(0.35f, 0.20f, 0.08f, 1f) : new Color(0.18f, 0.18f, 0.18f, 1f);
-
-                            // robust raycast blocking & visuals sync for refreshed buttons
-                            var cg = btn.GetComponent<CanvasGroup>() ?? btn.gameObject.AddComponent<CanvasGroup>();
-                            cg.blocksRaycasts = shouldBeInteractableNow;
-                            cg.interactable = shouldBeInteractableNow;
-                            var txt = btn.GetComponentInChildren<Text>();
-                            if (txt != null) txt.color = shouldBeInteractableNow ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f);
-                        }
+                        catch { /* ignore */ }
                     }
                 }
             }
             catch (Exception ex)
             {
-                TBLog.Warn("RefreshCityButtonsWhileOpen exception: " + ex);
+                TBLog.Warn("RefreshCityButtonsWhileOpen exception: " + ex.Message);
             }
 
-            // refresh every 1 second while open (yield outside try/catch)
-            yield return new WaitForSeconds(1f);
+            // wait between refreshes (yield outside try/catch)
+            yield return new WaitForSeconds(0.7f);
         }
 
-        // ensure we clear the coroutine ref & registrations on exit
+        // cleanup on exit
         refreshRequested = false;
         refreshButtonsCoroutine = null;
+        try { UnregisterCityButtons(); } catch { }
+        TBLog.Info("RefreshCityButtonsWhileOpen: stopped");
         yield break;
     }
 

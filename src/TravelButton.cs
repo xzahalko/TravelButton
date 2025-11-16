@@ -2552,28 +2552,26 @@ public static class TravelButton
 
         try
         {
-            // Build candidate strings to try
-            var candidates = new List<string>();
-            if (!string.IsNullOrEmpty(city.name)) candidates.Add(city.name);
-            if (!string.IsNullOrEmpty(city.sceneName)) candidates.Add(city.sceneName);
-            if (!string.IsNullOrEmpty(city.targetGameObjectName)) candidates.Add(city.targetGameObjectName);
-
-            // Add normalized variants
-            var extras = new List<string>();
-            foreach (var c in candidates)
+            // Build candidate strings (use a HashSet to avoid duplicates)
+            var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            void AddCandidate(string s)
             {
-                if (string.IsNullOrEmpty(c)) continue;
-                extras.Add(c);
-                extras.Add(c.ToLowerInvariant());
-                extras.Add(c.Replace(" ", "").ToLowerInvariant());
+                if (string.IsNullOrWhiteSpace(s)) return;
+                candidates.Add(s.Trim());
+                candidates.Add(s.Trim().ToLowerInvariant());
+                candidates.Add(s.Trim().Replace(" ", "").ToLowerInvariant());
             }
 
+            AddCandidate(city.name);
+            AddCandidate(city.sceneName);
+            AddCandidate(city.targetGameObjectName);
+
             // Try each candidate using the fast string-based check
-            foreach (var cand in extras.Distinct())
+            foreach (var cand in candidates)
             {
                 try
                 {
-                    if (HasPlayerVisitedFast(cand)) // <-- explicit string-based call
+                    if (HasPlayerVisitedFast(cand))
                     {
                         TBLog.Info($"HasPlayerVisited(City): matched candidate '{cand}' for city '{city.name}'.");
                         return true;
@@ -2581,7 +2579,8 @@ public static class TravelButton
                 }
                 catch (Exception ex)
                 {
-                    TBLog.Warn("HasPlayerVisited(City) candidate check failed: " + ex.Message);
+                    // One-time warning only: HasPlayerVisitedFast should be robust; if it throws, log once and continue.
+                    TBLog.Warn($"HasPlayerVisited(City): candidate check for '{cand}' failed: {ex.Message}");
                 }
             }
 
@@ -2723,98 +2722,222 @@ public static class TravelButton
     // Fast cached lookup. If the cache is missing, try to build it once and re-check.
     // Returns false if no match and no cache could be built.
     // Replace/insert this in TravelButtonMod.cs (same class as existing helpers).
+    // Replace existing HasPlayerVisitedFast implementation with this version.
+    // This implementation is defensive, caches results, builds the visited set once per cache flush,
+    // avoids repeated heavy reflection, and reduces log spam.
+
+    private static readonly object s_visitedCacheLock = new object();
+    private static Dictionary<string, bool> s_hasVisitedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+    private static HashSet<string> s_visitedKeysSet = null; // normalized lowercase keys extracted from save
+    private static bool s_visitedKeysSetInitialized = false;
+    private static bool s_visitedTrackerReflectionFailed = false;
+
+    /// <summary>
+    /// Fast, cached visited check. Uses a one-time-built visited key set (from SaveManager / character/world save)
+    /// to answer repeated queries quickly. Falls back to a single (quiet) attempt at VisitedTracker.HasVisited
+    /// only if no save-based visited keys were found.
+    /// </summary>
     public static bool HasPlayerVisitedFast(string cityId)
     {
         if (string.IsNullOrEmpty(cityId)) return false;
-        try
+
+        // normalize lookup key
+        string key = cityId.Trim();
+
+        // quick cache hit
+        lock (s_visitedCacheLock)
         {
-            TBLog.Info($"HasPlayerVisitedFast: checking '{cityId}'");
+            if (s_hasVisitedCache.TryGetValue(key, out bool cachedValue))
+                return cachedValue;
+        }
 
-            var saveRoot = FindSaveRootInstance();
-            var saveRootFound = saveRoot != null;
-            TBLog.Info($"HasPlayerVisitedFast: saveRootFound={saveRootFound}");
-
-            // check per-character visited
+        // If visited keys set hasn't been initialized, build it once (cheap on repeated calls)
+        if (!s_visitedKeysSetInitialized)
+        {
             try
             {
-                var charInner = GetFirstCharacterInnerSave();
-                if (charInner != null)
-                {
-                    var perCharVisited = GetVisitedCollectionFromSaveObject(charInner);
-                    if (perCharVisited != null)
-                    {
-                        foreach (var item in perCharVisited)
-                        {
-                            if (item == null) continue;
-                            var s = item.ToString().Trim();
-                            if (string.Equals(s, cityId, StringComparison.InvariantCultureIgnoreCase)
-                                || s.IndexOf(cityId, StringComparison.OrdinalIgnoreCase) >= 0
-                                || (int.TryParse(s, out var inum) && int.TryParse(cityId, out var nnum) && inum == nnum))
-                            {
-                                TBLog.Info($"HasPlayerVisitedFast: matched per-character visited with '{s}' for '{cityId}'");
-                                return true;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        TBLog.Info("HasPlayerVisitedFast: per-character visited collection is null.");
-                    }
-                }
-                else
-                {
-                    TBLog.Info("HasPlayerVisitedFast: no character inner save object found.");
-                }
-            }
-            catch (Exception exChar)
-            {
-                TBLog.Warn("HasPlayerVisitedFast: error checking per-character visited: " + exChar.Message);
-            }
+                // Build set from SaveManager / character world save in a single pass
+                s_visitedKeysSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            // check world save visited
-            if (saveRootFound)
-            {
+                // Attempt to find save root once
+                object saveRoot = null;
                 try
                 {
-                    var rootType = saveRoot.GetType();
-                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
-                    var worldSaveProp = rootType.GetProperty("WorldSave", flags) ?? rootType.GetProperty("worldSave", flags);
-                    if (worldSaveProp != null)
+                    saveRoot = FindSaveRootInstance();
+                }
+                catch
+                {
+                    saveRoot = null;
+                }
+
+                if (saveRoot != null)
+                {
+                    try
                     {
-                        var worldSave = worldSaveProp.GetValue(saveRoot, null);
-                        var worldVisited = GetVisitedCollectionFromSaveObject(worldSave);
-                        if (worldVisited != null)
+                        // Try to obtain per-character visited and world visited collections in a few common shapes.
+                        // Use a helper to extract IEnumerable from objects (works with arrays, IList, IEnumerable).
+                        void AddItemsFromObject(object obj)
                         {
-                            foreach (var item in worldVisited)
+                            if (obj == null) return;
+                            // If it's a string -> add as single key
+                            if (obj is string s)
                             {
-                                if (item == null) continue;
-                                var s = item.ToString().Trim();
-                                if (string.Equals(s, cityId, StringComparison.InvariantCultureIgnoreCase)
-                                    || s.IndexOf(cityId, StringComparison.OrdinalIgnoreCase) >= 0
-                                    || (int.TryParse(s, out var inum) && int.TryParse(cityId, out var nnum) && inum == nnum))
+                                s_visitedKeysSet.Add(s.Trim());
+                                return;
+                            }
+                            // If it's a IDictionary, add keys and/or values
+                            var dict = obj as System.Collections.IDictionary;
+                            if (dict != null)
+                            {
+                                foreach (var k in dict.Keys)
+                                    if (k != null) s_visitedKeysSet.Add(k.ToString().Trim());
+                                foreach (var v in dict.Values)
+                                    if (v != null) s_visitedKeysSet.Add(v.ToString().Trim());
+                                return;
+                            }
+                            // IEnumerable fallback
+                            var ie = obj as System.Collections.IEnumerable;
+                            if (ie != null)
+                            {
+                                foreach (var it in ie)
                                 {
-                                    TBLog.Info($"HasPlayerVisitedFast: matched WorldSave visited with '{s}' for '{cityId}'");
-                                    return true;
+                                    if (it == null) continue;
+                                    try { s_visitedKeysSet.Add(it.ToString().Trim()); } catch { }
+                                }
+                                return;
+                            }
+
+                            // Otherwise, reflectively try to find common fields/properties like 'visited', 'visitedLocations', 'visitedCities', etc.
+                            try
+                            {
+                                var t = obj.GetType();
+                                var candidates = new[] { "visited", "visitedLocations", "visitedCities", "visitedList", "visitedIds", "Visited" };
+                                foreach (var name in candidates)
+                                {
+                                    var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                                    if (f != null)
+                                    {
+                                        AddItemsFromObject(f.GetValue(obj));
+                                    }
+                                    var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                                    if (p != null)
+                                    {
+                                        AddItemsFromObject(p.GetValue(obj, null));
+                                    }
+                                }
+                            }
+                            catch { /* ignore reflective probing errors */ }
+                        }
+
+                        // Try common property names on save root
+                        try
+                        {
+                            var srType = saveRoot.GetType();
+                            var charProp = srType.GetProperty("CharacterSave", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
+                                         ?? srType.GetProperty("characterSave", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+
+                            if (charProp != null)
+                            {
+                                var charSave = charProp.GetValue(saveRoot, null);
+                                AddItemsFromObject(charSave);
+                            }
+
+                            // world save
+                            var worldProp = srType.GetProperty("WorldSave", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
+                                         ?? srType.GetProperty("worldSave", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+                            if (worldProp != null)
+                            {
+                                var worldSave = worldProp.GetValue(saveRoot, null);
+                                AddItemsFromObject(worldSave);
+                            }
+
+                            // generic fields - scan for anything that looks like a visited collection
+                            var allProps = srType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+                            foreach (var p in allProps)
+                            {
+                                if (p.PropertyType == typeof(string) || typeof(System.Collections.IEnumerable).IsAssignableFrom(p.PropertyType))
+                                {
+                                    try { AddItemsFromObject(p.GetValue(saveRoot, null)); } catch { }
                                 }
                             }
                         }
-                        else
+                        catch { /* ignore saveRoot reflection errors */ }
+                    }
+                    catch { /* ignore */ }
+                }
+
+                // Mark as initialized even if set is empty (prevents repeated expensive attempts)
+                s_visitedKeysSetInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("HasPlayerVisitedFast: failed to initialize visited keys set: " + ex.Message);
+                // ensure we don't retry too aggressively
+                s_visitedKeysSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                s_visitedKeysSetInitialized = true;
+            }
+        }
+
+        // Now check the built set for direct matches against likely ids.
+        bool result = false;
+        try
+        {
+            // Direct membership (case-insensitive)
+            if (s_visitedKeysSet != null && s_visitedKeysSet.Contains(key))
+            {
+                result = true;
+            }
+            else
+            {
+                // Also try matching against common city identifiers: name, sceneName and known variants.
+                // If caller passed a city name, we may also try lower-case/underscore variants.
+                string keyLower = key.ToLowerInvariant();
+
+                // direct substring match: sometimes visited keys contain the city name as part of string
+                if (s_visitedKeysSet != null)
+                {
+                    foreach (var k in s_visitedKeysSet)
+                    {
+                        if (string.IsNullOrEmpty(k)) continue;
+                        try
                         {
-                            TBLog.Info("HasPlayerVisitedFast: WorldSave visited collection is null.");
+                            var kl = k.ToLowerInvariant();
+                            if (kl == keyLower || kl.Contains(keyLower) || keyLower.Contains(kl))
+                            {
+                                result = true;
+                                break;
+                            }
+                        }
+                        catch { /* ignore string errors */ }
+                    }
+                }
+
+                // As a fallback, if the key looks like a sceneName or has underscores, try replacing underscores/spaces
+                if (!result)
+                {
+                    var alt = keyLower.Replace("_", "").Replace(" ", "");
+                    foreach (var k in s_visitedKeysSet)
+                    {
+                        if (string.IsNullOrEmpty(k)) continue;
+                        var kl = k.ToLowerInvariant().Replace("_", "").Replace(" ", "");
+                        if (kl == alt)
+                        {
+                            result = true;
+                            break;
                         }
                     }
-                    else
-                    {
-                        TBLog.Info("HasPlayerVisitedFast: WorldSave property not found on save root.");
-                    }
-                }
-                catch (Exception exWorld)
-                {
-                    TBLog.Warn("HasPlayerVisitedFast: error checking WorldSave visited: " + exWorld.Message);
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("HasPlayerVisitedFast: error while checking visited set: " + ex.Message);
+            result = false;
+        }
 
-            // Additional fallback: try VisitedTracker.HasVisited(name) if available (some game systems use that)
+        // If visited set is empty/uninformative, try a single quiet call to VisitedTracker.HasVisited (but only once)
+        if (!result && (s_visitedKeysSet == null || s_visitedKeysSet.Count == 0) && !s_visitedTrackerReflectionFailed)
+        {
             try
             {
                 var vtType = AppDomain.CurrentDomain.GetAssemblies()
@@ -2825,165 +2948,54 @@ public static class TravelButton
                     var hasVisitedMethod = vtType.GetMethod("HasVisited", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase);
                     if (hasVisitedMethod != null)
                     {
-                        try
-                        {
-                            var res = hasVisitedMethod.Invoke(null, new object[] { cityId });
-                            if (res is bool b && b)
-                            {
-                                TBLog.Info($"HasPlayerVisitedFast: VisitedTracker.HasVisited returned true for '{cityId}'");
-                                return true;
-                            }
-                        }
-                        catch (Exception exVT) { TBLog.Warn("HasPlayerVisitedFast: VisitedTracker.HasVisited invocation failed: " + exVT.Message); }
+                        var res = hasVisitedMethod.Invoke(null, new object[] { key });
+                        if (res is bool b && b) result = true;
                     }
                 }
             }
-            catch (Exception ex) { TBLog.Warn("HasPlayerVisitedFast: error while trying VisitedTracker fallback: " + ex.Message); }
-
-            // No match by save-based checks; log sample of visited keys (helpful to debug)
-            try
+            catch (TargetInvocationException tie)
             {
-                var sample = new List<string>();
-                var charInner = GetFirstCharacterInnerSave();
-                if (charInner != null)
-                {
-                    var perCharVisited = GetVisitedCollectionFromSaveObject(charInner);
-                    if (perCharVisited != null)
-                    {
-                        foreach (var item in perCharVisited)
-                        {
-                            if (item == null) continue;
-                            sample.Add(item.ToString());
-                            if (sample.Count >= 10) break;
-                        }
-                    }
-                }
-                TBLog.Info($"HasPlayerVisitedFast: no match for '{cityId}'. Sample per-character visited keys (up to 10): [{string.Join(", ", sample)}]");
-            }
-            catch { /* ignore sample dump failure */ }
-
-            TBLog.Info($"HasPlayerVisitedFast: returning false for '{cityId}'");
-            return false;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("HasPlayerVisitedFast: unexpected error: " + ex.Message);
-            return false;
-        }
-    }
-
-    // Helper to clear cache (call when save is modified externally or when you want to force rebuild)
-    private static void ClearVisitedLookupCache()
-    {
-        lock (s_visitedLock)
-        {
-            s_cachedVisitedKeys = null;
-            s_cachedSaveRootRef = null;
-        }
-        TBLog.Info("ClearVisitedLookupCache: cleared cached visited keys.");
-    }
-
-    // Diagnostic: robustly inspect CharacterSaves entries and their inner save objects to locate "visited"/"discovered" members.
-    public static void DumpCharacterSaveHoldersDetailed()
-    {
-        try
-        {
-            var saveRoot = FindSaveRootInstance();
-            if (saveRoot == null)
-            {
-                TBLog.Info("DumpCharacterSaveHoldersDetailed: SaveManager.Instance not found.");
-                return;
-            }
-
-            var rootType = saveRoot.GetType();
-            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase;
-
-            // Try field m_charSaves or property CharacterSaves
-            object charSavesObj = null;
-            try
-            {
-                var field = rootType.GetField("m_charSaves", flags) ?? rootType.GetField("charSaves", flags);
-                if (field != null) charSavesObj = field.GetValue(saveRoot);
-                else
-                {
-                    var prop = rootType.GetProperty("CharacterSaves", flags) ?? rootType.GetProperty("characterSaves", flags);
-                    if (prop != null) charSavesObj = prop.GetValue(saveRoot, null);
-                }
+                // Reflection target threw; avoid trying again and log a single warning
+                s_visitedTrackerReflectionFailed = true;
+                TBLog.Warn("HasPlayerVisitedFast: VisitedTracker.HasVisited invocation failed: " + (tie.InnerException?.Message ?? tie.Message));
             }
             catch (Exception ex)
             {
-                TBLog.Warn("DumpCharacterSaveHoldersDetailed: error retrieving CharacterSaves: " + ex.Message);
-                charSavesObj = null;
+                s_visitedTrackerReflectionFailed = true;
+                TBLog.Warn("HasPlayerVisitedFast: VisitedTracker fallback failed: " + ex.Message);
             }
-
-            if (charSavesObj == null)
-            {
-                TBLog.Info("DumpCharacterSaveHoldersDetailed: CharacterSaves not found on SaveManager.");
-                return;
-            }
-
-            // Handle Dictionary-like container (DictionaryExt or IDictionary)
-            if (charSavesObj is System.Collections.IDictionary dict)
-            {
-                TBLog.Info($"DumpCharacterSaveHoldersDetailed: CharacterSaves is IDictionary with count={dict.Count}. Listing up to 3 entries...");
-                int i = 0;
-                foreach (System.Collections.DictionaryEntry kv in dict)
-                {
-                    if (i++ >= 3) break;
-                    TBLog.Info($" CharacterSave entry key={kv.Key}, valueType={(kv.Value != null ? kv.Value.GetType().FullName : "<null>")}");
-                    if (kv.Value != null)
-                    {
-                        DumpObjectMembersSample(kv.Value, 12);
-                        // probe inner save object
-                        var inner = TryGetMemberValue(kv.Value, "Save") ?? TryGetMemberValue(kv.Value, "characterSave") ?? TryGetMemberValue(kv.Value, "SaveData") ?? TryGetMemberValue(kv.Value, "data");
-                        if (inner != null)
-                        {
-                            TBLog.Info($"  Inner save type = {inner.GetType().FullName}");
-                            DumpObjectMembersSample(inner, 20);
-                            // probe for visited-like members on inner
-                            ProbeForVisitedMembers(inner);
-                        }
-                    }
-                }
-                return;
-            }
-
-            // Handle enumerable (IList or IEnumerable)
-            if (charSavesObj is System.Collections.IEnumerable enumerable && !(charSavesObj is string))
-            {
-                TBLog.Info("DumpCharacterSaveHoldersDetailed: CharacterSaves is IEnumerable - enumerating up to 3 elements...");
-                int idx = 0;
-                foreach (var entry in enumerable)
-                {
-                    if (idx++ >= 3) break;
-                    if (entry == null)
-                    {
-                        TBLog.Info($" CharacterSave[{idx - 1}] = <null>");
-                        continue;
-                    }
-                    TBLog.Info($" CharacterSave[{idx - 1}] type = {entry.GetType().FullName}");
-                    DumpObjectMembersSample(entry, 12);
-                    var inner = TryGetMemberValue(entry, "Save") ?? TryGetMemberValue(entry, "characterSave") ?? TryGetMemberValue(entry, "SaveData") ?? TryGetMemberValue(entry, "data");
-                    if (inner != null)
-                    {
-                        TBLog.Info($"  Inner save type = {inner.GetType().FullName}");
-                        DumpObjectMembersSample(inner, 20);
-                        ProbeForVisitedMembers(inner);
-                    }
-                }
-                return;
-            }
-
-            // Fallback: not enumerable and not dictionary
-            TBLog.Info($"DumpCharacterSaveHoldersDetailed: CharacterSaves has unexpected type {charSavesObj.GetType().FullName}. Dumping object sample:");
-            DumpObjectMembersSample(charSavesObj, 20);
         }
-        catch (Exception ex)
+
+        // Cache result for this key so subsequent checks are fast
+        lock (s_visitedCacheLock)
         {
-            TBLog.Warn("DumpCharacterSaveHoldersDetailed failed: " + ex.Message);
+            try { s_hasVisitedCache[key] = result; } catch { }
         }
+
+        // Log only sparse diagnostics (not for every call)
+        if (!result)
+        {
+            TBLog.Info($"HasPlayerVisitedFast: returning false for '{cityId}' (visitedKeysCount={s_visitedKeysSet?.Count ?? 0})");
+        }
+
+        return result;
     }
 
+    /// <summary>
+    /// Call this when you know saved visited state changed (e.g., after loading a save or marking a city visited)
+    /// to force the cache to be rebuilt on next HasPlayerVisitedFast call.
+    /// </summary>
+    public static void ClearVisitedCache()
+    {
+        lock (s_visitedCacheLock)
+        {
+            s_hasVisitedCache.Clear();
+        }
+        s_visitedKeysSetInitialized = false;
+        s_visitedKeysSet = null;
+        s_visitedTrackerReflectionFailed = false;
+        TBLog.Info("ClearVisitedCache: cleared visited caches.");
+    }
     // Probe an object for likely visited/discovered members and log their contents (small sample)
     private static void ProbeForVisitedMembers(object obj)
     {
@@ -3243,130 +3255,179 @@ public static class TravelButton
         return null;
     }
 
-    // Reflection helper: find a runtime "save root" instance (SaveManager / PlayerProfile / SaveData etc.).
-    // This is the implementation referenced by HasPlayerVisited(...) and related helpers.
-    // Paste this method into the same class/file where HasPlayerVisited and other helpers live.
+    private static readonly object s_saveRootLock = new object();
+    private static object s_cachedSaveRoot = null;
+    private static DateTime s_saveRootCachedAt = DateTime.MinValue;
+    private static readonly TimeSpan s_saveRootCacheTtl = TimeSpan.FromSeconds(10); // safety TTL if you want periodic refresh
+    private static bool s_saveRootLogged = false;
+
+    /// <summary>
+    /// Find the game's save root (SaveManager instance or equivalent).
+    /// This implementation caches the result and is intentionally low-noise.
+    /// Use ClearSaveRootCache() to force re-evaluation (e.g., after loading a save).
+    /// </summary>
     public static object FindSaveRootInstance()
     {
         try
         {
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            foreach (var asm in assemblies)
+            lock (s_saveRootLock)
             {
-                Type[] types;
-                try { types = asm.GetTypes(); } catch { continue; }
-
-                foreach (var t in types)
+                // Return cached if still valid
+                if (s_cachedSaveRoot != null)
                 {
-                    if (string.IsNullOrEmpty(t.Name)) continue;
-
-                    // Prefer types that look like SaveManager/PlayerProfile/etc.
-                    if (!SaveManagerTypeNameCandidates.Any(c => t.Name.IndexOf(c, StringComparison.InvariantCultureIgnoreCase) >= 0))
-                        continue;
-
-                    var flagsStatic = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase;
-
-                    // Try common static instance/property names (Instance, instance, Current, Save, etc.)
-                    foreach (var instName in SaveInstanceMemberCandidates)
-                    {
-                        try
-                        {
-                            var prop = t.GetProperty(instName, flagsStatic);
-                            if (prop != null)
-                            {
-                                var inst = prop.GetValue(null, null);
-                                if (inst != null)
-                                {
-                                    TBLog.Info($"FindSaveRootInstance: found save root via property {t.FullName}.{instName}");
-                                    return inst;
-                                }
-                            }
-
-                            var field = t.GetField(instName, flagsStatic);
-                            if (field != null)
-                            {
-                                var inst = field.GetValue(null);
-                                if (inst != null)
-                                {
-                                    TBLog.Info($"FindSaveRootInstance: found save root via field {t.FullName}.{instName}");
-                                    return inst;
-                                }
-                            }
-                        }
-                        catch { /* ignore and continue trying other members */ }
-                    }
-
-                    // Try common static "Save" / "Data" properties
+                    // Unity objects may be destroyed, verify if still alive when possible
                     try
                     {
-                        var otherProp = t.GetProperty("Save", flagsStatic) ?? t.GetProperty("Data", flagsStatic);
-                        if (otherProp != null)
+                        var unityObj = s_cachedSaveRoot as UnityEngine.Object;
+                        if (unityObj != null && unityObj == null) // destroyed
                         {
-                            var inst = otherProp.GetValue(null, null);
-                            if (inst != null)
+                            s_cachedSaveRoot = null;
+                            s_saveRootLogged = false;
+                        }
+                        else
+                        {
+                            // TTL check: refresh occasionally in case the runtime replaced the instance
+                            if (DateTime.UtcNow - s_saveRootCachedAt < s_saveRootCacheTtl)
                             {
-                                TBLog.Info($"FindSaveRootInstance: found save root via property {t.FullName}.Save/Data");
-                                return inst;
+                                return s_cachedSaveRoot;
                             }
+                            // else fall through to a lightweight re-check below
                         }
                     }
-                    catch { /* ignore */ }
+                    catch
+                    {
+                        // If any verification fails, drop cache and recompute
+                        s_cachedSaveRoot = null;
+                        s_saveRootLogged = false;
+                    }
                 }
-            }
 
-            // As a fallback, also search for player-related singletons (LocalPlayer / Player.Instance etc.)
-            var playerTypeCandidates = new[] { "Player", "PlayerManager", "PlayerCharacter", "LocalPlayer", "Character", "PlayerController" };
-            var playerInstanceCandidates = new[] { "LocalPlayer", "localPlayer", "Instance", "instance", "m_LocalPlayer", "Player" };
+                // Attempt lightweight discovery strategies in order
 
-            foreach (var asm in assemblies)
-            {
-                Type[] types;
-                try { types = asm.GetTypes(); } catch { continue; }
-
-                foreach (var t in types)
+                // 1) Try to find a type named SaveManager and read its public static Instance property/field (fast)
+                try
                 {
-                    if (!playerTypeCandidates.Any(c => t.Name.IndexOf(c, StringComparison.InvariantCultureIgnoreCase) >= 0))
-                        continue;
-
-                    var flagsStatic = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase;
-                    foreach (var instName in playerInstanceCandidates)
+                    Type saveManagerType = null;
+                    // Search loaded assemblies for a type called "SaveManager" (fast enumeration)
+                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                     {
                         try
                         {
-                            var prop = t.GetProperty(instName, flagsStatic);
-                            if (prop != null)
-                            {
-                                var inst = prop.GetValue(null, null);
-                                if (inst != null)
-                                {
-                                    TBLog.Info($"FindSaveRootInstance: found player singleton via property {t.FullName}.{instName}");
-                                    return inst;
-                                }
-                            }
+                            saveManagerType = asm.GetTypes().FirstOrDefault(t => t.Name == "SaveManager");
+                            if (saveManagerType != null) break;
+                        }
+                        catch { /* ignore assemblies that can't enumerate types */ }
+                    }
 
-                            var field = t.GetField(instName, flagsStatic);
-                            if (field != null)
+                    if (saveManagerType != null)
+                    {
+                        // try common property names
+                        var prop = saveManagerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase)
+                                   ?? saveManagerType.GetProperty("instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase);
+                        if (prop != null)
+                        {
+                            var inst = prop.GetValue(null, null);
+                            if (inst != null)
                             {
-                                var inst = field.GetValue(null);
-                                if (inst != null)
+                                s_cachedSaveRoot = inst;
+                                s_saveRootCachedAt = DateTime.UtcNow;
+                                if (!s_saveRootLogged)
                                 {
-                                    TBLog.Info($"FindSaveRootInstance: found player singleton via field {t.FullName}.{instName}");
-                                    return inst;
+                                    s_saveRootLogged = true;
+                                    TBLog.Info("FindSaveRootInstance: found save root via property SaveManager.Instance");
                                 }
+                                return s_cachedSaveRoot;
                             }
                         }
-                        catch { }
+
+                        // try a static field as fallback
+                        var fld = saveManagerType.GetField("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase)
+                                  ?? saveManagerType.GetField("instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.IgnoreCase);
+                        if (fld != null)
+                        {
+                            var inst = fld.GetValue(null);
+                            if (inst != null)
+                            {
+                                s_cachedSaveRoot = inst;
+                                s_saveRootCachedAt = DateTime.UtcNow;
+                                if (!s_saveRootLogged)
+                                {
+                                    s_saveRootLogged = true;
+                                    TBLog.Info("FindSaveRootInstance: found save root via field SaveManager.Instance");
+                                }
+                                return s_cachedSaveRoot;
+                            }
+                        }
                     }
                 }
+                catch
+                {
+                    // fail silently; we'll try other inexpensive methods
+                }
+
+                // 2) Try Resources.FindObjectsOfTypeAll for a likely SaveManager component/object
+                try
+                {
+                    // This is slightly heavier, but we do it only when cache empty and only once per cache TTL.
+                    var all = Resources.FindObjectsOfTypeAll<UnityEngine.Object>();
+                    foreach (var obj in all)
+                    {
+                        if (obj == null) continue;
+                        var t = obj.GetType();
+                        var name = t.Name ?? "";
+                        // Heuristic: type name containing "Save" and "Manager" is likely the save root
+                        if (name.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                            name.IndexOf("Manager", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            s_cachedSaveRoot = obj;
+                            s_saveRootCachedAt = DateTime.UtcNow;
+                            if (!s_saveRootLogged)
+                            {
+                                s_saveRootLogged = true;
+                                TBLog.Info($"FindSaveRootInstance: found save root by scanning objects (type='{name}').");
+                            }
+                            return s_cachedSaveRoot;
+                        }
+                    }
+                }
+                catch
+                {
+                    // ignore heavy fallback errors
+                }
+
+                // Nothing found
+                s_cachedSaveRoot = null;
+                s_saveRootCachedAt = DateTime.MinValue;
+                // Do not spam logs when not found; only log first time to help debugging
+                if (!s_saveRootLogged)
+                {
+                    s_saveRootLogged = true;
+                    TBLog.Info("FindSaveRootInstance: save root not found (will attempt again later).");
+                }
+                return null;
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("FindSaveRootInstance failed: " + ex.Message);
+            // Very defensive: never throw from this helper
+            TBLog.Warn("FindSaveRootInstance: unexpected error: " + ex.Message);
+            return null;
         }
+    }
 
-        TBLog.Info("FindSaveRootInstance: no save root or player singleton found.");
-        return null;
+    /// <summary>
+    /// Clear cached SaveRoot so next FindSaveRootInstance will re-scan.
+    /// Call this when a save is loaded, when scenes change dramatically, or during debugging.
+    /// </summary>
+    public static void ClearSaveRootCache()
+    {
+        lock (s_saveRootLock)
+        {
+            s_cachedSaveRoot = null;
+            s_saveRootCachedAt = DateTime.MinValue;
+            s_saveRootLogged = false;
+        }
+        TBLog.Info("ClearSaveRootCache: cleared save-root cache.");
     }
 
     // Diagnostic: dump fields/properties of the provided saveRoot (safe, limited sampling)
