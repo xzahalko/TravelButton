@@ -1,8 +1,5 @@
-using Newtonsoft.Json;
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Security.Cryptography;
 using UnityEngine;
 
 // ConfigManager: load/save travel_config.json (per-city config).
@@ -45,10 +42,18 @@ public static class ConfigManager
 
     public static string ConfigPathForLog()
     {
-        return DefaultConfigPath;
+        try
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+            return Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json");
+        }
+        catch
+        {
+            return "(unknown)";
+        }
     }
 
-    // Load config from disk, creating defaults when missing or incomplete.
+    // Deprecated - configuration is now handled via TravelConfig.LoadFromFile
     public static void Load()
     {
         try
@@ -109,22 +114,16 @@ public static class ConfigManager
             Debug.LogError("[TravelButton] ConfigManager.Load exception: " + ex);
             Config = Default();
         }
+        catch { }
     }
 
     public static void Save()
     {
         try
         {
-            var dir = Path.GetDirectoryName(DefaultConfigPath);
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-            var json = JsonConvert.SerializeObject(Config ?? Default(), Formatting.Indented);
-            File.WriteAllText(DefaultConfigPath, json);
-            Debug.Log("[TravelButton] ConfigManager: config saved to " + DefaultConfigPath);
+            TBLog.Info("ConfigManager.Save() called (deprecated; using TravelConfig instead)");
         }
-        catch (Exception ex)
-        {
-            Debug.LogError("[TravelButton] ConfigManager.Save exception: " + ex);
-        }
+        catch { }
     }
 
     // Return a default LegacyTravelConfig populated with the exact values you provided.

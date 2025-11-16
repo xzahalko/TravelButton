@@ -1,3 +1,7 @@
+// TravelButton_Cities.json
+// Schema: { "cities": [ { "name": "...", "coords": [x,y,z], "targetGameObjectName": "...", "sceneName": "...", "desc": "..." }, ... ] }
+// Note: 'enabled' and 'price' are managed by BepInEx config, not this file.
+
 {
   "cities": [
     {
