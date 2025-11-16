@@ -2338,279 +2338,383 @@ public class TravelButtonUI : MonoBehaviour
 
     // Robust, simplified OpenTravelDialog implementation.
     // Replace your current OpenTravelDialog body with this version (keep the same signature).
+    // Defensive replacement of OpenTravelDialog: per-city try/catch and progress logs to avoid crashes and collect diagnostics.
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
 
-        ClearSaveRootCache(); 
-        ClearVisitedCache();
-
-        // quick player position log (best-effort)
         try
         {
-            var playerRoot = TeleportHelpers.FindPlayerRoot();
-            if (playerRoot != null)
+            try { ClearSaveRootCache(); } catch { }
+            try { ClearVisitedCache(); } catch { }
+            try { TravelButton.ClearCityVisitedCache(); } catch { }
+
+            // player pos
+            try
             {
-                var p = playerRoot.transform.position;
-                TBLog.Info($"OpenTravelDialog: player pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
-            }
-        }
-        catch { /* ignore */ }
-
-        // diagnostics
-        LogLoadedScenes();
-        DebugLogToolbarCandidates();
-        TravelButton.DumpCityInteractability();
-
-        // Ensure visited lookup prepared once per dialog open
-        try
-        {
-            if (dialogRoot == null)
-            {
-                try { TravelButton.AutoAssignSceneNamesFromLoadedScenes(); } catch (Exception ex) { TBLog.Warn("AutoAssign failed: " + ex.Message); }
-                try { TravelButton.PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed: " + ex.Message); }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("OpenTravelDialog: visited-cache prepare error: " + ex.Message);
-        }
-
-        try
-        {
-            // Re-activate existing dialog: ensure single refresh coroutine
-            if (dialogRoot != null)
-            {
-                dialogRoot.SetActive(true);
-                var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : dialogRoot.GetComponentInParent<Canvas>();
-                if (canvas != null) canvas.sortingOrder = 2000;
-                dialogRoot.transform.SetAsLastSibling();
-                TBLog.Info("OpenTravelDialog: re-activated existing dialogRoot.");
-
-                // brief protective frame
-                StartCoroutine(TemporarilyDisableDialogRaycasts());
-
-                // restart refresh coroutine reliably
-                // Guarded start of refresh coroutine (replace direct StartCoroutine(...) calls)
-                if (refreshButtonsCoroutine == null)
+                var playerRoot = TeleportHelpers.FindPlayerRoot();
+                if (playerRoot != null)
                 {
-                    refreshRequested = true;
-                    refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                    var p = playerRoot.transform.position;
+                    TBLog.Info($"OpenTravelDialog: player pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
                 }
-                else
-                {
-                    TBLog.Info("OpenTravelDialog: refresh coroutine already running; skipping StartCoroutine.");
-                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: FindPlayerRoot failed: " + ex.Message);
+            }
 
-                dialogOpenedTime = Time.time;
-                return;
+            // diagnostics
+            try { LogLoadedScenes(); } catch (Exception ex) { TBLog.Warn("LogLoadedScenes failed: " + ex.Message); }
+            try { DebugLogToolbarCandidates(); } catch (Exception ex) { TBLog.Warn("DebugLogToolbarCandidates failed: " + ex.Message); }
+            try { TravelButton.DumpCityInteractability(); } catch (Exception ex) { TBLog.Warn("DumpCityInteractability failed: " + ex.Message); }
+
+            // prepare visited lookup once
+            try
+            {
+                if (dialogRoot == null)
+                {
+                    try { TravelButton.AutoAssignSceneNamesFromLoadedScenes(); } catch (Exception ex) { TBLog.Warn("AutoAssignSceneNamesFromLoadedScenes failed: " + ex.Message); }
+                    try { TravelButton.PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed: " + ex.Message); }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: visited-cache prepare error: " + ex.Message);
+            }
+
+            // If dialog exists, re-activate and restart refresh (guarded)
+            try
+            {
+                if (dialogRoot != null)
+                {
+                    dialogRoot.SetActive(true);
+                    var canvas = dialogCanvas != null ? dialogCanvas.GetComponent<Canvas>() : dialogRoot.GetComponentInParent<Canvas>();
+                    if (canvas != null) canvas.sortingOrder = 2000;
+                    dialogRoot.transform.SetAsLastSibling();
+                    TBLog.Info("OpenTravelDialog: re-activated existing dialogRoot.");
+
+                    StartCoroutine(TemporarilyDisableDialogRaycasts());
+
+                    if (refreshButtonsCoroutine == null)
+                    {
+                        refreshRequested = true;
+                        refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                        TBLog.Info("OpenTravelDialog: started refresh coroutine (reactivate path).");
+                    }
+                    else
+                    {
+                        TBLog.Info("OpenTravelDialog: refresh coroutine already running; skipping StartCoroutine.");
+                    }
+
+                    dialogOpenedTime = Time.time;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: re-activation path failed: " + ex.Message);
             }
 
             // create canvas if needed
-            if (dialogCanvas == null)
+            try
             {
-                dialogCanvas = new GameObject("TravelDialogCanvas");
-                var canvasComp = dialogCanvas.AddComponent<Canvas>();
-                canvasComp.renderMode = RenderMode.ScreenSpaceOverlay;
-                canvasComp.overrideSorting = true;
-                canvasComp.sortingOrder = 2000;
-                dialogCanvas.AddComponent<GraphicRaycaster>();
-                dialogCanvas.AddComponent<CanvasGroup>();
-                UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
-                TBLog.Info("OpenTravelDialog: created TravelDialogCanvas.");
+                if (dialogCanvas == null)
+                {
+                    dialogCanvas = new GameObject("TravelDialogCanvas");
+                    var canvasComp = dialogCanvas.AddComponent<Canvas>();
+                    canvasComp.renderMode = RenderMode.ScreenSpaceOverlay;
+                    canvasComp.overrideSorting = true;
+                    canvasComp.sortingOrder = 2000;
+                    dialogCanvas.AddComponent<GraphicRaycaster>();
+                    dialogCanvas.AddComponent<CanvasGroup>();
+                    UnityEngine.Object.DontDestroyOnLoad(dialogCanvas);
+                    TBLog.Info("OpenTravelDialog: created TravelDialogCanvas.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: creating dialogCanvas failed: " + ex.Message);
             }
 
-            // build dialog root and simple layout (kept compact)
-            dialogRoot = new GameObject("TravelDialog");
-            dialogRoot.transform.SetParent(dialogCanvas.transform, false);
-            dialogRoot.transform.SetAsLastSibling();
-            dialogRoot.AddComponent<CanvasRenderer>();
-            var rootRt = dialogRoot.AddComponent<RectTransform>();
-            rootRt.anchorMin = rootRt.anchorMax = new Vector2(0.5f, 0.5f);
-            rootRt.pivot = new Vector2(0.5f, 0.5f);
-            rootRt.sizeDelta = new Vector2(520, 360);
-            rootRt.anchoredPosition = Vector2.zero;
-            var bg = dialogRoot.AddComponent<Image>();
-            bg.color = new Color(0f, 0f, 0f, 0.95f);
+            // build dialog root and layout
+            try
+            {
+                dialogRoot = new GameObject("TravelDialog");
+                dialogRoot.transform.SetParent(dialogCanvas.transform, false);
+                dialogRoot.transform.SetAsLastSibling();
+                dialogRoot.AddComponent<CanvasRenderer>();
+                var rootRt = dialogRoot.AddComponent<RectTransform>();
+                rootRt.anchorMin = rootRt.anchorMax = new Vector2(0.5f, 0.5f);
+                rootRt.pivot = new Vector2(0.5f, 0.5f);
+                rootRt.sizeDelta = new Vector2(520, 360);
+                rootRt.anchoredPosition = Vector2.zero;
+                var bg = dialogRoot.AddComponent<Image>();
+                bg.color = new Color(0f, 0f, 0f, 0.95f);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: creating dialogRoot failed: " + ex.Message);
+                // abort — cannot proceed without root
+                return;
+            }
 
-            // Title and message (minimal)
-            var titleGO = new GameObject("Title");
-            titleGO.transform.SetParent(dialogRoot.transform, false);
-            var titleText = titleGO.AddComponent<UnityEngine.UI.Text>();
-            titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            titleText.text = $"Select destination (cost {TravelButton.cfgTravelCost.Value} silver)";
-            titleText.alignment = TextAnchor.MiddleCenter;
-            titleText.fontSize = 18;
-            titleText.color = Color.white;
+            // Title and inline message
+            try
+            {
+                var titleGO = new GameObject("Title");
+                titleGO.transform.SetParent(dialogRoot.transform, false);
+                var titleRt = titleGO.AddComponent<RectTransform>();
+                titleRt.anchorMin = new Vector2(0f, 1f);
+                titleRt.anchorMax = new Vector2(1f, 1f);
+                titleRt.pivot = new Vector2(0.5f, 1f);
+                titleRt.anchoredPosition = new Vector2(0, -8);
+                titleRt.sizeDelta = new Vector2(0, 32);
+                var titleText = titleGO.AddComponent<UnityEngine.UI.Text>();
+                titleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                titleText.text = $"Select destination (cost {TravelButton.cfgTravelCost.Value} silver)";
+                titleText.alignment = TextAnchor.MiddleCenter;
+                titleText.fontSize = 18;
+                titleText.color = Color.white;
 
-            var inlineMsgGO = new GameObject("InlineMessage");
-            inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
-            var inlineText = inlineMsgGO.AddComponent<UnityEngine.UI.Text>();
-            inlineText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            inlineText.text = "";
-            inlineText.alignment = TextAnchor.MiddleCenter;
-            inlineText.color = Color.yellow;
-            inlineText.fontSize = 14;
-            inlineText.raycastTarget = false;
+                var inlineMsgGO = new GameObject("InlineMessage");
+                inlineMsgGO.transform.SetParent(dialogRoot.transform, false);
+                var inlineRt = inlineMsgGO.AddComponent<RectTransform>();
+                inlineRt.anchorMin = new Vector2(0f, 0.92f);
+                inlineRt.anchorMax = new Vector2(1f, 0.99f);
+                inlineRt.anchoredPosition = Vector2.zero;
+                inlineRt.sizeDelta = Vector2.zero;
+                var inlineText = inlineMsgGO.AddComponent<UnityEngine.UI.Text>();
+                inlineText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                inlineText.text = "";
+                inlineText.alignment = TextAnchor.MiddleCenter;
+                inlineText.color = Color.yellow;
+                inlineText.fontSize = 14;
+                inlineText.raycastTarget = false;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: creating title/inline message failed: " + ex.Message);
+            }
 
-            // Scroll area + content
-            var scrollGO = new GameObject("ScrollArea");
-            scrollGO.transform.SetParent(dialogRoot.transform, false);
-            var scrollRect = scrollGO.AddComponent<ScrollRect>();
-            scrollGO.AddComponent<CanvasRenderer>();
-            scrollRect.movementType = ScrollRect.MovementType.Clamped;
-            scrollRect.inertia = true;
-            scrollRect.scrollSensitivity = 20f;
+            // Scroll + content
+            RectTransform contentRt = null;
+            try
+            {
+                var scrollGO = new GameObject("ScrollArea");
+                scrollGO.transform.SetParent(dialogRoot.transform, false);
+                var scrollRt = scrollGO.AddComponent<RectTransform>();
+                scrollRt.anchorMin = new Vector2(0f, 0f);
+                scrollRt.anchorMax = new Vector2(1f, 1f);
+                scrollRt.offsetMin = new Vector2(10, 60);
+                scrollRt.offsetMax = new Vector2(-10, -70);
 
-            var viewport = new GameObject("Viewport");
-            viewport.transform.SetParent(scrollGO.transform, false);
-            viewport.AddComponent<CanvasRenderer>();
-            var vImg = viewport.AddComponent<Image>(); vImg.color = Color.clear;
-            viewport.AddComponent<UnityEngine.UI.RectMask2D>();
+                var scrollRect = scrollGO.AddComponent<ScrollRect>();
+                scrollGO.AddComponent<CanvasRenderer>();
+                scrollRect.movementType = ScrollRect.MovementType.Clamped;
+                scrollRect.inertia = true;
+                scrollRect.scrollSensitivity = 20f;
 
-            var content = new GameObject("Content");
-            content.transform.SetParent(viewport.transform, false);
-            var vlayout = content.AddComponent<VerticalLayoutGroup>();
-            vlayout.childControlHeight = true;
-            vlayout.childForceExpandHeight = false;
-            vlayout.childControlWidth = true;
-            vlayout.spacing = 6;
-            var csf = content.AddComponent<ContentSizeFitter>();
-            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+                var viewport = new GameObject("Viewport");
+                viewport.transform.SetParent(scrollGO.transform, false);
+                var vpRt = viewport.AddComponent<RectTransform>();
+                vpRt.anchorMin = Vector2.zero;
+                vpRt.anchorMax = Vector2.one;
+                vpRt.offsetMin = Vector2.zero;
+                vpRt.offsetMax = Vector2.zero;
+                viewport.AddComponent<CanvasRenderer>();
+                var vImg = viewport.AddComponent<Image>(); vImg.color = Color.clear;
+                viewport.AddComponent<UnityEngine.UI.RectMask2D>();
 
-            scrollRect.content = content.GetComponent<RectTransform>();
-            scrollRect.viewport = viewport.GetComponent<RectTransform>();
-            scrollRect.horizontal = false;
-            scrollRect.vertical = true;
+                var content = new GameObject("Content");
+                content.transform.SetParent(viewport.transform, false);
+                contentRt = content.AddComponent<RectTransform>();
+                contentRt.anchorMin = new Vector2(0f, 1f);
+                contentRt.anchorMax = new Vector2(1f, 1f);
+                contentRt.pivot = new Vector2(0.5f, 1f);
+                contentRt.anchoredPosition = Vector2.zero;
+                contentRt.sizeDelta = new Vector2(0, 0);
 
-            // populate buttons
+                var vlayout = content.AddComponent<VerticalLayoutGroup>();
+                vlayout.childControlHeight = true;
+                vlayout.childForceExpandHeight = false;
+                vlayout.childControlWidth = true;
+                vlayout.spacing = 6;
+                var csf = content.AddComponent<ContentSizeFitter>();
+                csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+                scrollRect.content = contentRt;
+                scrollRect.viewport = vpRt;
+                scrollRect.horizontal = false;
+                scrollRect.vertical = true;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: creating scroll/content failed: " + ex.Message);
+                // abort safely
+                return;
+            }
+
+            // Populate buttons (defensive per-city)
             TBLog.Info($"OpenTravelDialog: cities={TravelButton.Cities?.Count ?? 0}");
             long playerMoney = GetPlayerCurrencyAmountOrMinusOne();
 
-            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
-            {
-                foreach (var city in TravelButton.Cities)
-                {
-                    // build button
-                    var bgo = new GameObject("CityButton_" + city.name);
-                    bgo.transform.SetParent(content.transform, false);
-                    bgo.AddComponent<CanvasRenderer>();
-                    var brt = bgo.AddComponent<RectTransform>(); brt.sizeDelta = new Vector2(0, 44);
-                    bgo.AddComponent<LayoutElement>().preferredHeight = 44f;
-
-                    var bimg = bgo.AddComponent<Image>();
-                    bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
-
-                    var bbtn = bgo.AddComponent<Button>();
-                    var cb = bbtn.colors;
-                    cb.normalColor = new Color(0.45f, 0.26f, 0.13f, 1f);
-                    cb.highlightedColor = new Color(0.55f, 0.33f, 0.16f, 1f);
-                    cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
-                    cb.disabledColor = new Color(0.18f, 0.18f, 0.18f, 1f);
-                    cb.colorMultiplier = 1f;
-                    bbtn.colors = cb;
-
-                    bbtn.interactable = false;            // will set after computing state
-                    bimg.raycastTarget = false;
-                    bbtn.transition = Selectable.Transition.ColorTint;
-                    bbtn.targetGraphic = bimg;
-                    var animator = bbtn.GetComponent<Animator>(); if (animator != null) animator.enabled = false;
-
-                    // label
-                    var lgo = new GameObject("Label"); lgo.transform.SetParent(bgo.transform, false);
-                    var ltxt = lgo.AddComponent<UnityEngine.UI.Text>();
-                    ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-                    ltxt.text = city.name;
-                    ltxt.alignment = TextAnchor.MiddleLeft;
-                    ltxt.fontSize = 14;
-                    ltxt.raycastTarget = false;
-
-                    // price
-                    int cost = TravelButton.cfgTravelCost.Value;
-                    try { if (city.price.HasValue) cost = city.price.Value; } catch { }
-                    var pgo = new GameObject("Price"); pgo.transform.SetParent(bgo.transform, false);
-                    var ptxt = pgo.AddComponent<UnityEngine.UI.Text>();
-                    ptxt.text = cost.ToString();
-                    ptxt.alignment = TextAnchor.MiddleRight;
-                    ptxt.raycastTarget = false;
-
-                    // compute interactable via central helper
-                    bool initialInteractable = IsCityInteractable(city, playerMoney);
-
-                    // CanvasGroup and visuals
-                    var cg = bgo.GetComponent<CanvasGroup>() ?? bgo.AddComponent<CanvasGroup>();
-                    cg.blocksRaycasts = initialInteractable;
-                    cg.interactable = initialInteractable;
-
-                    bbtn.interactable = initialInteractable;
-                    try { bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor; } catch { }
-                    try { ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f); } catch { }
-
-                    // register button for refresh
-                    try { RegisterCityButton(city, bbtn); } catch { }
-
-                    var capturedCity = city;
-                    bbtn.onClick.AddListener(() =>
-                    {
-                        try
-                        {
-                            if (isTeleporting) return;
-
-                            bool cfgEnabled = TravelButton.IsCityEnabled(capturedCity.name);
-                            bool visitedNow = TravelButton.HasPlayerVisited(capturedCity);
-                            long pm = GetPlayerCurrencyAmountOrMinusOne();
-
-                            TBLog.Info($"City click: '{capturedCity.name}' cfgEnabled={cfgEnabled}, visitedNow={visitedNow}, playerMoney={pm}");
-
-                            if (!cfgEnabled) { ShowInlineDialogMessage("Destination disabled by config"); return; }
-                            if (!visitedNow) { ShowInlineDialogMessage("Destination not discovered yet"); return; }
-                            if (pm < 0) { ShowInlineDialogMessage("Could not determine your currency amount; travel blocked"); return; }
-                            if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true)) { ShowInlineDialogMessage("not enough resources to travel"); return; }
-
-                            // disable refresh and buttons, then teleport
-                            var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
-                            if (contentParent != null)
-                            {
-                                for (int ci = 0; ci < contentParent.childCount; ci++)
-                                {
-                                    var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
-                                    if (childBtn != null) childBtn.interactable = false;
-                                    var cgChild = contentParent.GetChild(ci).GetComponent<CanvasGroup>();
-                                    if (cgChild != null) cgChild.blocksRaycasts = false;
-                                }
-                            }
-
-                            isTeleporting = true;
-                            TryTeleportThenCharge(capturedCity, cost);
-                        }
-                        catch (Exception ex) { TBLog.Warn("City click exception: " + ex.Message); }
-                    });
-                }
-            }
-            else
+            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
             {
                 TBLog.Warn("OpenTravelDialog: No cities configured.");
             }
+            else
+            {
+                int idx = 0;
+                foreach (var city in TravelButton.Cities)
+                {
+                    idx++;
+                    TBLog.Info($"OpenTravelDialog: creating button #{idx} for '{city?.name}'");
 
-            // force Unity to rebuild layout immediately so sizes and positions are valid right away
+                    DumpVisitedKeysAndCandidates(new[] { city.name, city.sceneName, city.targetGameObjectName });
+
+                    try
+                    {
+                        if (city == null || string.IsNullOrEmpty(city.name))
+                        {
+                            TBLog.Warn($"OpenTravelDialog: skipping null/invalid city at index {idx}");
+                            continue;
+                        }
+
+                        var bgo = new GameObject("CityButton_" + city.name);
+                        bgo.transform.SetParent(contentRt, false);
+                        bgo.AddComponent<CanvasRenderer>();
+                        var brt = bgo.AddComponent<RectTransform>(); brt.sizeDelta = new Vector2(0, 44);
+                        var ble = bgo.AddComponent<LayoutElement>(); ble.preferredHeight = 44f; ble.minHeight = 30f; ble.flexibleWidth = 1f;
+
+                        var bimg = bgo.AddComponent<Image>();
+                        bimg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+
+                        var bbtn = bgo.AddComponent<Button>();
+                        var cb = bbtn.colors;
+                        cb.normalColor = new Color(0.45f, 0.26f, 0.13f, 1f);
+                        cb.highlightedColor = new Color(0.55f, 0.33f, 0.16f, 1f);
+                        cb.pressedColor = new Color(0.36f, 0.20f, 0.08f, 1f);
+                        cb.disabledColor = new Color(0.18f, 0.18f, 0.18f, 1f);
+                        cb.colorMultiplier = 1f;
+                        bbtn.colors = cb;
+
+                        bbtn.interactable = false;
+                        bimg.raycastTarget = false;
+                        bbtn.transition = Selectable.Transition.ColorTint;
+                        bbtn.targetGraphic = bimg;
+                        var animator = bbtn.GetComponent<Animator>(); if (animator != null) animator.enabled = false;
+
+                        // label
+                        var lgo = new GameObject("Label"); lgo.transform.SetParent(bgo.transform, false);
+                        var lrt = lgo.AddComponent<RectTransform>(); lrt.anchorMin = new Vector2(0f, 0f); lrt.anchorMax = new Vector2(0.75f, 1f); lrt.offsetMin = new Vector2(8f, 0f); lrt.offsetMax = new Vector2(-4f, 0f);
+                        var ltxt = lgo.AddComponent<UnityEngine.UI.Text>();
+                        ltxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                        ltxt.text = city.name;
+                        ltxt.alignment = TextAnchor.MiddleLeft;
+                        ltxt.fontSize = 14;
+                        ltxt.raycastTarget = false;
+
+                        // price
+                        int cost = TravelButton.cfgTravelCost.Value;
+                        try { if (city.price.HasValue) cost = city.price.Value; } catch { }
+                        var pgo = new GameObject("Price"); pgo.transform.SetParent(bgo.transform, false);
+                        var prt = pgo.AddComponent<RectTransform>(); prt.anchorMin = new Vector2(0.75f, 0f); prt.anchorMax = new Vector2(1f, 1f); prt.offsetMin = new Vector2(0f, 0f); prt.offsetMax = new Vector2(-8f, 0f);
+                        var ptxt = pgo.AddComponent<UnityEngine.UI.Text>();
+                        ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                        ptxt.text = cost.ToString();
+                        ptxt.alignment = TextAnchor.MiddleRight;
+                        ptxt.fontSize = 14;
+                        ptxt.raycastTarget = false;
+
+                        // use canonical visited check
+                        bool visitedInHistory = false;
+                        try { visitedInHistory = TravelButton.HasPlayerVisited(city); } catch (Exception ex) { TBLog.Warn("Visited check failed for '" + city.name + "': " + ex.Message); visitedInHistory = false; }
+
+                        // compute initial interactability
+                        bool initialInteractable = IsCityInteractable(city, playerMoney);
+
+                        // canvas group
+                        var cg = bgo.GetComponent<CanvasGroup>() ?? bgo.AddComponent<CanvasGroup>();
+                        cg.blocksRaycasts = initialInteractable;
+                        cg.interactable = initialInteractable;
+
+                        bbtn.interactable = initialInteractable;
+                        bimg.raycastTarget = initialInteractable;
+                        try { bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor; } catch { }
+                        try { ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f); } catch { }
+
+                        // register and click handler
+                        try { RegisterCityButton(city, bbtn); } catch (Exception ex) { TBLog.Warn("RegisterCityButton failed: " + ex.Message); }
+
+                        var capturedCity = city;
+                        bbtn.onClick.AddListener(() =>
+                        {
+                            try
+                            {
+                                if (isTeleporting) return;
+
+                                bool cfgEnabled = TravelButton.IsCityEnabled(capturedCity.name);
+                                bool visitedNowInHistory = false;
+                                try { visitedNowInHistory = TravelButton.HasPlayerVisited(capturedCity); } catch { visitedNowInHistory = false; }
+                                long pm = GetPlayerCurrencyAmountOrMinusOne();
+
+                                TBLog.Info($"City click: '{capturedCity.name}' cfgEnabled={cfgEnabled}, visitedNow={visitedNowInHistory}, playerMoney={pm}");
+
+                                if (!cfgEnabled) { ShowInlineDialogMessage("Destination disabled by config"); return; }
+                                if (!visitedNowInHistory) { ShowInlineDialogMessage("Destination not discovered yet"); return; }
+                                if (pm < 0) { ShowInlineDialogMessage("Could not determine your currency amount; travel blocked"); return; }
+                                if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true)) { ShowInlineDialogMessage("not enough resources to travel"); return; }
+
+                                StopRefreshCoroutine();
+                                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                                if (contentParent != null)
+                                {
+                                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                                    {
+                                        var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
+                                        if (childBtn != null) childBtn.interactable = false;
+                                        var cgChild = contentParent.GetChild(ci).GetComponent<CanvasGroup>();
+                                        if (cgChild != null) cgChild.blocksRaycasts = false;
+                                    }
+                                }
+
+                                isTeleporting = true;
+                                TryTeleportThenCharge(capturedCity, cost);
+                            }
+                            catch (Exception ex)
+                            {
+                                TBLog.Warn("City button click handler exception: " + ex);
+                            }
+                        });
+                    }
+                    catch (Exception exCity)
+                    {
+                        TBLog.Warn($"OpenTravelDialog: failed to create button for city #{idx} ('{city?.name}'): {exCity}");
+                        // continue with next city instead of letting dialog creation crash
+                        continue;
+                    }
+                } // foreach cities
+            } // else cities exist
+
+            // force immediate layout rebuild
             try
             {
-                var contentRt = content.GetComponent<RectTransform>();
                 UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(contentRt);
-                TBLog.Info($"OpenTravelDialog: content child count after populate = {content.transform.childCount}");
+                TBLog.Info($"OpenTravelDialog: content child count after populate = {contentRt.childCount}");
             }
             catch (Exception ex)
             {
                 TBLog.Warn("OpenTravelDialog: ForceRebuildLayoutImmediate failed: " + ex.Message);
             }
 
-            // layout and start refresh
-            StartCoroutine(FinishDialogLayoutAndShow(scrollRect, viewport.GetComponent<RectTransform>(), content.GetComponent<RectTransform>()));
-            // Guarded start of refresh coroutine (replace direct StartCoroutine(...) calls)
+            // start finish layout coroutine and refresh (guarded)
+            try { StartCoroutine(FinishDialogLayoutAndShow(dialogRoot.transform.Find("ScrollArea").GetComponent<ScrollRect>(), dialogRoot.transform.Find("ScrollArea/Viewport").GetComponent<RectTransform>(), contentRt)); } catch (Exception ex) { TBLog.Warn("FinishDialogLayoutAndShow start failed: " + ex.Message); }
             if (refreshButtonsCoroutine == null)
             {
                 refreshRequested = true;
                 refreshButtonsCoroutine = StartCoroutine(RefreshCityButtonsWhileOpen(dialogRoot));
+                TBLog.Info("OpenTravelDialog: started refresh coroutine (initial create).");
             }
             else
             {
@@ -2619,23 +2723,63 @@ public class TravelButtonUI : MonoBehaviour
             dialogOpenedTime = Time.time;
 
             // Close button
-            var closeGO = new GameObject("Close");
-            closeGO.transform.SetParent(dialogRoot.transform, false);
-            var cbtn = closeGO.AddComponent<Button>();
-            cbtn.targetGraphic = closeGO.AddComponent<Image>();
-            cbtn.onClick.AddListener(() =>
+            try
             {
-                try { StopRefreshCoroutine(); if (dialogRoot != null) dialogRoot.SetActive(false); } catch (Exception ex) { TravelButtonPlugin.LogError("Close click failed: " + ex); }
-            });
+                var closeGO = new GameObject("Close");
+                closeGO.transform.SetParent(dialogRoot.transform, false);
+                var closeRt = closeGO.AddComponent<RectTransform>();
+                closeRt.anchorMin = new Vector2(0.5f, 0f);
+                closeRt.anchorMax = new Vector2(0.5f, 0f);
+                closeRt.pivot = new Vector2(0.5f, 0f);
+                closeRt.anchoredPosition = new Vector2(0, 12);
+                closeRt.sizeDelta = new Vector2(120, 34);
+                var cimg = closeGO.AddComponent<Image>();
+                cimg.color = new Color(0.25f, 0.25f, 0.25f, 1f);
+                var cbtn = closeGO.AddComponent<Button>();
+                cbtn.targetGraphic = cimg;
+                cbtn.interactable = true;
+                closeGO.transform.SetAsLastSibling();
 
-            // brief protection against immediate click-through
-            StartCoroutine(TemporarilyDisableDialogRaycasts());
+                var closeTxtGO = new GameObject("Label");
+                closeTxtGO.transform.SetParent(closeGO.transform, false);
+                var ctxt = closeTxtGO.AddComponent<UnityEngine.UI.Text>();
+                ctxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                ctxt.text = "Close";
+                ctxt.alignment = TextAnchor.MiddleCenter;
+                ctxt.color = Color.white;
+                ctxt.raycastTarget = false;
+                var cLabelRt = closeTxtGO.GetComponent<RectTransform>();
+                cLabelRt.anchorMin = Vector2.zero;
+                cLabelRt.anchorMax = Vector2.one;
+                cLabelRt.offsetMin = Vector2.zero;
+                cLabelRt.offsetMax = Vector2.zero;
+
+                cbtn.onClick.AddListener(() =>
+                {
+                    try
+                    {
+                        StopRefreshCoroutine();
+                        if (dialogRoot != null) dialogRoot.SetActive(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        TravelButtonPlugin.LogError("Close button click failed: " + ex);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OpenTravelDialog: creating close button failed: " + ex.Message);
+            }
+
+            // prevent immediate click-through
+            try { StartCoroutine(TemporarilyDisableDialogRaycasts()); } catch { }
 
             TBLog.Info("OpenTravelDialog: created dialog.");
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("OpenTravelDialog: exception: " + ex);
+            TravelButtonPlugin.LogError("OpenTravelDialog: unexpected exception: " + ex);
         }
     }
 
@@ -2678,7 +2822,7 @@ public class TravelButtonUI : MonoBehaviour
         bool enabledByConfig = false;
         try { enabledByConfig = IsCityEnabled(city.name); } catch { enabledByConfig = false; }
 
-        // 2) Visited state (use the City-aware check to try multiple identifiers)
+        // 2) Use the canonical city-aware visited check (fast+fallback, cached)
         bool visited = false;
         try { visited = HasPlayerVisited(city); } catch { visited = false; }
 
@@ -2697,13 +2841,14 @@ public class TravelButtonUI : MonoBehaviour
         bool playerMoneyKnown = playerMoney >= 0;
         bool hasEnoughMoney = !playerMoneyKnown || (playerMoney >= price);
 
-        // 5) Scene-aware allowance: allowWithoutCoords when there is a sceneName and it's NOT the active scene
+        // 5) Scene-aware allowance
         bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
         var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         bool sceneMatches = !targetSceneSpecified || string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
         bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
         bool isCurrentScene = targetSceneSpecified && sceneMatches;
 
+        // Use the core boolean evaluator (keeps rule centralized)
         return IsCityInteractable(city, enabledByConfig, visited, coordsAvailable, allowWithoutCoords, hasEnoughMoney, isCurrentScene);
     }
 
@@ -2966,8 +3111,17 @@ public class TravelButtonUI : MonoBehaviour
         try
         {
             bool enabledByConfig = TravelButton.IsCityEnabled(city.name);
-            bool visitedNow = false;
-            try { visitedNow = IsCityVisitedFallback(city); } catch { visitedNow = false; }
+            bool visitedInHistory = false;
+            try
+            {
+                visitedInHistory = TravelButton.HasPlayerVisited(city);
+            }
+            catch (Exception ex)
+            {
+                visitedInHistory = false;
+                TBLog.Warn("OpenTravelDialog: HasPlayerVisited failed for '" + city?.name + "': " + ex.Message);
+            }
+
             long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
             bool haveMoneyInfo = currentMoney >= 0;
             bool hasEnoughMoney = haveMoneyInfo ? currentMoney >= cost : true;
@@ -2978,7 +3132,7 @@ public class TravelButtonUI : MonoBehaviour
             Vector3 playerPos;
             bool havePlayerPos = TryGetPlayerPosition(out playerPos);
 
-            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}");
+            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedInHistory={visitedInHistory}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}");
         }
         catch (Exception ex)
         {
@@ -5990,52 +6144,107 @@ public class TravelButtonUI : MonoBehaviour
 
     // Show a short, inline message in the open dialog (if present). Clears after a few seconds.
     private Coroutine inlineMessageClearCoroutine;
-    private void ShowInlineDialogMessage(string msg)
+    /// <summary>
+    /// Instance implementation that updates the inline message and manages the clear coroutine.
+    /// Must be an instance method so StartCoroutine/StopCoroutine operate on this MonoBehaviour.
+    /// </summary>
+    /// <summary>
+    /// Instance implementation that updates the inline message and manages the clear coroutine.
+    /// Must be an instance method so StartCoroutine/StopCoroutine operate on this MonoBehaviour.
+    /// </summary>
+    public void ShowInlineDialogMessageInstance(string msg)
     {
         try
         {
             TBLog.Info("[TravelButton] Inline message: " + msg);
-            if (dialogRoot == null) return;
+
+            if (dialogRoot == null)
+            {
+                TBLog.Warn("ShowInlineDialogMessageInstance: dialogRoot is null.");
+                return;
+            }
+
             var inline = dialogRoot.transform.Find("InlineMessage");
             if (inline == null)
             {
-                TBLog.Warn("ShowInlineDialogMessage: InlineMessage element not found in dialogRoot.");
+                TBLog.Warn("ShowInlineDialogMessageInstance: InlineMessage element not found in dialogRoot.");
                 return;
             }
-            var txt = inline.GetComponent<Text>();
-            if (txt == null) return;
+
+            var txt = inline.GetComponent<UnityEngine.UI.Text>();
+            if (txt == null)
+            {
+                TBLog.Warn("ShowInlineDialogMessageInstance: InlineMessage Text component missing.");
+                return;
+            }
+
             txt.text = msg;
 
+            // Restart clear coroutine if already running
             if (inlineMessageClearCoroutine != null)
             {
-                StopCoroutine(inlineMessageClearCoroutine);
+                try { StopCoroutine(inlineMessageClearCoroutine); } catch { }
                 inlineMessageClearCoroutine = null;
             }
+
             inlineMessageClearCoroutine = StartCoroutine(ClearInlineMessageAfterDelay(3f));
         }
         catch (Exception ex)
         {
-            TBLog.Warn("ShowInlineDialogMessage exception: " + ex);
+            TBLog.Warn("ShowInlineDialogMessageInstance exception: " + ex);
         }
     }
 
-    private IEnumerator ClearInlineMessageAfterDelay(float delay)
+    /// <summary>
+    /// Static wrapper: finds the active TravelButtonUI instance and calls the instance method.
+    /// Use this from other static contexts safely.
+    /// </summary>
+    public static void ShowInlineDialogMessage(string msg)
     {
-        yield return new WaitForSeconds(delay);
         try
         {
-            if (dialogRoot != null)
+            var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+            if (ui == null)
             {
-                var inline = dialogRoot.transform.Find("InlineMessage");
-                if (inline != null)
-                {
-                    var txt = inline.GetComponent<Text>();
-                    if (txt != null) txt.text = "";
-                }
+                TBLog.Warn("ShowInlineDialogMessage: TravelButtonUI instance not found.");
+                return;
             }
+            ui.ShowInlineDialogMessageInstance(msg);
         }
-        catch { }
-        inlineMessageClearCoroutine = null;
+        catch (Exception ex)
+        {
+            TBLog.Warn("ShowInlineDialogMessage wrapper exception: " + ex);
+        }
+    }
+
+    /// <summary>
+    /// Instance coroutine to clear the inline message after a delay.
+    /// The yield is placed before the try/catch to avoid the C# restriction.
+    /// </summary>
+    private IEnumerator ClearInlineMessageAfterDelay(float delay)
+    {
+        // yield first (no try/catch around yields that have catch/finally)
+        yield return new WaitForSeconds(delay);
+
+        try
+        {
+            if (dialogRoot == null)
+            {
+                yield break;
+            }
+
+            var inline = dialogRoot.transform.Find("InlineMessage");
+            var txt = inline?.GetComponent<UnityEngine.UI.Text>();
+            if (txt != null) txt.text = "";
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ClearInlineMessageAfterDelay exception: " + ex);
+        }
+
+        // Ensure coroutine ref is cleared (no try/finally with yield needed)
+        try { inlineMessageClearCoroutine = null; } catch { }
+        yield break;
     }
 
     // ClickLogger for debugging

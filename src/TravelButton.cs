@@ -1328,8 +1328,18 @@ public static class TravelButton
                 {
                     string cname = city?.name ?? "(null)";
                     bool enabledByConfig = IsCityEnabled(cname);
-                    bool visitedNow = false;
-                    try { visitedNow = TravelButtonUI.IsCityVisitedFallback(city); } catch { visitedNow = false; }
+                    bool visitedInHistory = false;
+                    try {
+                        try
+                        {
+                            visitedInHistory = TravelButton.HasPlayerVisited(city);
+                        }
+                        catch (Exception ex)
+                        {
+                            visitedInHistory = false;
+                            TBLog.Warn("OpenTravelDialog: HasPlayerVisited failed for '" + city?.name + "': " + ex.Message);
+                        }
+                    } catch { visitedInHistory = false; }
                     bool coordsAvailable = !string.IsNullOrEmpty(city?.targetGameObjectName) || (city?.coords != null && city.coords.Length >= 3);
                     bool targetSceneSpecified = city != null && !string.IsNullOrEmpty(city.sceneName);
                     var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
@@ -1338,9 +1348,9 @@ public static class TravelButton
                     int cost = city?.price ?? cfgTravelCost.Value;
                     bool hasEnoughMoney = haveMoneyInfo ? (currentMoney >= cost) : true;
                     bool canVisit = coordsAvailable || (targetSceneSpecified && !isCurrentScene);
-                    bool shouldBeInteractableNow = enabledByConfig && visitedNow && hasEnoughMoney && canVisit && !isCurrentScene;
+                    bool shouldBeInteractableNow = enabledByConfig && visitedInHistory && hasEnoughMoney && canVisit && !isCurrentScene;
 
-                    TBLog.Info($"City='{cname}': enabledByConfig={enabledByConfig}, visitedNow={visitedNow}, playerMoney={currentMoney}, price={cost}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, targetScene='{city?.sceneName ?? "(null)"}', isCurrentScene={isCurrentScene}, canVisit={canVisit} -> shouldBeInteractableNow={shouldBeInteractableNow}");
+                    TBLog.Info($"City='{cname}': enabledByConfig={enabledByConfig}, visitedInHistory={visitedInHistory}, playerMoney={currentMoney}, price={cost}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, targetScene='{city?.sceneName ?? "(null)"}', isCurrentScene={isCurrentScene}, canVisit={canVisit} -> shouldBeInteractableNow={shouldBeInteractableNow}");
                 }
                 catch (Exception e)
                 {
@@ -2544,64 +2554,171 @@ public static class TravelButton
     "name", "sceneName", "targetGameObjectName"
     };
 
-    // City-aware overload: try multiple candidate identifiers (name, sceneName, targetGameObjectName)
-    // Uses the fast string-based lookup HasPlayerVisitedFast(string) to avoid overload ambiguity.
+    private static readonly object s_cityVisitedLock = new object();
+    private static Dictionary<string, bool> s_cityVisitedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+    // City-aware visited check with caching.
+    // Uses HasPlayerVisitedFast for candidate string checks first (cheap),
+    // then falls back to legacy delegate (IsCityVisitedFallback) only if needed.
+    // Results are cached per-city name to avoid repeated legacy fallback calls during refresh loops.
+    // Diagnostic HasPlayerVisited (temporary). Logs fallback method info and attempts to call VisitedTracker.HasVisited for comparison.
     public static bool HasPlayerVisited(TravelButton.City city)
     {
         if (city == null) return false;
+        string cacheKey = city.name ?? string.Empty;
+        if (string.IsNullOrEmpty(cacheKey)) return false;
 
+        // fast cache hit
+        lock (s_cityVisitedLock)
+        {
+            if (s_cityVisitedCache.TryGetValue(cacheKey, out bool cached))
+                return cached;
+        }
+
+        bool result = false;
         try
         {
-            // Build candidate strings (use a HashSet to avoid duplicates)
+            // Build candidate set
             var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            void AddCandidate(string s)
-            {
-                if (string.IsNullOrWhiteSpace(s)) return;
-                candidates.Add(s.Trim());
-                candidates.Add(s.Trim().ToLowerInvariant());
-                candidates.Add(s.Trim().Replace(" ", "").ToLowerInvariant());
-            }
+            void Add(string s) { if (!string.IsNullOrWhiteSpace(s)) { var t = s.Trim(); candidates.Add(t); candidates.Add(t.ToLowerInvariant()); candidates.Add(t.Replace(" ", "").ToLowerInvariant()); } }
+            Add(city.name); Add(city.sceneName); Add(city.targetGameObjectName);
 
-            AddCandidate(city.name);
-            AddCandidate(city.sceneName);
-            AddCandidate(city.targetGameObjectName);
-
-            // Try each candidate using the fast string-based check
+            // Try fast string-based check first
             foreach (var cand in candidates)
             {
                 try
                 {
                     if (HasPlayerVisitedFast(cand))
                     {
-                        TBLog.Info($"HasPlayerVisited(City): matched candidate '{cand}' for city '{city.name}'.");
-                        return true;
+                        result = true;
+                        TBLog.Info($"HasPlayerVisited: fast match '{cand}' => {city.name}");
+                        break;
                     }
                 }
                 catch (Exception ex)
                 {
-                    // One-time warning only: HasPlayerVisitedFast should be robust; if it throws, log once and continue.
-                    TBLog.Warn($"HasPlayerVisited(City): candidate check for '{cand}' failed: {ex.Message}");
+                    TBLog.Warn($"HasPlayerVisited: HasPlayerVisitedFast threw for '{cand}': {ex.Message}");
                 }
             }
 
-            // If the save root does not exist, fall back to legacy delegate for compatibility
-            var saveRoot = FindSaveRootInstance();
-            if (saveRoot == null)
+            // If no fast match, call legacy fallback once (and log method info)
+            if (!result)
             {
                 var fallback = TravelButtonUI.IsCityVisitedFallback;
                 if (fallback != null)
                 {
-                    TBLog.Info($"HasPlayerVisited(City): no save root; calling legacy fallback for '{city.name}'.");
-                    return fallback(city);
+                    try
+                    {
+                        var mi = fallback.Method;
+                        var target = fallback.Target;
+                        TBLog.Info($"HasPlayerVisited: calling legacy fallback method '{mi?.Name}' on target='{target?.GetType().FullName ?? "static"}' for city='{city.name}'");
+
+                        // call fallback
+                        bool fb = fallback(city);
+                        TBLog.Info($"HasPlayerVisited: legacy fallback returned {fb} for '{city.name}'");
+                        result = fb;
+
+                        // Also attempt to call VisitedTracker.HasVisited(name) via reflection for comparison (if present)
+                        try
+                        {
+                            var vtType = AppDomain.CurrentDomain.GetAssemblies()
+                                .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                                .FirstOrDefault(t => t.Name == "VisitedTracker");
+                            if (vtType != null)
+                            {
+                                var hv = vtType.GetMethod("HasVisited", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.IgnoreCase)
+                                         ?? vtType.GetMethod("HasVisited", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                                if (hv != null)
+                                {
+                                    object vtTarget = null;
+                                    if (!hv.IsStatic)
+                                    {
+                                        // try to find an instance
+                                        vtTarget = UnityEngine.Object.FindObjectOfType(vtType);
+                                    }
+                                    var hvRes = hv.Invoke(vtTarget, new object[] { city.name });
+                                    TBLog.Info($"HasPlayerVisited: VisitedTracker.HasVisited('{city.name}') => {hvRes}");
+                                }
+                                else
+                                {
+                                    TBLog.Info("HasPlayerVisited: VisitedTracker type found but HasVisited method not found.");
+                                }
+                            }
+                            else
+                            {
+                                TBLog.Info("HasPlayerVisited: VisitedTracker type not found in loaded assemblies.");
+                            }
+                        }
+                        catch (Exception ex2)
+                        {
+                            TBLog.Warn("HasPlayerVisited: reflection call to VisitedTracker.HasVisited failed: " + ex2.Message);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("HasPlayerVisited: legacy fallback threw: " + ex.Message);
+                        result = false;
+                    }
+                }
+                else
+                {
+                    TBLog.Info("HasPlayerVisited: no legacy fallback registered.");
                 }
             }
-
-            return false;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("HasPlayerVisited(City) failed: " + ex.Message);
-            return false;
+            TBLog.Warn("HasPlayerVisited: unexpected error: " + ex.Message);
+            result = false;
+        }
+
+        // cache and return
+        lock (s_cityVisitedLock)
+        {
+            try { s_cityVisitedCache[cacheKey] = result; } catch { }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Clear per-city visited cache (call before rebuilding dialog or when save changes).
+    /// </summary>
+    public static void ClearCityVisitedCache()
+    {
+        lock (s_cityVisitedLock)
+        {
+            s_cityVisitedCache.Clear();
+        }
+        TBLog.Info("ClearCityVisitedCache: cleared per-city visited cache.");
+    }
+
+    public static void DumpVisitedKeys()
+    {
+        try
+        {
+            var fld = typeof(TravelButton).GetField("s_visitedKeysSet", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            if (fld == null)
+            {
+                TBLog.Info("DumpVisitedKeys: s_visitedKeysSet field not found.");
+                return;
+            }
+            var set = fld.GetValue(null) as System.Collections.IEnumerable;
+            if (set == null)
+            {
+                TBLog.Info("DumpVisitedKeys: visited set is null or empty.");
+                return;
+            }
+            int i = 0;
+            foreach (var item in set)
+            {
+                if (i++ >= 50) break;
+                TBLog.Info($"DumpVisitedKeys #{i}: '{item?.ToString() ?? "(null)"}'");
+            }
+            if (i == 0) TBLog.Info("DumpVisitedKeys: visited set empty.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpVisitedKeys failed: " + ex.Message);
         }
     }
 
@@ -3720,6 +3837,97 @@ public static class TravelButton
         catch { /* ignore conversion errors */ }
 
         return null;
+    }
+
+    // Improved matching & debug helpers for visited detection.
+    // Paste into same class where HasPlayerVisitedFast / HasPlayerVisited live.
+
+    private static string NormalizeVisitedKey(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return string.Empty;
+        // Lower-case
+        s = s.ToLowerInvariant().Trim();
+        // Remove common separators and punctuation
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"[\s_\-\.\:\/\\]+", "");
+        // Remove long numeric tokens likely to be timestamps/ids (8+ digits)
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\d{6,}", "");
+        // Remove any non-alphanumeric leftover
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"[^a-z0-9]", "");
+        return s;
+    }
+
+    /// <summary>
+    /// Returns true if any visited key appears to correspond to the city identifier.
+    /// Uses normalization and substring heuristics to accommodate different save-key formats.
+    /// </summary>
+    private static bool VisitedSetContainsCity(HashSet<string> visitedSet, string candidate)
+    {
+        if (visitedSet == null || visitedSet.Count == 0 || string.IsNullOrEmpty(candidate)) return false;
+        var candNorm = NormalizeVisitedKey(candidate);
+        if (string.IsNullOrEmpty(candNorm)) return false;
+
+        // Direct exact match against raw visited keys (case-insensitive)
+        foreach (var raw in visitedSet)
+        {
+            if (string.Equals(raw, candidate, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        // Normalized matching
+        foreach (var raw in visitedSet)
+        {
+            var rawNorm = NormalizeVisitedKey(raw);
+            if (string.IsNullOrEmpty(rawNorm)) continue;
+
+            // exact normalized equality
+            if (rawNorm == candNorm) return true;
+
+            // substring match (either direction)
+            if (rawNorm.Contains(candNorm) || candNorm.Contains(rawNorm)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Debug helper to log visited keys and candidate matching results (call temporarily).
+    /// </summary>
+    public static void DumpVisitedKeysAndCandidates(IEnumerable<string> candidates = null)
+    {
+        try
+        {
+            // access private visited set field if you kept it, else rebuild via FindSaveRootInstance as before
+            var field = typeof(TravelButton).GetField("s_visitedKeysSet", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var setObj = field?.GetValue(null) as System.Collections.IEnumerable;
+            if (setObj == null)
+            {
+                TBLog.Info("DumpVisitedKeysAndCandidates: visited set is null or empty.");
+                return;
+            }
+            var list = new List<string>();
+            foreach (var it in setObj) list.Add(it?.ToString() ?? "(null)");
+
+            TBLog.Info($"DumpVisitedKeysAndCandidates: total visited keys = {list.Count}");
+            int i = 0;
+            foreach (var k in list)
+            {
+                i++;
+                TBLog.Info($"VisitedKey#{i}: '{k}' -> normalized='{NormalizeVisitedKey(k)}'");
+            }
+
+            if (candidates != null)
+            {
+                foreach (var cand in candidates)
+                {
+                    var cn = cand ?? "(null)";
+                    TBLog.Info($"Candidate '{cn}' normalized='{NormalizeVisitedKey(cn)}' => match={VisitedSetContainsCity(new HashSet<string>(list, StringComparer.OrdinalIgnoreCase), cn)}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpVisitedKeysAndCandidates failed: " + ex.Message);
+        }
     }
 
 }
