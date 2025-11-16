@@ -1,6 +1,4 @@
-using Newtonsoft.Json;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -235,6 +233,7 @@ public class TravelConfig
             TBLog.Warn($"TravelConfig.SaveToFile: exception writing {path}: {ex.Message}");
             return false;
         }
+        catch { }
     }
 }
 
@@ -263,6 +262,7 @@ public static class ConfigManager
         {
             TBLog.Warn("ConfigManager.Load exception: " + ex);
         }
+        catch { }
     }
 
     // Legacy Default method kept for backward compatibility
