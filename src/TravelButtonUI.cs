@@ -3254,7 +3254,7 @@ public class TravelButtonUI : MonoBehaviour
                             ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                         }
 
-                        try { TravelButton.PersistCitiesToConfig(); } catch { }
+                        try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
 
                         try
                         {
@@ -3295,7 +3295,7 @@ public class TravelButtonUI : MonoBehaviour
                     try
                     {
                         //DumpTravelRelevantState("before-persist-fallback");
-                        TravelButton.PersistCitiesToConfig(); // whatever method you have
+                        TravelButton.PersistCitiesToConfigUsingUnity(); // whatever method you have
                         TBLog.Info("PersistCitiesToConfig: succeeded.");
                     }
                     catch (Exception ex)
@@ -3349,7 +3349,7 @@ public class TravelButtonUI : MonoBehaviour
                             ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                         }
 
-                        try { TravelButton.PersistCitiesToConfig(); } catch { }
+                        try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
 
                         try
                         {
@@ -3738,7 +3738,7 @@ public class TravelButtonUI : MonoBehaviour
 
                     // POST-SUCCESS: persist/mark visited and close the dialog so the UI isn't left open
                     try { TravelButton.OnSuccessfulTeleport(displayName ?? ""); } catch { }
-                    try { TravelButton.PersistCitiesToConfig(); } catch { }
+                    try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
 
                     // close the dialog after successful teleport
                     try
@@ -4357,8 +4357,7 @@ public class TravelButtonUI : MonoBehaviour
             {
                 if (VisitedTracker.HasVisited(city.name))
                 {
-                    TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.name) => true for '{city.name}'");
-                    MarkCityVisitedFromFallback(city);
+                    TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(city.name) => true for '{city.name}' (detection only; not mutating state)");
                     return true;
                 }
             }
@@ -4374,8 +4373,7 @@ public class TravelButtonUI : MonoBehaviour
                 {
                     if (VisitedTracker.HasVisited(city.sceneName))
                     {
-                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(sceneName) => true for '{city.sceneName}' (city='{city.name}')");
-                        MarkCityVisitedFromFallback(city);
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: VisitedTracker.HasVisited(sceneName) => true for '{city.sceneName}' (city='{city.name}') (detection only; not mutating state)");
                         return true;
                     }
                 }
@@ -4393,12 +4391,14 @@ public class TravelButtonUI : MonoBehaviour
                     var go = GameObject.Find(city.targetGameObjectName);
                     if (go != null)
                     {
-                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: target GameObject '{city.targetGameObjectName}' found -> treat '{city.name}' as visited.");
-                        MarkCityVisitedFromFallback(city);
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: target GameObject '{city.targetGameObjectName}' found -> treat '{city.name}' as visited (detection only; not mutating state).");
                         return true;
                     }
                 }
-                catch { /* ignore */ } 
+                catch (Exception ex)
+                {
+                    TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: GameObject.Find('{city.targetGameObjectName}') threw: {ex}");
+                }
             }
 
             // Last resort heuristic: any transform with city.name substring (helps when anchor names differ)
@@ -4410,13 +4410,15 @@ public class TravelButtonUI : MonoBehaviour
                     if (t == null || string.IsNullOrEmpty(t.name)) continue;
                     if (t.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: found scene transform '{t.name}' containing city name '{city.name}' -> treat as visited.");
-                        MarkCityVisitedFromFallback(city);
+                        TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: found scene transform '{t.name}' containing city name '{city.name}' -> treat as visited (detection only; not mutating state).");
                         return true;
                     }
                 }
             }
-            catch { /* ignore */ }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogDebug($"IsCityVisitedFallback: scanning transforms threw: {ex}");
+            }
         }
         catch (Exception ex)
         {
@@ -4437,7 +4439,7 @@ public class TravelButtonUI : MonoBehaviour
             if (!city.visited) // use direct member if it exists
             {
                 city.visited = true;
-                TravelButton.PersistCitiesToConfig();
+                TravelButton.PersistCitiesToConfigUsingUnity();
                 TBLog.Info($"Marked and persisted visited for '{city.name}' (simple).");
             }
         }

@@ -17,6 +17,46 @@ using UnityEngine;
 /// </summary>
 public static class ConfigManager
 {
+    /// <summary>
+    /// Legacy travel config shape used by the (old) ConfigManager/ConfigManager.Config instance.
+    /// Renamed to avoid collision with the JSON TravelConfig DTO.
+    /// </summary>
+    [Serializable]
+    public class LegacyTravelConfig
+    {
+        public bool enabled = true;
+        public string currencyItem = "Silver";
+        public int globalTeleportPrice = 100;
+
+        // Legacy shape used an object/dictionary keyed by city name
+        public Dictionary<string, LegacyCityConfig> cities = new Dictionary<string, LegacyCityConfig>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Legacy city entry used inside LegacyTravelConfig.cities dictionary.
+    /// Includes enabled and price fields that the legacy config stored.
+    /// </summary>
+    [Serializable]
+    public class LegacyCityConfig
+    {
+        // Whether the city is enabled in legacy config (BepInEx will be authoritative at runtime)
+        public bool enabled = false;
+
+        // Price in legacy config; nullable to allow omission (null means use global)
+        public int? price = null;
+
+        // Metadata that can also be present in the JSON file (coords/target/scene)
+        public float[] coords = null;
+        public string targetGameObjectName = null;
+        public string sceneName = null;
+
+        // Optional description (not required by all code paths)
+        public string desc = null;
+
+        // Persisted visited flag — default false.
+        public bool visited = false;
+    }
+
     // Return a default instance of the legacy config shape.
     // TravelButtonMod.InitFromConfig will locate this type via reflection and invoke Default().
     public static LegacyTravelConfig Default()
@@ -36,7 +76,8 @@ public static class ConfigManager
             coords = new float[] { 1410.388f, 6.786f, 1665.642f },
             targetGameObjectName = "Cierzo",
             sceneName = "CierzoNewTerrain",
-            desc = "Cierzo - example description"
+            desc = "Cierzo - example description",
+            visited = false
         };
 
         cfg.cities["Levant"] = new LegacyCityConfig
@@ -46,7 +87,8 @@ public static class ConfigManager
             coords = new float[] { -55.212f, 1.056f, 79.379f },
             targetGameObjectName = "Levant_Location",
             sceneName = "Levant",
-            desc = "Levant - example description"
+            desc = "Levant - example description",
+            visited = false
         };
 
         cfg.cities["Monsoon"] = new LegacyCityConfig
@@ -56,7 +98,8 @@ public static class ConfigManager
             coords = new float[] { 61.553f, -3.743f, 167.599f },
             targetGameObjectName = "Monsoon_Location",
             sceneName = "Monsoon",
-            desc = "Monsoon - example description"
+            desc = "Monsoon - example description",
+            visited = false
         };
 
         cfg.cities["Berg"] = new LegacyCityConfig
@@ -66,7 +109,8 @@ public static class ConfigManager
             coords = new float[] { 1202.414f, -13.071f, 1378.836f },
             targetGameObjectName = "Berg",
             sceneName = "Berg",
-            desc = "Berg - example description"
+            desc = "Berg - example description",
+            visited = false
         };
 
         cfg.cities["Harmattan"] = new LegacyCityConfig
@@ -76,7 +120,8 @@ public static class ConfigManager
             coords = new float[] { 93.757f, 65.474f, 767.849f },
             targetGameObjectName = "Harmattan_Location",
             sceneName = "Harmattan",
-            desc = "Harmattan - example description"
+            desc = "Harmattan - example description",
+            visited = false
         };
 
         cfg.cities["Sirocco"] = new LegacyCityConfig
@@ -86,7 +131,8 @@ public static class ConfigManager
             coords = new float[] { 62.530f, 56.805f, -54.049f },
             targetGameObjectName = "Sirocco_Location",
             sceneName = "NewSirocco",
-            desc = "Sirocco - example description"
+            desc = "Sirocco - example description",
+            visited = false
         };
 
         return cfg;
@@ -130,13 +176,7 @@ public static class ConfigManager
         {
             var candidates = new List<string>();
             var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-            candidates.Add(Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
-            candidates.Add(Path.Combine(baseDir, "BepInEx", "config", "com.xzahalko.travelbutton.cfg"));
-            candidates.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton.cfg"));
-            var asmLoc = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
-            if (!string.IsNullOrEmpty(asmLoc)) candidates.Add(Path.Combine(asmLoc, "TravelButton.cfg"));
-            candidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton.cfg"));
-            candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TravelButton", "TravelButton.cfg"));
+            candidates.Add(Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));            
             foreach (var c in candidates) { try { if (File.Exists(c)) return Path.GetFullPath(c); } catch { } }
             // return preferred candidate (first)
             return Path.GetFullPath(candidates[0]);
@@ -249,6 +289,9 @@ public static class ConfigManager
             city.targetGameObjectName = ExtractString(cityJson, "\"targetGameObjectName\"");
             city.sceneName = ExtractString(cityJson, "\"sceneName\"");
             city.desc = ExtractString(cityJson, "\"desc\"");
+            // Try to extract visited flag if present in legacy keyed form
+            var visitedVal = ExtractBool(cityJson, "\"visited\"");
+            city.visited = visitedVal ?? false;
             return city;
         }
         catch
@@ -375,41 +418,4 @@ public static class ConfigManager
         }
         return -1;
     }
-}
-
-/// <summary>
-/// Legacy travel config shape used by the (old) ConfigManager/ConfigManager.Config instance.
-/// Renamed to avoid collision with the JSON TravelConfig DTO.
-/// </summary>
-[Serializable]
-public class LegacyTravelConfig
-{
-    public bool enabled = true;
-    public string currencyItem = "Silver";
-    public int globalTeleportPrice = 100;
-
-    // Legacy shape used an object/dictionary keyed by city name
-    public Dictionary<string, LegacyCityConfig> cities = new Dictionary<string, LegacyCityConfig>(StringComparer.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// Legacy city entry used inside LegacyTravelConfig.cities dictionary.
-/// Includes enabled and price fields that the legacy config stored.
-/// </summary>
-[Serializable]
-public class LegacyCityConfig
-{
-    // Whether the city is enabled in legacy config (BepInEx will be authoritative at runtime)
-    public bool enabled = false;
-
-    // Price in legacy config; nullable to allow omission (null means use global)
-    public int? price = null;
-
-    // Metadata that can also be present in the JSON file (coords/target/scene)
-    public float[] coords = null;
-    public string targetGameObjectName = null;
-    public string sceneName = null;
-
-    // Optional description (not required by all code paths)
-    public string desc = null;
 }

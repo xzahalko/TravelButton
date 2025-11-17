@@ -17,10 +17,21 @@ public class CityConfig
     public string sceneName;
     public string desc;
 
+    // Persisted visited flag — default false.
+    public bool visited = false;
+
     public CityConfig() { }
 
     // simple constructor for name-only calls
     public CityConfig(string name) { this.name = name; }
+
+    // Public property wrapper for visited to provide a clean getter/setter API.
+    // Use property Visited in code; the JSON serializer will still read/write the public field 'visited'.
+    public bool Visited
+    {
+        get => visited;
+        set => visited = value;
+    }
 
     // convenience constructor used by Default() and other initializers
     public CityConfig(string name, int? price, float[] coords, string targetGameObjectName, string sceneName, string desc)
@@ -31,6 +42,7 @@ public class CityConfig
         this.targetGameObjectName = targetGameObjectName;
         this.sceneName = sceneName;
         this.desc = desc;
+        this.visited = false;
     }
 }
 
@@ -213,6 +225,10 @@ public class TravelConfig
             int? priceValue = ExtractInt(cityJson, "price");
             city.price = priceValue; // preserve null if absent
 
+            // Try to extract visited flag if present
+            bool? visitedVal = ExtractBool(cityJson, "visited");
+            city.visited = visitedVal ?? false;
+
             return city;
         }
         catch
@@ -296,6 +312,23 @@ public class TravelConfig
         }
 
         return floats.Count > 0 ? floats.ToArray() : null;
+    }
+
+    private static bool? ExtractBool(string json, string propName)
+    {
+        int idx = json.IndexOf($"\"{propName}\"");
+        if (idx < 0) return null;
+        int colon = json.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int i = colon + 1;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+        if (i >= json.Length) return null;
+        // read up to 5 chars to cover "true"/"false"
+        int len = Math.Min(5, json.Length - i);
+        var token = json.Substring(i, len).ToLowerInvariant();
+        if (token.StartsWith("true")) return true;
+        if (token.StartsWith("false")) return false;
+        return null;
     }
 
     private static int FindClosingQuote(string json, int startIdx)
@@ -395,7 +428,7 @@ public class TravelConfig
     }
 
     // Provide a default TravelConfig (seeded with user-provided defaults)
-    // NOTE: Does not set 'visited' field - visited state is managed by VisitedTracker, not JSON
+    // NOTE: now sets 'visited' fields to false for each seeded city.
     public static TravelConfig Default()
     {
         var tc = new TravelConfig();
