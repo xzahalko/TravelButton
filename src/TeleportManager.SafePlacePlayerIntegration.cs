@@ -249,4 +249,108 @@ public partial class TeleportManager : MonoBehaviour
         }
         catch { return true; }
     }
+
+    /// <summary>
+    /// Helper that wraps SafePlacePlayerCoroutine and tracks before/after position to report success.
+    /// Call this from another coroutine: yield return StartCoroutine(PlacePlayerUsingSafeRoutine(pos, moved => {...}));
+    /// </summary>
+    public IEnumerator PlacePlayerUsingSafeRoutine(Vector3 finalTarget, Action<bool> onComplete)
+    {
+        TBLog.Info($"PlacePlayerUsingSafeRoutine: starting for target={finalTarget}");
+        
+        // Snapshot before position
+        Vector3 beforePos = Vector3.zero;
+        bool haveBeforePos = false;
+        try
+        {
+            Transform playerTransform = null;
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) playerTransform = go.transform;
+            else
+            {
+                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+                {
+                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
+                    {
+                        playerTransform = g.transform;
+                        break;
+                    }
+                }
+            }
+            
+            if (playerTransform != null)
+            {
+                beforePos = playerTransform.position;
+                haveBeforePos = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PlacePlayerUsingSafeRoutine: failed to get before position: " + ex);
+        }
+
+        // Run the safe placement coroutine
+        yield return SafePlacePlayerCoroutine(finalTarget);
+
+        // Snapshot after position
+        Vector3 afterPos = Vector3.zero;
+        bool haveAfterPos = false;
+        try
+        {
+            Transform playerTransform = null;
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) playerTransform = go.transform;
+            else
+            {
+                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+                {
+                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
+                    {
+                        playerTransform = g.transform;
+                        break;
+                    }
+                }
+            }
+            
+            if (playerTransform != null)
+            {
+                afterPos = playerTransform.position;
+                haveAfterPos = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PlacePlayerUsingSafeRoutine: failed to get after position: " + ex);
+        }
+
+        // Determine if movement occurred
+        bool moved = false;
+        if (haveBeforePos && haveAfterPos)
+        {
+            moved = (afterPos - beforePos).sqrMagnitude > 0.01f;
+            TBLog.Info($"PlacePlayerUsingSafeRoutine: moved={moved} (before={beforePos}, after={afterPos})");
+        }
+        else if (haveAfterPos && !haveBeforePos)
+        {
+            // If we couldn't get before but can after, assume success
+            moved = true;
+            TBLog.Info($"PlacePlayerUsingSafeRoutine: assuming moved=true (after={afterPos}, no before position)");
+        }
+        else
+        {
+            TBLog.Warn("PlacePlayerUsingSafeRoutine: could not determine movement (no position data)");
+        }
+
+        // Invoke callback
+        try
+        {
+            onComplete?.Invoke(moved);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PlacePlayerUsingSafeRoutine: callback threw: " + ex);
+        }
+        
+        yield break;
+    }
 }
