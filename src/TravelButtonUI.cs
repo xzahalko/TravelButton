@@ -3398,6 +3398,16 @@ public class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe threw: " + exTeleport.Message);
             }
+
+            // Compatibility shim fallback: if no anchor was found (coordinate-based teleport), also invoke the shim
+            // Must be outside try-catch to allow yield
+            if (anchor == null && coordsArr != null && coordsArr.Length >= 3)
+            {
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: invoking TeleportCompatShims.PlacePlayerViaCoords as fallback for coords-based teleport.");
+                var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+            }
+
             yield return new WaitForSecondsRealtime(0.6f);
         }
         finally
