@@ -3545,8 +3545,7 @@ public static class TravelButton
 
             string prettyJson = sb.ToString();
 
-            TBLog.Info($"PersistCitiesToConfigUsingUnity: pretty json length={prettyJson.Length}");
-            TBLog.Info("PersistCitiesToConfigUsingUnity: JSON preview (first 2000 chars): " + (prettyJson.Length > 2000 ? prettyJson.Substring(0, 2000) + "..." : prettyJson));
+            TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote TravelButton_Cities.json ({prettyJson.Length} bytes) to: {TravelButton.ConfigFilePath}");
 
             // Build candidate write paths
             var writeCandidates = new System.Collections.Generic.List<string>();
