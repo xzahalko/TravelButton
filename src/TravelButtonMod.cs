@@ -331,7 +331,46 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 if (citiesList.Count > 0)
                 {
                     TravelButtonMod.Cities = citiesList;
-                    LInfo($"Loaded {citiesList.Count} cities from TravelButton_Cities.json.");
+                    LInfo($"Loaded {TravelButtonMod.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
+                    
+                    // Check if the JSON already contains visited flags
+                    bool jsonHadVisited = citiesList.Any(c => c.visited);
+                    
+                    if (jsonHadVisited)
+                    {
+                        LInfo("TravelButton_Cities.json already contains visited flags; skipping legacy .cfg migration.");
+                    }
+                    else
+                    {
+                        // No visited flags in JSON - check if legacy .cfg exists and migrate if present
+                        var cfgPath = TravelButtonMod.ConfigFilePath;
+                        if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)" && File.Exists(cfgPath))
+                        {
+                            try
+                            {
+                                ApplyVisitedFlagsFromCfg();
+                                LInfo($"Migrated visited flags from .cfg ({cfgPath}) into TravelButton_Cities.json.");
+                                
+                                try
+                                {
+                                    PersistCitiesToConfigUsingUnity();
+                                    LInfo("Persisted migrated TravelButton_Cities.json to disk.");
+                                }
+                                catch (Exception ex)
+                                {
+                                    LWarn("Persist: " + ex.Message);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                LWarn("ApplyVisitedFlagsFromCfg failed during migration: " + ex.Message);
+                            }
+                        }
+                        else
+                        {
+                            LInfo("No legacy .cfg present to migrate visited flags from.");
+                        }
+                    }
                 }
                 else
                 {
@@ -349,7 +388,258 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
+    /// <summary>
+    /// Apply visited flags from the legacy BepInEx .cfg file into the in-memory TravelButtonMod.Cities.
+    /// This reads from the BepInEx config file (if it exists) and marks cities as visited in VisitedTracker.
+    /// The BepInEx config file typically stores per-city config entries including visited state.
+    /// </summary>
+    private static void ApplyVisitedFlagsFromCfg()
+    {
+        try
+        {
+            // The BepInEx config is managed by the plugin instance, not directly accessible here.
+            // For a one-time migration, we look for the BepInEx .cfg file on disk and parse it manually.
+            // BepInEx config files are typically at: <GameDir>/BepInEx/config/com.xzahalko.travelbutton.cfg
+            
+            var logger = LogSource;
+            void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
+            void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
+            
+            // Try to locate the BepInEx .cfg file
+            var candidatePaths = new List<string>();
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "com.xzahalko.travelbutton.cfg"));
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
+            }
+            catch { }
+            
+            string cfgPath = null;
+            foreach (var p in candidatePaths)
+            {
+                try
+                {
+                    if (File.Exists(p))
+                    {
+                        cfgPath = p;
+                        break;
+                    }
+                }
+                catch { }
+            }
+            
+            if (string.IsNullOrEmpty(cfgPath))
+            {
+                LInfo("ApplyVisitedFlagsFromCfg: No BepInEx .cfg file found.");
+                return;
+            }
+            
+            LInfo($"ApplyVisitedFlagsFromCfg: Reading legacy .cfg from {cfgPath}");
+            
+            // Parse the .cfg file manually (BepInEx .cfg format is simple INI-like)
+            // Look for entries like: [TravelButton.Cities]
+            //                         CityName.Visited = true
+            var lines = File.ReadAllLines(cfgPath);
+            bool inCitiesSection = false;
+            int migratedCount = 0;
+            
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                
+                // Check for section headers
+                if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
+                {
+                    var section = trimmed.Substring(1, trimmed.Length - 2);
+                    inCitiesSection = section.Equals("TravelButton.Cities", StringComparison.OrdinalIgnoreCase);
+                    continue;
+                }
+                
+                // If we're in the cities section, look for Visited entries
+                if (inCitiesSection && trimmed.Contains("="))
+                {
+                    var parts = trimmed.Split(new[] { '=' }, 2);
+                    if (parts.Length == 2)
+                    {
+                        var key = parts[0].Trim();
+                        var value = parts[1].Trim();
+                        
+                        // Check if this is a Visited entry (e.g., "Berg.Visited = True")
+                        if (key.EndsWith(".Visited", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var cityName = key.Substring(0, key.Length - ".Visited".Length);
+                            if (value.Equals("True", StringComparison.OrdinalIgnoreCase) || value.Equals("true", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // Find the city and mark it visited
+                                var city = TravelButtonMod.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+                                if (city != null)
+                                {
+                                    city.visited = true;
+                                    migratedCount++;
+                                    LInfo($"ApplyVisitedFlagsFromCfg: Migrated visited flag for '{cityName}'");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            LInfo($"ApplyVisitedFlagsFromCfg: Migrated {migratedCount} visited flags from legacy .cfg");
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "ApplyVisitedFlagsFromCfg exception: " + ex.Message); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Persist the current TravelButtonMod.Cities (with visited flags) to TravelButton_Cities.json using Unity's JsonUtility.
+    /// This writes the cities back to the same location where TravelButton_Cities.json was loaded from.
+    /// </summary>
+    private static void PersistCitiesToConfigUsingUnity()
+    {
+        try
+        {
+            var logger = LogSource;
+            void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
+            void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
+            
+            if (TravelButtonMod.Cities == null || TravelButtonMod.Cities.Count == 0)
+            {
+                LWarn("PersistCitiesToConfigUsingUnity: No cities to persist.");
+                return;
+            }
+            
+            // Determine the output path for TravelButton_Cities.json
+            // We'll use the same logic as TryLoadCitiesJsonIntoTravelButtonMod to find the file
+            var candidatePaths = new List<string>();
+            
+            try
+            {
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+            }
+            catch { }
+            
+            try
+            {
+                var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+                if (!string.IsNullOrEmpty(asmLocation))
+                    candidatePaths.Add(Path.Combine(asmLocation, "TravelButton_Cities.json"));
+            }
+            catch { }
+            
+            try
+            {
+                var cfgPath = TravelButtonMod.ConfigFilePath;
+                if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)")
+                {
+                    var dir = cfgPath;
+                    try
+                    {
+                        if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath);
+                    }
+                    catch { }
+                    if (!string.IsNullOrEmpty(dir))
+                        candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+                }
+            }
+            catch { }
+            
+            // Find existing file or use first candidate
+            string outputPath = null;
+            var tested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in candidatePaths)
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                string full;
+                try { full = Path.GetFullPath(p); } catch { full = p; }
+                if (tested.Contains(full)) continue;
+                tested.Add(full);
+                
+                if (File.Exists(full))
+                {
+                    outputPath = full;
+                    break;
+                }
+            }
+            
+            // If no existing file found, use the first candidate path
+            if (string.IsNullOrEmpty(outputPath) && candidatePaths.Count > 0)
+            {
+                try { outputPath = Path.GetFullPath(candidatePaths[0]); } catch { outputPath = candidatePaths[0]; }
+            }
+            
+            if (string.IsNullOrEmpty(outputPath))
+            {
+                LWarn("PersistCitiesToConfigUsingUnity: Could not determine output path.");
+                return;
+            }
+            
+            // Build the JSON structure manually (dictionary form to match the existing format)
+            var sb = new StringBuilder();
+            sb.AppendLine("{");
+            sb.AppendLine("  \"enabled\": true,");
+            sb.AppendLine("  \"currencyItem\": \"Silver\",");
+            sb.AppendLine("  \"globalTeleportPrice\": 100,");
+            sb.AppendLine("  \"cities\": {");
+            
+            bool first = true;
+            foreach (var city in TravelButtonMod.Cities)
+            {
+                if (!first) sb.AppendLine(",");
+                first = false;
+                
+                sb.AppendLine($"    \"{city.name}\": {{");
+                sb.AppendLine($"      \"enabled\": {(city.enabled ? "true" : "false")},");
+                sb.AppendLine($"      \"price\": {city.price?.ToString() ?? "null"},");
+                
+                if (city.coords != null && city.coords.Length >= 3)
+                {
+                    sb.AppendLine($"      \"coords\": [{city.coords[0]}, {city.coords[1]}, {city.coords[2]}],");
+                }
+                else
+                {
+                    sb.AppendLine("      \"coords\": null,");
+                }
+                
+                sb.AppendLine($"      \"targetGameObjectName\": {(string.IsNullOrEmpty(city.targetGameObjectName) ? "null" : $"\"{city.targetGameObjectName}\"")},");
+                sb.AppendLine($"      \"sceneName\": {(string.IsNullOrEmpty(city.sceneName) ? "null" : $"\"{city.sceneName}\"")},");
+                sb.AppendLine("      \"desc\": null,");
+                sb.AppendLine($"      \"visited\": {(city.visited ? "true" : "false")}");
+                sb.Append("    }");
+            }
+            
+            sb.AppendLine();
+            sb.AppendLine("  }");
+            sb.AppendLine("}");
+            
+            // Ensure directory exists
+            try
+            {
+                var dir = Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch (Exception ex)
+            {
+                LWarn($"PersistCitiesToConfigUsingUnity: Could not create directory: {ex.Message}");
+            }
+            
+            // Write the JSON file
+            File.WriteAllText(outputPath, sb.ToString());
+            LInfo($"PersistCitiesToConfigUsingUnity: Persisted {TravelButtonMod.Cities.Count} cities to {outputPath}");
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "PersistCitiesToConfigUsingUnity exception: " + ex.Message); } catch { }
+        }
+    }
+
     // Parse the inner JSON object text for a single city (contents between { ... } without the outer braces)
+    // Returns both the City object and the visited flag from JSON (if present)
     private static TravelButtonMod.City ParseCityInnerJson(string cityName, string innerObject)
     {
         if (string.IsNullOrEmpty(cityName)) return null;
@@ -375,6 +665,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // sceneName (string)
         var scn = ExtractJsonString(innerObject, "sceneName") ?? ExtractJsonString(innerObject, "scene");
         if (!string.IsNullOrEmpty(scn)) city.sceneName = scn;
+
+        // visited (bool) - extract and apply if present in JSON
+        var vis = ExtractJsonBool(innerObject, "visited");
+        if (vis.HasValue && vis.Value) city.visited = true;
 
         return city;
     }
