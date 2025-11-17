@@ -4991,6 +4991,7 @@ public partial class TravelButtonUI : MonoBehaviour
 
     // In TeleportHelpers static class - update AttemptTeleportToPositionSafe or the method you use to teleport
     // AttemptTeleportToPositionSafe + helper TryFindNearestNavMeshOrGround
+    [Obsolete("Use TeleportManager.SafePlacePlayerCoroutine or TravelButtonUI.SafeTeleportRoutine instead. This synchronous method will be removed in a future version.")]
     public static bool AttemptTeleportToPositionSafe(Vector3 target)
     {
         try
