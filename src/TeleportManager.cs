@@ -234,6 +234,10 @@ public partial class TeleportManager : MonoBehaviour
                 TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.Message);
             }
 
+            // Debug logging for teleport decision
+            bool anchorFound = anchor != null;
+            TBLog.Debug?.Invoke($"[TeleportManager] haveCoordsHint={haveCoordsHint}, targetName={targetGameObjectName}, anchorFound={anchorFound}, finalPos={finalPos}");
+
             // Teleport attempts with bounded retries using coroutine-based safe placement
             const int maxTeleportAttempts = 3;
             int attempt = 0;
@@ -270,9 +274,53 @@ public partial class TeleportManager : MonoBehaviour
 
             if (!teleported)
             {
-                TBLog.Warn("TeleportManager: all teleport attempts failed. Notifying player.");
-                TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place player safely in destination.");
-                yield break;
+                // Fallback: if we have coords and either no anchor was found OR the primary placement failed,
+                // try the compatibility shim as last resort
+                if (haveCoordsHint || !anchorFound)
+                {
+                    TBLog.Info($"[TeleportManager] primary placement failed; invoking coords fallback shim with finalPos={finalPos}");
+                    
+                    // Record player position before fallback
+                    Vector3 beforeFallback = Vector3.zero;
+                    bool haveBeforeFallback = TryGetPlayerPosition(out beforeFallback);
+                    if (haveBeforeFallback)
+                    {
+                        TBLog.Debug?.Invoke($"[TeleportManager] player position before fallback: {beforeFallback}");
+                    }
+                    
+                    var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                    yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+                    
+                    TBLog.Info($"[TeleportManager] returned from coords fallback shim");
+                    
+                    // Record player position after fallback
+                    Vector3 afterFallback = Vector3.zero;
+                    bool haveAfterFallback = TryGetPlayerPosition(out afterFallback);
+                    if (haveAfterFallback)
+                    {
+                        TBLog.Debug?.Invoke($"[TeleportManager] player position after fallback: {afterFallback}");
+                        
+                        // Consider it a success if player moved significantly
+                        if (haveBeforeFallback && (afterFallback - beforeFallback).sqrMagnitude > 0.01f)
+                        {
+                            teleported = true;
+                            TBLog.Info("[TeleportManager] fallback shim succeeded - player moved");
+                        }
+                        else if (!haveBeforeFallback)
+                        {
+                            // We found player after fallback but not before - consider success
+                            teleported = true;
+                            TBLog.Info("[TeleportManager] fallback shim succeeded - player now located");
+                        }
+                    }
+                }
+                
+                if (!teleported)
+                {
+                    TBLog.Warn("TeleportManager: all teleport attempts failed. Notifying player.");
+                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place player safely in destination.");
+                    yield break;
+                }
             }
 
             // small stabilization delay

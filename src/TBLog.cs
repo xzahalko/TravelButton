@@ -30,4 +30,20 @@ public static class TBLog
     {
         try { TravelButtonPlugin.LogInfo(message); } catch { }
     }
+
+    // Debug-level logging action. Null if debug logging is disabled.
+    // Use: TBLog.Debug?.Invoke("message") for extra diagnostic logging.
+    public static Action<string> Debug
+    {
+        get
+        {
+            try
+            {
+                if (DebugConfig.IsDebug)
+                    return (msg) => TravelButtonPlugin.LogInfo("[DEBUG] " + msg);
+            }
+            catch { }
+            return null;
+        }
+    }
 }
