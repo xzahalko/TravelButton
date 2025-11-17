@@ -234,35 +234,38 @@ public partial class TeleportManager : MonoBehaviour
                 TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.Message);
             }
 
-            // Teleport attempts with bounded retries
+            // Teleport attempts with bounded retries using coroutine-based safe placement
             const int maxTeleportAttempts = 3;
             int attempt = 0;
             while (attempt < maxTeleportAttempts && !teleported)
             {
                 attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}).");
-                try
+                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using SafePlacePlayerCoroutine.");
+                
+                bool placementSucceeded = false;
+                yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
                 {
-                    teleported = TravelButtonUI.AttemptTeleportToPositionSafe(finalPos);
-                    if (teleported)
-                    {
-                        TBLog.Info("TeleportManager: AttemptTeleportToPositionSafe reported success.");
-                        break;
-                    }
-                    else
-                    {
-                        TBLog.Warn($"TeleportManager: attempt {attempt} failed (AttemptTeleportToPositionSafe returned false).");
-                    }
+                    placementSucceeded = moved;
+                }));
+                
+                if (placementSucceeded)
+                {
+                    TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
+                    teleported = true;
+                    break;
                 }
-                catch (Exception ex)
+                else
                 {
-                    TBLog.Warn("TeleportManager: AttemptTeleportToPositionSafe threw: " + ex.Message);
+                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (PlacePlayerUsingSafeRoutine reported no movement).");
                 }
 
-                float retryDelay = 0.25f + 0.15f * attempt;
-                float start = Time.realtimeSinceStartup;
-                while (Time.realtimeSinceStartup - start < retryDelay)
-                    yield return null;
+                if (attempt < maxTeleportAttempts)
+                {
+                    float retryDelay = 0.25f + 0.15f * attempt;
+                    float start = Time.realtimeSinceStartup;
+                    while (Time.realtimeSinceStartup - start < retryDelay)
+                        yield return null;
+                }
             }
 
             if (!teleported)
