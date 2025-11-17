@@ -73,7 +73,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 1410.388f, 6.786f, 1665.642f },
+            coords = new float[] { 1410.3f, 6.7f, 1665.6f },
             targetGameObjectName = "Cierzo",
             sceneName = "CierzoNewTerrain",
             desc = "Cierzo - example description",
@@ -84,7 +84,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { -55.212f, 1.056f, 79.379f },
+            coords = new float[] { -55.2f, 1.0f, 79.3f },
             targetGameObjectName = "Levant_Location",
             sceneName = "Levant",
             desc = "Levant - example description",
@@ -95,7 +95,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 61.553f, -3.743f, 167.599f },
+            coords = new float[] { 61.5f, -3.7f, 167.5f },
             targetGameObjectName = "Monsoon_Location",
             sceneName = "Monsoon",
             desc = "Monsoon - example description",
@@ -106,7 +106,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 1202.414f, 113.071f, 1378.836f },
+            coords = new float[] { 1202.4f, 13.0f, 1378.8f },
             targetGameObjectName = "xxx",
             sceneName = "Berg",
             desc = "Berg - example description",
@@ -117,7 +117,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 93.757f, 65.474f, 767.849f },
+            coords = new float[] { 93.7f, 65.4f, 767.8f },
             targetGameObjectName = "Harmattan_Location",
             sceneName = "Harmattan",
             desc = "Harmattan - example description",
@@ -128,7 +128,7 @@ public static class ConfigManager
         {
             enabled = false,
             price = 200,
-            coords = new float[] { 62.530f, 56.805f, -54.049f },
+            coords = new float[] { 62.5f, 56.8f, -54.0f },
             targetGameObjectName = "Sirocco_Location",
             sceneName = "NewSirocco",
             desc = "Sirocco - example description",

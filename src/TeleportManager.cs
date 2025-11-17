@@ -60,6 +60,31 @@ public partial class TeleportManager : MonoBehaviour
         return true;
     }
 
+    // Helper: best-effort safe reader for logging the player's current position.
+    // Keep this private and simple — it's only for debug messages.
+    private Vector3 GetPlayerPositionDebug()
+    {
+        try
+        {
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) return go.transform.position;
+
+            var cc = UnityEngine.Object.FindObjectOfType<CharacterController>();
+            if (cc != null && cc.transform != null) return cc.transform.position;
+
+            var all = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var t in all)
+            {
+                if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                if (t.name.IndexOf("Player", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                    return t.position;
+            }
+        }
+        catch { /* swallow to avoid throwing from a debug helper */ }
+
+        return Vector3.zero;
+    }
+
     private IEnumerator LoadSceneAndTeleportCoroutine(string sceneName, string targetGameObjectName, Vector3 coordsHint, bool haveCoordsHint, int cost)
     {
         _isSceneTransitionInProgress = true;
@@ -241,13 +266,13 @@ public partial class TeleportManager : MonoBehaviour
             {
                 attempt++;
                 TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using SafePlacePlayerCoroutine.");
-                
+
                 bool placementSucceeded = false;
                 yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
                 {
                     placementSucceeded = moved;
                 }));
-                
+
                 if (placementSucceeded)
                 {
                     TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
@@ -265,6 +290,49 @@ public partial class TeleportManager : MonoBehaviour
                     float start = Time.realtimeSinceStartup;
                     while (Time.realtimeSinceStartup - start < retryDelay)
                         yield return null;
+                }
+            }
+
+            // If all safe attempts failed, try minimal coords-first shim fallback when appropriate
+            if (!teleported)
+            {
+                // Debug: what led to this state
+                try
+                {
+                    TBLog.Info($"[TeleportManager] safe placement attempts exhausted. haveCoordsHint={haveCoordsHint}, anchorPresent={(anchor != null)}");
+                }
+                catch { }
+
+                // Only attempt the shim fallback when we have an explicit coords hint OR no anchor was found
+                if (haveCoordsHint || anchor == null)
+                {
+                    TBLog.Info("[TeleportManager] attempting coords-first fallback shim (TeleportCompatShims).");
+                    Vector3 before = Vector3.zero;
+                    Vector3 after = Vector3.zero;
+                    try { before = GetPlayerPositionDebug(); TBLog.Info($"[TeleportManager] player position before shim: {before}"); } catch { }
+
+                    var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                    yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+
+                    try { after = GetPlayerPositionDebug(); TBLog.Info($"[TeleportManager] player position after shim: {after}"); } catch { }
+
+                    float movedDistance = Vector3.Distance(before, after);
+                    TBLog.Info($"[TeleportManager] coords-first shim completed; player moved distance {movedDistance:F3}.");
+
+                    // Consider the teleport successful if player position changed noticeably
+                    if (movedDistance > 0.05f)
+                    {
+                        teleported = true;
+                        TBLog.Info("[TeleportManager] coords-first shim appears to have moved the player; marking teleport as successful.");
+                    }
+                    else
+                    {
+                        TBLog.Warn("[TeleportManager] coords-first shim did not appreciably move the player.");
+                    }
+                }
+                else
+                {
+                    TBLog.Info("[TeleportManager] coords-first shim not attempted (no coords hint and anchor present).");
                 }
             }
 

@@ -434,12 +434,12 @@ public class TravelConfig
     {
         var tc = new TravelConfig();
 
-        tc.cities.Add(new CityConfig("Cierzo") { price = 200, coords = new float[] { 1410.388f, 6.786f, 1665.642f }, targetGameObjectName = "Cierzo", sceneName = "CierzoNewTerrain", desc = "Cierzo - example description" });
-        tc.cities.Add(new CityConfig("Levant") { price = 200, coords = new float[] { -55.212f, 1.056f, 79.379f }, targetGameObjectName = "Levant_Location", sceneName = "Levant", desc = "Levant - example description" });
-        tc.cities.Add(new CityConfig("Monsoon") { price = 200, coords = new float[] { 61.553f, -3.743f, 167.599f }, targetGameObjectName = "Monsoon_Location", sceneName = "Monsoon", desc = "Monsoon - example description" });
-        tc.cities.Add(new CityConfig("Berg") { price = 200, coords = new float[] { 1202.414f, 213.071f, 1378.836f }, targetGameObjectName = "xxx", sceneName = "Berg", desc = "Berg - example description" });
-        tc.cities.Add(new CityConfig("Harmattan") { price = 200, coords = new float[] { 93.757f, 65.474f, 767.849f }, targetGameObjectName = "Harmattan_Location", sceneName = "Harmattan", desc = "Harmattan - example description" });
-        tc.cities.Add(new CityConfig("Sirocco") { price = 200, coords = new float[] { 62.530f, 56.805f, -54.049f }, targetGameObjectName = "Sirocco_Location", sceneName = "NewSirocco", desc = "Sirocco - example description" });
+        tc.cities.Add(new CityConfig("Cierzo") { price = 200, coords = new float[] { 1410.3f, 6.7f, 1665.6f }, targetGameObjectName = "Cierzo", sceneName = "CierzoNewTerrain", desc = "Cierzo - example description" });
+        tc.cities.Add(new CityConfig("Levant") { price = 200, coords = new float[] { -55.2f, 1.0f, 79.3f }, targetGameObjectName = "Levant_Location", sceneName = "Levant", desc = "Levant - example description" });
+        tc.cities.Add(new CityConfig("Monsoon") { price = 200, coords = new float[] { 61.5f, -3.7f, 167.5f }, targetGameObjectName = "Monsoon_Location", sceneName = "Monsoon", desc = "Monsoon - example description" });
+        tc.cities.Add(new CityConfig("Berg") { price = 200, coords = new float[] { 1202.4f, 13.0f, 1378.8f }, targetGameObjectName = "xxx", sceneName = "Berg", desc = "Berg - example description" });
+        tc.cities.Add(new CityConfig("Harmattan") { price = 200, coords = new float[] { 93.7f, 65.4f, 767.8f }, targetGameObjectName = "Harmattan_Location", sceneName = "Harmattan", desc = "Harmattan - example description" });
+        tc.cities.Add(new CityConfig("Sirocco") { price = 200, coords = new float[] { 62.5f, 56.8f, -54.0f }, targetGameObjectName = "Sirocco_Location", sceneName = "NewSirocco", desc = "Sirocco - example description" });
 
         return tc;
     }
