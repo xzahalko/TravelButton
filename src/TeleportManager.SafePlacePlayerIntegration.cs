@@ -4,6 +4,15 @@ using UnityEngine;
 
 public partial class TeleportManager : MonoBehaviour
 {
+    // Maximum vertical distance to raise player when escaping overlaps/embedding
+    private const float OVERLAP_MAX_RAISE = 10f;
+    
+    // Radius for overlap sphere check around player's feet
+    private const float OVERLAP_CHECK_RADIUS = 0.5f;
+    
+    // Step size for incremental raising when escaping overlaps
+    private const float OVERLAP_RAISE_STEP = 0.2f;
+
     // Primary safe placement entrypoint used after scene activation.
     // Call: yield return StartCoroutine(SafePlacePlayerCoroutine(finalTarget));
     public IEnumerator SafePlacePlayerCoroutine(Vector3 finalTarget)
@@ -122,6 +131,131 @@ public partial class TeleportManager : MonoBehaviour
         // Wait two frames to let scene scripts and physics settle (yields are outside try/catch)
         yield return null;
         yield return null;
+
+        // FIX D: Check for overlaps (embedding in terrain/geometry) and raise player if needed
+        bool overlapResolved = false;
+        float totalRaise = 0f;
+        
+        // Initial overlap check (no yields)
+        Vector3 checkPos = Vector3.zero;
+        bool hasNonPlayerOverlap = false;
+        try
+        {
+            checkPos = playerTransform.position;
+            Collider[] overlaps = Physics.OverlapSphere(checkPos, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+            
+            // Filter out player's own colliders
+            if (overlaps != null && overlaps.Length > 0)
+            {
+                foreach (var col in overlaps)
+                {
+                    if (col == null) continue;
+                    
+                    // Check if this collider belongs to the player (by checking if it's a child of playerTransform)
+                    bool isPlayerCollider = false;
+                    Transform t = col.transform;
+                    while (t != null)
+                    {
+                        if (t == playerTransform)
+                        {
+                            isPlayerCollider = true;
+                            break;
+                        }
+                        t = t.parent;
+                    }
+                    
+                    if (!isPlayerCollider)
+                    {
+                        hasNonPlayerOverlap = true;
+                        TBLog.Info($"SafePlacePlayerCoroutine: detected overlap with non-player collider '{col.name}' on object '{col.gameObject.name}'");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"SafePlacePlayerCoroutine: error during initial overlap check: {ex.Message}");
+        }
+        
+        // If overlapping, raise player incrementally until clear or max raise reached (yields outside try blocks)
+        if (hasNonPlayerOverlap)
+        {
+            TBLog.Info($"SafePlacePlayerCoroutine: player is overlapping non-player geometry at {checkPos}, attempting to raise player.");
+            
+            while (totalRaise < OVERLAP_MAX_RAISE && hasNonPlayerOverlap)
+            {
+                totalRaise += OVERLAP_RAISE_STEP;
+                checkPos.y += OVERLAP_RAISE_STEP;
+                
+                // Set new position (no yields)
+                try
+                {
+                    playerTransform.position = checkPos;
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"SafePlacePlayerCoroutine: error setting position during raise: {ex.Message}");
+                    break;
+                }
+                
+                // Wait a frame to let physics update
+                yield return null;
+                
+                // Re-check overlaps (no yields)
+                hasNonPlayerOverlap = false;
+                try
+                {
+                    Collider[] overlaps = Physics.OverlapSphere(checkPos, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                    
+                    if (overlaps != null && overlaps.Length > 0)
+                    {
+                        foreach (var col in overlaps)
+                        {
+                            if (col == null) continue;
+                            
+                            bool isPlayerCollider = false;
+                            Transform t = col.transform;
+                            while (t != null)
+                            {
+                                if (t == playerTransform)
+                                {
+                                    isPlayerCollider = true;
+                                    break;
+                                }
+                                t = t.parent;
+                            }
+                            
+                            if (!isPlayerCollider)
+                            {
+                                hasNonPlayerOverlap = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!hasNonPlayerOverlap)
+                    {
+                        overlapResolved = true;
+                        TBLog.Info($"SafePlacePlayerCoroutine: raised player by {totalRaise}m to escape overlap. Final position: {checkPos}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"SafePlacePlayerCoroutine: error during overlap re-check: {ex.Message}");
+                    break;
+                }
+            }
+            
+            if (!overlapResolved && hasNonPlayerOverlap)
+            {
+                TBLog.Warn($"SafePlacePlayerCoroutine: unable to fully resolve overlap after raising {totalRaise}m (max={OVERLAP_MAX_RAISE}m). Player may still be embedded.");
+            }
+        }
+        else
+        {
+            overlapResolved = true;
+            TBLog.Info($"SafePlacePlayerCoroutine: no overlaps detected at position {checkPos}");
+        }
 
         // Restore physics/controllers (no yields)
         try

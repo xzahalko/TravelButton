@@ -12,6 +12,9 @@ using UnityEngine.SceneManagement;
 /// </summary>
 public class TravelButtonSceneLoader : MonoBehaviour
 {
+    // Vertical clamping range around coordsHint.y to keep grounded positions close to configured coordinates
+    private const float COORDS_CLAMP_VERTICAL_RANGE = 100f;
+
     // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
@@ -183,6 +186,7 @@ public class TravelButtonSceneLoader : MonoBehaviour
         }
 
         // Ground probe attempt (try to prefer nearby NavMesh/ground if helper exists)
+        // When coordsHint is present, clamp grounded Y to stay within COORDS_CLAMP_VERTICAL_RANGE of coordsHint.y
         try
         {
             bool grounded = false;
@@ -223,12 +227,46 @@ public class TravelButtonSceneLoader : MonoBehaviour
 
             if (grounded)
             {
-                TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe adjusted finalPos to {groundedPos} (raw {finalPos}).");
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe found position at {groundedPos} (original finalPos={finalPos}).");
+                
+                // FIX C: When we have coordsHint, clamp the grounded Y to stay within range of coordsHint.y
+                if (haveCoordsHint)
+                {
+                    float minY = coordsHint.y - COORDS_CLAMP_VERTICAL_RANGE;
+                    float maxY = coordsHint.y + COORDS_CLAMP_VERTICAL_RANGE;
+                    float clampedY = Mathf.Clamp(groundedPos.y, minY, maxY);
+                    
+                    if (Mathf.Abs(clampedY - groundedPos.y) > 0.01f)
+                    {
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: clamping grounded Y from {groundedPos.y} to {clampedY} (range [{minY}, {maxY}] around coordsHint.y={coordsHint.y}).");
+                        groundedPos.y = clampedY;
+                    }
+                    else
+                    {
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: grounded Y={groundedPos.y} is within acceptable range around coordsHint.y={coordsHint.y}.");
+                    }
+                }
+                
                 finalPos = groundedPos;
             }
             else
             {
                 TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe did not find nearby NavMesh/ground for {finalPos}.");
+                
+                // FIX C: Even without grounding, if we have coordsHint, clamp finalPos.y to safe range around coordsHint.y
+                if (haveCoordsHint)
+                {
+                    float minY = coordsHint.y - COORDS_CLAMP_VERTICAL_RANGE;
+                    float maxY = coordsHint.y + COORDS_CLAMP_VERTICAL_RANGE;
+                    float originalY = finalPos.y;
+                    float clampedY = Mathf.Clamp(finalPos.y, minY, maxY);
+                    
+                    if (Mathf.Abs(clampedY - originalY) > 0.01f)
+                    {
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: no grounding found, clamping finalPos.y from {originalY} to {clampedY} (range [{minY}, {maxY}] around coordsHint.y={coordsHint.y}).");
+                        finalPos.y = clampedY;
+                    }
+                }
             }
         }
         catch (Exception exProbe)
