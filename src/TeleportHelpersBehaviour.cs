@@ -191,13 +191,16 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             try { targetPos = TeleportHelpers.EnsureClearance(targetPos); } catch { }
         }
 
-        // yield one frame and attempt teleport
+        // yield one frame before placement
         yield return null;
 
+        // Use coroutine-based safe placement
         bool relocated = false;
-        try
+        var mgr = TeleportManager.Instance;
+        if (mgr != null)
         {
-            relocated = TeleportHelpers.AttemptTeleportToPositionSafe(targetPos);
+            yield return mgr.StartCoroutine(mgr.PlacePlayerUsingSafeRoutine(targetPos, moved => relocated = moved));
+            
             if (relocated)
             {
                 TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
@@ -207,9 +210,9 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                 TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
             }
         }
-        catch (Exception ex)
+        else
         {
-            TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
+            TBLog.Warn("EnsureSceneAndTeleport: TeleportManager.Instance not found, cannot perform safe placement");
             relocated = false;
         }
 

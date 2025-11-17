@@ -234,29 +234,26 @@ public partial class TeleportManager : MonoBehaviour
                 TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.Message);
             }
 
-            // Teleport attempts with bounded retries
+            // Teleport attempts with bounded retries using coroutine-safe placement
             const int maxTeleportAttempts = 3;
             int attempt = 0;
             while (attempt < maxTeleportAttempts && !teleported)
             {
                 attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}).");
-                try
+                TBLog.Info($"TeleportManager: Attempting safe placement at {finalPos} (attempt {attempt}/{maxTeleportAttempts}).");
+                
+                bool placementSucceeded = false;
+                yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved => placementSucceeded = moved));
+                
+                if (placementSucceeded)
                 {
-                    teleported = TravelButtonUI.AttemptTeleportToPositionSafe(finalPos);
-                    if (teleported)
-                    {
-                        TBLog.Info("TeleportManager: AttemptTeleportToPositionSafe reported success.");
-                        break;
-                    }
-                    else
-                    {
-                        TBLog.Warn($"TeleportManager: attempt {attempt} failed (AttemptTeleportToPositionSafe returned false).");
-                    }
+                    TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
+                    teleported = true;
+                    break;
                 }
-                catch (Exception ex)
+                else
                 {
-                    TBLog.Warn("TeleportManager: AttemptTeleportToPositionSafe threw: " + ex.Message);
+                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (player did not move).");
                 }
 
                 float retryDelay = 0.25f + 0.15f * attempt;
