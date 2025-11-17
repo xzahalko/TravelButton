@@ -3303,12 +3303,12 @@ public partial class TravelButtonUI : MonoBehaviour
                     try
                     {
                         //DumpTravelRelevantState("before-persist-fallback");
-                        TravelButton.PersistCitiesToConfigUsingUnity(); // whatever method you have
-                        TBLog.Info("PersistCitiesToConfig: succeeded.");
+                        TravelButton.PersistCitiesToPluginFolder(); // whatever method you have
+                        TBLog.Info("PersistCitiesToPluginFolder: succeeded.");
                     }
                     catch (Exception ex)
                     {
-                        TBLog.Warn("PersistCitiesToConfig failed - skipping persistence to avoid corrupting runtime state: " + ex);
+                        TBLog.Warn("PersistCitiesToPluginFolder failed - skipping persistence to avoid corrupting runtime state: " + ex);
                         // do NOT clear or overwrite visited state here
                     }
                     return;
@@ -3357,7 +3357,7 @@ public partial class TravelButtonUI : MonoBehaviour
                             ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                         }
 
-                        try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
+                        try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
 
                         try
                         {
@@ -4622,7 +4622,7 @@ public partial class TravelButtonUI : MonoBehaviour
             if (!city.visited) // use direct member if it exists
             {
                 city.visited = true;
-                TravelButton.PersistCitiesToConfigUsingUnity();
+                TravelButton.PersistCitiesToPluginFolder();
                 TBLog.Info($"Marked and persisted visited for '{city.name}' (simple).");
             }
         }
@@ -6941,7 +6941,7 @@ public partial class TravelButtonUI : MonoBehaviour
                 ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
             }
 
-            try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
+            try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
 
             try
             {

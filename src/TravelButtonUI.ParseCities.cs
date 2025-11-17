@@ -14,52 +14,29 @@ public partial class TravelButtonUI : MonoBehaviour
     // Replace your existing JSON-loading code with something like this.
     // jsonPath should be the path you wrote previously (e.g. BepInEx/config/TravelButton_Cities.json).
     // Returns the parsed list or null on failure.
-    private List<CityEntry> LoadCitiesFromJson(string jsonPath)
+    /// <summary>
+    /// Loads the TravelButton_Cities.json from the plugin folder (next to DLL).
+    /// Returns file contents or null if not found/error.
+    /// </summary>
+    private string LoadCitiesJsonFromPluginFolder()
     {
+        var path = TravelButtonPlugin.GetCitiesJsonPath();
         try
         {
-            if (!File.Exists(jsonPath))
+            if (File.Exists(path))
             {
-                TBLog.Warn($"LoadCitiesFromJson: file not found: {jsonPath}");
+                TBLog.Info($"[TravelButton] LoadCitiesFromJson: loading cities JSON from: {path}");
+                return File.ReadAllText(path);
+            }
+            else
+            {
+                TBLog.Info($"[TravelButton] LoadCitiesFromJson: cities JSON not found at {path}");
                 return null;
             }
-
-            string jsonText = File.ReadAllText(jsonPath);
-            if (string.IsNullOrWhiteSpace(jsonText))
-            {
-                TBLog.Warn($"LoadCitiesFromJson: file empty: {jsonPath}");
-                return null;
-            }
-
-            // Deserialize into typed objects; coords will be float[] if the JSON numbers are parseable as floats.
-            CitiesRoot root = JsonConvert.DeserializeObject<CitiesRoot>(jsonText);
-            if (root == null || root.cities == null)
-            {
-                TBLog.Warn("LoadCitiesFromJson: deserialized root or cities is null.");
-                return null;
-            }
-
-            // Defensive: ensure coords arrays are float[] not double[] (handle mixed-number JSON)
-            foreach (var c in root.cities)
-            {
-                if (c.coords == null)
-                {
-                    // optional: try to read fallback fields or log
-                    TBLog.Info($"LoadCitiesFromJson: city '{c.name}' has no coords.");
-                }
-            }
-
-            TBLog.Info($"LoadCitiesFromJson: loaded {root.cities.Count} cities from {jsonPath}");
-            return root.cities;
-        }
-        catch (JsonException jex)
-        {
-            TBLog.Warn("LoadCitiesFromJson: JSON parse error: " + jex);
-            return null;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("LoadCitiesFromJson: unexpected error: " + ex);
+            TBLog.Warn("[TravelButton] LoadCitiesFromJson: read failed: " + ex);
             return null;
         }
     }

@@ -13,6 +13,7 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using static TravelButton;
+using Newtonsoft.Json;
 
 //
 // TravelButtonMod.cs
@@ -37,6 +38,21 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<int>> bex_cityPrice = new Dictionary<string, BepInEx.Configuration.ConfigEntry<int>>(StringComparer.InvariantCultureIgnoreCase);
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityVisited = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
 
+    // Filenames used by the plugin
+    private const string CitiesJsonFileName = "TravelButton_Cities.json";
+    private const string LegacyCfgFileName = "cz.valheimskal.travelbutton.cfg";
+
+    /// <summary>
+    /// Directory that contains the plugin DLL. Detected at runtime from Assembly location.
+    /// </summary>
+    private static string PluginTravelButtonFolder => GetPluginFolder();
+
+    /// <summary>
+    /// Detect BepInEx config folder by walking up from the plugin folder to the BepInEx root, returning its "config" child.
+    /// Falls back to AppDomain base directory + BepInEx/config when not discovered.
+    /// </summary>
+    private static string PreferredBepInExConfigFolder => GetBepInExConfigFolder();
+
     // Optional prefix to make entries easy to find in BepInEx logs
     // Set by the plugin during Awake: e.g. TravelButtonPlugin.Initialize(this.Logger);
     public static ManualLogSource LogSource { get; private set; }
@@ -60,6 +76,127 @@ public class TravelButtonPlugin : BaseUnityPlugin
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
         try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); } catch { /* swallow */ }
+    }
+
+    /// <summary>
+    /// Full path to TravelButton_Cities.json (expected next to the plugin DLL).
+    /// </summary>
+    public static string GetCitiesJsonPath()
+    {
+        try
+        {
+            var dir = PluginTravelButtonFolder;
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            return Path.Combine(dir ?? string.Empty, CitiesJsonFileName);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetCitiesJsonPath: failed to construct path: " + ex);
+            return CitiesJsonFileName;
+        }
+    }
+
+    /// <summary>
+    /// Full path to the legacy .cfg file under the detected BepInEx config folder.
+    /// </summary>
+    public static string GetLegacyCfgPath()
+    {
+        try
+        {
+            var dir = PreferredBepInExConfigFolder;
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            return Path.Combine(dir ?? string.Empty, LegacyCfgFileName);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetLegacyCfgPath: failed to construct path: " + ex);
+            return LegacyCfgFileName;
+        }
+    }
+
+    private static string GetPluginFolder()
+    {
+        try
+        {
+            // Use the location of this assembly (the DLL) to find the plugin directory.
+            var asm = Assembly.GetExecutingAssembly();
+            var asmPath = asm?.Location;
+            if (!string.IsNullOrEmpty(asmPath))
+            {
+                var dir = Path.GetDirectoryName(asmPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    TBLog.Info($"[TravelButton] Detected plugin folder from assembly location: {dir}");
+                    return dir;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetPluginFolder: assembly-based detection failed: " + ex);
+        }
+
+        // Fallback: use current base directory (game root) + BepInEx/plugins/TravelButton
+        try
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory;
+            var fallback = Path.Combine(baseDir, "BepInEx", "plugins", "TravelButton");
+            TBLog.Warn($"[TravelButton] GetPluginFolder: falling back to guessed path: {fallback}");
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetPluginFolder: fallback path construction failed: " + ex);
+            return string.Empty;
+        }
+    }
+
+    private static string GetBepInExConfigFolder()
+    {
+        try
+        {
+            // If we have a plugin folder discovered, walk upward to find BepInEx root
+            var pluginFolder = GetPluginFolder();
+            if (!string.IsNullOrEmpty(pluginFolder))
+            {
+                var di = new DirectoryInfo(pluginFolder);
+                DirectoryInfo current = di;
+                while (current != null)
+                {
+                    if (string.Equals(current.Name, "BepInEx", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var cfg = Path.Combine(current.FullName, "config");
+                        TBLog.Info($"[TravelButton] Detected BepInEx config folder by walking up from plugin folder: {cfg}");
+                        return cfg;
+                    }
+                    current = current.Parent;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetBepInExConfigFolder: walking-from-plugin detection failed: " + ex);
+        }
+
+        // Fallback: base directory + BepInEx/config
+        try
+        {
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? Environment.CurrentDirectory;
+            var fallbackCfg = Path.Combine(baseDir, "BepInEx", "config");
+            TBLog.Warn($"[TravelButton] GetBepInExConfigFolder: falling back to guessed path: {fallbackCfg}");
+            return fallbackCfg;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButton] GetBepInExConfigFolder: fallback path construction failed: " + ex);
+            return string.Empty;
+        }
     }
 
     // static wrappers - always delegate safely to TravelButtonPlugin
@@ -560,12 +697,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             {
                                 try
                                 {
-                                    PersistCitiesToConfigUsingUnity();
+                                    PersistCitiesToPluginFolder();
                                     LInfo("Persisted migrated TravelButton_Cities.json to disk.");
                                 }
                                 catch (Exception ex)
                                 {
-                                    LWarn("PersistCitiesToConfigUsingUnity failed while persisting migrated JSON: " + ex.Message);
+                                    LWarn("PersistCitiesToPluginFolder failed while persisting migrated JSON: " + ex.Message);
                                 }
                             }
                         }
@@ -727,94 +864,98 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                     TBLog.Info($"MarkCityVisitedByScene: checking city='{city.name}' sceneName='{city.sceneName}' targetGameObjectName='{city.targetGameObjectName}'");
 
-                    // compare against city.sceneName and maybe other identifiers
-                    if (string.Equals(city.sceneName, sceneName, StringComparison.OrdinalIgnoreCase)
-                     || string.Equals(city.targetGameObjectName, sceneName, StringComparison.OrdinalIgnoreCase))
+                    // compare against city.sceneName and targetGameObjectName (case-insensitive)
+                    if (!string.Equals(city.sceneName, sceneName, StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(city.targetGameObjectName, sceneName, StringComparison.OrdinalIgnoreCase))
                     {
-                        TBLog.Info($"MarkCityVisitedByScene: scene matches city '{city.name}' (sceneName='{city.sceneName}' target='{city.targetGameObjectName}')");
-
-                        // Try property first (check both common casings)
-                        var type = city.GetType();
-                        var p = type.GetProperty("Visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                                ?? type.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                        if (p != null && p.CanWrite && p.PropertyType == typeof(bool))
-                        {
-                            try
-                            {
-                                var current = (bool)p.GetValue(city, null);
-                                TBLog.Info($"MarkCityVisitedByScene: property '{p.Name}' current value={current} on city '{city.name}'");
-                                if (!current)
-                                {
-                                    p.SetValue(city, true, null);
-                                    TBLog.Info($"MarkCityVisitedByScene: set property '{p.Name}' = true on city '{city.name}'");
-                                    anyChange = true;
-
-                                    // Mirror MarkCityVisited behavior: persist per-city visited in cfg
-                                    try
-                                    {
-                                        WriteVisitedFlagToCfg(city.name, true);
-                                    }
-                                    catch (Exception exCfg)
-                                    {
-                                        TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
-                                    }
-                                }
-                                else
-                                {
-                                    TBLog.Info($"MarkCityVisitedByScene: property '{p.Name}' already true for city '{city.name}'");
-                                }
-                            }
-                            catch (Exception exProp)
-                            {
-                                TBLog.Warn($"MarkCityVisitedByScene: failed to set property '{p.Name}' on city '{city.name}': {exProp.Message}");
-                            }
-
-                            continue; // done with this city
-                        }
-
-                        // Fallback to field (check both casings)
-                        var f = type.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                                ?? type.GetField("Visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-
-                        if (f != null && f.FieldType == typeof(bool))
-                        {
-                            try
-                            {
-                                var cur = (bool)f.GetValue(city);
-                                TBLog.Info($"MarkCityVisitedByScene: field '{f.Name}' current value={cur} on city '{city.name}'");
-                                if (!cur)
-                                {
-                                    f.SetValue(city, true);
-                                    TBLog.Info($"MarkCityVisitedByScene: set field '{f.Name}' = true on city '{city.name}'");
-                                    anyChange = true;
-
-                                    // Mirror MarkCityVisited behavior: persist per-city visited in cfg
-                                    try
-                                    {
-                                        WriteVisitedFlagToCfg(city.name, true);
-                                    }
-                                    catch (Exception exCfg)
-                                    {
-                                        TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
-                                    }
-                                }
-                                else
-                                {
-                                    TBLog.Info($"MarkCityVisitedByScene: field '{f.Name}' already true for city '{city.name}'");
-                                }
-                            }
-                            catch (Exception exField)
-                            {
-                                TBLog.Warn($"MarkCityVisitedByScene: failed to set field '{f.Name}' on city '{city.name}': {exField.Message}");
-                            }
-
-                            continue;
-                        }
-
-                        // If neither property nor field found, log it for diagnostics
-                        TBLog.Info($"MarkCityVisitedByScene: no 'visited' property/field found on city type '{type.FullName}' for city '{city.name}'");
+                        // not a match -> continue
+                        continue;
                     }
+
+                    TBLog.Info($"MarkCityVisitedByScene: scene matches city '{city.name}' (sceneName='{city.sceneName}' target='{city.targetGameObjectName}')");
+
+                    var type = city.GetType();
+
+                    // Try property first (Visited / visited)
+                    var prop = type.GetProperty("Visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                            ?? type.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+                    if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
+                    {
+                        try
+                        {
+                            var current = (bool)prop.GetValue(city, null);
+                            TBLog.Info($"MarkCityVisitedByScene: property '{prop.Name}' current value={current} on city '{city.name}'");
+                            if (!current)
+                            {
+                                prop.SetValue(city, true, null);
+                                TBLog.Info($"MarkCityVisitedByScene: set property '{prop.Name}' = true on city '{city.name}'");
+                                anyChange = true;
+
+                                // Mirror MarkCityVisited behavior: persist per-city visited in cfg (best-effort)
+                                try
+                                {
+                                    WriteVisitedFlagToCfg(city.name, true);
+                                }
+                                catch (Exception exCfg)
+                                {
+                                    TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
+                                }
+                            }
+                            else
+                            {
+                                TBLog.Info($"MarkCityVisitedByScene: property '{prop.Name}' already true for city '{city.name}'");
+                            }
+                        }
+                        catch (Exception exProp)
+                        {
+                            TBLog.Warn($"MarkCityVisitedByScene: failed to get/set property '{prop.Name}' on city '{city.name}': {exProp.Message}");
+                        }
+
+                        continue; // done with this city
+                    }
+
+                    // Fallback to field (visited / Visited)
+                    var field = type.GetField("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                            ?? type.GetField("Visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+                    if (field != null && field.FieldType == typeof(bool))
+                    {
+                        try
+                        {
+                            var cur = (bool)field.GetValue(city);
+                            TBLog.Info($"MarkCityVisitedByScene: field '{field.Name}' current value={cur} on city '{city.name}'");
+                            if (!cur)
+                            {
+                                field.SetValue(city, true);
+                                TBLog.Info($"MarkCityVisitedByScene: set field '{field.Name}' = true on city '{city.name}'");
+                                anyChange = true;
+
+                                // Mirror MarkCityVisited behavior: persist per-city visited in cfg (best-effort)
+                                try
+                                {
+                                    WriteVisitedFlagToCfg(city.name, true);
+                                }
+                                catch (Exception exCfg)
+                                {
+                                    TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
+                                }
+                            }
+                            else
+                            {
+                                TBLog.Info($"MarkCityVisitedByScene: field '{field.Name}' already true for city '{city.name}'");
+                            }
+                        }
+                        catch (Exception exField)
+                        {
+                            TBLog.Warn($"MarkCityVisitedByScene: failed to get/set field '{field.Name}' on city '{city.name}': {exField.Message}");
+                        }
+
+                        continue;
+                    }
+
+                    // If neither property nor field found, log for diagnostics
+                    TBLog.Info($"MarkCityVisitedByScene: no 'visited' property/field found on city type '{type.FullName}' for city '{city.name}'");
                 }
                 catch (Exception exCity)
                 {
@@ -827,12 +968,19 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 try
                 {
-                    // keep original behavior: persist the Cities JSON/config
-                    TravelButton.PersistCitiesToConfigUsingUnity();
+                    // Persist canonical JSON next to plugin DLL using the centralized method
+                    TravelButton.PersistCitiesToPluginFolder();
                     TBLog.Info($"MarkCityVisitedByScene: marked and persisted visited for scene '{sceneName}'");
 
-                    // NEW: ensure UI and lookup are refreshed now that we changed & persisted visited flags
-                    NotifyVisitedFlagsChanged();
+                    // Ensure UI and lookup are refreshed now that visited flags changed
+                    try
+                    {
+                        NotifyVisitedFlagsChanged();
+                    }
+                    catch (Exception exNotify)
+                    {
+                        TBLog.Warn("MarkCityVisitedByScene: NotifyVisitedFlagsChanged threw: " + exNotify.Message);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -909,7 +1057,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 try
                 {
                     // Persist only on change (existing behavior)
-                    TravelButton.PersistCitiesToConfigUsingUnity();
+                    TravelButton.PersistCitiesToPluginFolder();
                 }
                 catch (System.Exception ex)
                 {
@@ -1463,7 +1611,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 localCity.enabled = localEnabledKey.Value;
                                 TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Enabled = {localEnabledKey.Value}");
                                 try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                                try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
+                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Enabled SettingChanged handler failed: " + ex.Message); }
                         };
@@ -1479,7 +1627,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 localCity.price = localPriceKey.Value;
                                 TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Price = {localPriceKey.Value}");
                                 try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                                try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
+                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
                         };
@@ -1512,7 +1660,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 catch { /* ignore reflection errors */ }
 
                                 TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Visited = {newVal}");
-                                try { TravelButton.PersistCitiesToConfigUsingUnity(); } catch { }
+                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
                         };
@@ -1762,7 +1910,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     try
                     {
                         city.enabled = enabledKey.Value;
-                        TravelButton.PersistCitiesToConfigUsingUnity();
+                        TravelButton.PersistCitiesToPluginFolder();
                     }
                     catch (Exception ex) { TBLog.Warn("Enabled SettingChanged handler failed: " + ex.Message); }
                 };
@@ -1771,7 +1919,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     try
                     {
                         city.price = priceKey.Value;
-                        TravelButton.PersistCitiesToConfigUsingUnity();
+                        TravelButton.PersistCitiesToPluginFolder();
                     }
                     catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
                 };
@@ -1795,7 +1943,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         }
                         catch { /* ignore */ }
 
-                        TravelButton.PersistCitiesToConfigUsingUnity();
+                        TravelButton.PersistCitiesToPluginFolder();
                     }
                     catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
                 };
@@ -3221,247 +3369,23 @@ public static class TravelButton
         public string desc;
         public bool visited;
     }
-
-    // Debug serializer output. Safe: writes preview only to temp and logs details.
-    public static bool PersistCitiesToConfigUsingUnity_debug()
+     
+    // It reuses your robust mapping logic but uses Newtonsoft.Json to produce the final JSON,
+    // and writes only a single canonical copy next to the plugin DLL (GetCitiesJsonPath()).
+    // Optionally a legacy cfg can be written into the detected BepInEx config folder (GetLegacyCfgPath()).
+    public static bool PersistCitiesToPluginFolder()
     {
         try
         {
-            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: begin");
-
-            // Build wrapper and populate explicitly
-            var tc = new TravelConfig();
-            tc.cities = new System.Collections.Generic.List<CityConfig>();
-
-            var runtimeCities = TravelButton.Cities ?? new List<TravelButton.City>();
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelButton.Cities runtime count = {runtimeCities.Count}");
-
-            foreach (var c in runtimeCities)
-            {
-                try
-                {
-                    string descValue = null;
-                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
-
-                    // robust price extraction (int/int?/other numerics)
-                    int priceSentinel = -1;
-                    try
-                    {
-                        if (c != null)
-                        {
-                            var t = c.GetType();
-                            object raw = null;
-                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                            if (pinfo != null) raw = pinfo.GetValue(c, null);
-                            else
-                            {
-                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                                if (finfo != null) raw = finfo.GetValue(c);
-                            }
-
-                            if (raw != null)
-                            {
-                                if (raw is int ri) priceSentinel = ri;
-                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
-                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
-                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
-                                else priceSentinel = Convert.ToInt32(raw);
-                            }
-                        }
-                    }
-                    catch { priceSentinel = -1; }
-
-                    var cc = new CityConfig
-                    {
-                        name = c?.name ?? string.Empty,
-                        price = priceSentinel,
-                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
-                        targetGameObjectName = c?.targetGameObjectName,
-                        sceneName = c?.sceneName,
-                        desc = descValue ?? string.Empty,
-                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
-                    };
-
-                    TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: adding CityConfig name='{cc.name}' price={cc.price} visited={cc.visited} coords={(cc.coords == null ? "null" : $"len={cc.coords.Length}")} desc='{(string.IsNullOrEmpty(cc.desc) ? "[empty]" : cc.desc)}'");
-
-                    tc.cities.Add(cc);
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: mapping error: " + ex.Message);
-                }
-            }
-
-            // Type info checks
-            var tcType = tc.GetType();
-            var ccType = typeof(CityConfig);
-            bool tcSerializable = Attribute.IsDefined(tcType, typeof(SerializableAttribute));
-            bool ccSerializable = Attribute.IsDefined(ccType, typeof(SerializableAttribute));
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelConfig type = {tcType.FullName}, assembly = {tcType.Assembly.FullName}, [Serializable]={tcSerializable}");
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: CityConfig type = {ccType.FullName}, assembly = {ccType.Assembly.FullName}, [Serializable]={ccSerializable}");
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: wrapper.cities is null? {tc.cities == null} count={(tc.cities == null ? -1 : tc.cities.Count)}");
-
-            // Inspect first few CityConfig objects
-            for (int i = 0; i < (tc.cities?.Count ?? 0); i++)
-            {
-                var x = tc.cities[i];
-                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: cities[{i}] name='{x.name}' price={x.price} visited={x.visited} scene='{x.sceneName}' target='{x.targetGameObjectName}' descLen={(x.desc?.Length ?? 0)} coords={(x.coords == null ? "null" : string.Join(",", x.coords))}");
-            }
-
-            // Serialize preview
-            string preview = null;
-            try
-            {
-                preview = UnityEngine.JsonUtility.ToJson(tc, true);
-                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: JsonUtility.ToJson length={preview?.Length ?? 0}");
-                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: preview (truncated 2000 chars): " + (preview == null ? "[null]" : (preview.Length > 2000 ? preview.Substring(0, 2000) + "..." : preview)));
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: JsonUtility.ToJson threw: " + ex.Message);
-            }
-
-            // write to temp file for inspection
-            try
-            {
-                var temp = Path.Combine(Path.GetTempPath(), "TravelButton_Cities_debug.json");
-                File.WriteAllText(temp, preview ?? "{}", System.Text.Encoding.UTF8);
-                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: wrote preview to temp: " + temp);
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: failed to write temp preview: " + ex.Message);
-            }
-
-            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: end");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: unexpected: " + ex);
-            return false;
-        }
-    }
-
-    // Test-only helper: does not overwrite config files (writes preview to temp folder)
-    public static bool PersistCitiesToConfigUsingUnity_test()
-    {
-        try
-        {
-            TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: begin");
-
-            var tc = TravelConfig.Default() ?? new TravelConfig();
-            tc.cities = new System.Collections.Generic.List<CityConfig>();
-
-            var runtimeCities = TravelButton.Cities ?? new List<TravelButton.City>();
-            foreach (var c in runtimeCities)
-            {
-                try
-                {
-                    string descValue = null;
-                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
-
-                    // robust price extraction
-                    int priceSentinel = -1;
-                    try
-                    {
-                        if (c != null)
-                        {
-                            var t = c.GetType();
-                            object raw = null;
-                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                            if (pinfo != null) raw = pinfo.GetValue(c, null);
-                            else
-                            {
-                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                                if (finfo != null) raw = finfo.GetValue(c);
-                            }
-
-                            if (raw != null)
-                            {
-                                if (raw is int ri) priceSentinel = ri;
-                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
-                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
-                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
-                                else priceSentinel = Convert.ToInt32(raw);
-                            }
-                        }
-                    }
-                    catch { priceSentinel = -1; }
-
-                    var cc = new CityConfig
-                    {
-                        name = c?.name ?? string.Empty,
-                        price = priceSentinel,
-                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
-                        targetGameObjectName = c?.targetGameObjectName,
-                        sceneName = c?.sceneName,
-                        desc = descValue ?? string.Empty,
-                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
-                    };
-
-                    tc.cities.Add(cc);
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"PersistCitiesToConfigUsingUnity_TEST: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
-                }
-            }
-
-            string preview = null;
-            try
-            {
-                preview = UnityEngine.JsonUtility.ToJson(tc, true);
-                TBLog.Info($"PersistCitiesToConfigUsingUnity_TEST: json length={preview?.Length ?? 0}");
-                TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: preview: " + (preview?.Length > 800 ? preview.Substring(0, 800) + "..." : preview));
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: JsonUtility.ToJson failed: " + ex.Message);
-            }
-
-            // write to temp for inspection (safe)
-            try
-            {
-                var temp = Path.Combine(Path.GetTempPath(), "TravelButton_Cities_test.json");
-                File.WriteAllText(temp, preview ?? "{}", System.Text.Encoding.UTF8);
-                TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: wrote preview to temp file: " + temp);
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: failed to write preview to temp: " + ex.Message);
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: unexpected: " + ex);
-            return false;
-        }
-    }
-
-    // Update in-memory Cities -> config and save; useful if user toggles a city via UI/editor
-    // Replace or update PersistCitiesToConfig in src/TravelButtonMod.cs with the snippet below.
-    // This ensures the visited field is serialized and the plugin writes the TravelButton_Cities.json the plugin reads.
-    // It also reduces the misleading warning to Debug and logs the write path and basic serialized output info.
-    // Replace existing PersistCitiesToConfigUsingUnity with this manual-JSON writer
-    // Replace the existing PersistCitiesToConfigUsingUnity with this pretty-printing writer.
-    // PersistCitiesToConfigUsingUnity without backup (.bak) creation.
-    // Writes pretty-printed JSON to candidate paths and logs results, but does NOT copy or create .bak files.
-    public static bool PersistCitiesToConfigUsingUnity()
-    {
-        try
-        {
-            TBLog.Info("PersistCitiesToConfigUsingUnity: begin");
+            TBLog.Info("PersistCitiesToPluginFolder: begin");
 
             if (TravelButton.Cities == null)
             {
-                TBLog.Info("PersistCitiesToConfigUsingUnity: TravelButton.Cities == null; nothing to persist.");
+                TBLog.Info("PersistCitiesToPluginFolder: TravelButton.Cities == null; nothing to persist.");
                 return false;
             }
 
-            // Build CityConfig list from runtime cities
+            // Build CityConfig list from runtime cities (keeps your robust mapping)
             var cityConfigs = new System.Collections.Generic.List<CityConfig>();
             foreach (var c in TravelButton.Cities)
             {
@@ -3513,172 +3437,91 @@ public static class TravelButton
                 }
                 catch (Exception ex)
                 {
-                    TBLog.Warn($"PersistCitiesToConfigUsingUnity: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
+                    TBLog.Warn($"PersistCitiesToPluginFolder: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
                 }
             }
 
-            // Helpers for JSON escaping and numeric formatting
-            string SerializeString(string s)
-            {
-                if (s == null) return "null";
-                return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
-            }
+            // Create the JSON structure { "cities": [ ... ] }
+            var wrapper = new { cities = cityConfigs };
 
-            string SerializeFloatArray(float[] arr)
-            {
-                if (arr == null) return "null";
-                var sbf = new System.Text.StringBuilder();
-                sbf.Append("[");
-                for (int i = 0; i < arr.Length; i++)
-                {
-                    if (i > 0) sbf.Append(", ");
-                    sbf.Append(arr[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
-                }
-                sbf.Append("]");
-                return sbf.ToString();
-            }
-
-            // Pretty JSON builder (2-space indentation)
-            var sb = new System.Text.StringBuilder();
-            string indent(int n) => new string(' ', n * 2);
-
-            sb.AppendLine("{");
-            sb.AppendLine(indent(1) + "\"cities\": [");
-
-            for (int i = 0; i < cityConfigs.Count; i++)
-            {
-                var cc = cityConfigs[i];
-                sb.AppendLine(indent(2) + "{");
-
-                var fields = new System.Collections.Generic.List<string>();
-
-                // name (always)
-                fields.Add(indent(3) + "\"name\": " + SerializeString(cc.name ?? string.Empty));
-
-                // price (only if >= 0)
-                if (cc.price >= 0)
-                    fields.Add(indent(3) + "\"price\": " + cc.price.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-                // coords
-                if (cc.coords != null)
-                    fields.Add(indent(3) + "\"coords\": " + SerializeFloatArray(cc.coords));
-
-                // targetGameObjectName
-                if (!string.IsNullOrEmpty(cc.targetGameObjectName))
-                    fields.Add(indent(3) + "\"targetGameObjectName\": " + SerializeString(cc.targetGameObjectName));
-
-                // sceneName
-                if (!string.IsNullOrEmpty(cc.sceneName))
-                    fields.Add(indent(3) + "\"sceneName\": " + SerializeString(cc.sceneName));
-
-                // desc (include even if empty to preserve field)
-                fields.Add(indent(3) + "\"desc\": " + SerializeString(cc.desc ?? string.Empty));
-
-                // visited
-                fields.Add(indent(3) + "\"visited\": " + (cc.visited ? "true" : "false"));
-
-                // join fields with commas and newlines
-                for (int f = 0; f < fields.Count; f++)
-                {
-                    var line = fields[f] + (f < fields.Count - 1 ? "," : "");
-                    sb.AppendLine(line);
-                }
-
-                sb.Append(indent(2) + "}" + (i < cityConfigs.Count - 1 ? "," : ""));
-                sb.AppendLine();
-            }
-
-            sb.AppendLine(indent(1) + "]");
-            sb.AppendLine("}");
-
-            string prettyJson = sb.ToString();
-
-            TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote TravelButton_Cities.json ({prettyJson.Length} bytes) to: {TravelButton.ConfigFilePath}");
-
-            // Build candidate write paths
-            var writeCandidates = new System.Collections.Generic.List<string>();
+            // Serialize with Newtonsoft.Json (indented, culture-invariant default for numbers)
+            string prettyJson;
             try
             {
-                var cfgPath = TravelButton.ConfigFilePath;
-                if (!string.IsNullOrEmpty(cfgPath))
-                {
-                    try
-                    {
-                        var maybeDir = Path.GetDirectoryName(cfgPath);
-                        if (!string.IsNullOrEmpty(maybeDir))
-                            writeCandidates.Add(Path.Combine(maybeDir, "TravelButton_Cities.json"));
-                    }
-                    catch { }
-                }
-
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-                writeCandidates.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-                writeCandidates.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
-
-                try
-                {
-                    var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                    if (!string.IsNullOrEmpty(roaming))
-                    {
-                        writeCandidates.Add(Path.Combine(roaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "TravelButton_Cities.json"));
-                        writeCandidates.Add(Path.Combine(roaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "plugins", "TravelButton", "TravelButton_Cities.json"));
-                    }
-                }
-                catch { }
-
-                try
-                {
-                    var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
-                    if (!string.IsNullOrEmpty(asmDir)) writeCandidates.Add(Path.Combine(asmDir, "TravelButton_Cities.json"));
-                }
-                catch { }
-                try { writeCandidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+                prettyJson = JsonConvert.SerializeObject(wrapper, Formatting.Indented);
             }
-            catch { }
-
-            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var wroteAny = false;
-            foreach (var candidate in writeCandidates)
+            catch (Exception ex)
             {
-                if (string.IsNullOrEmpty(candidate)) continue;
-                string full;
-                try { full = Path.GetFullPath(candidate); } catch { full = candidate; }
-                if (tried.Contains(full)) continue;
-                tried.Add(full);
+                TBLog.Warn("PersistCitiesToPluginFolder: JSON serialization failed: " + ex);
+                return false;
+            }
 
+            // Determine canonical JSON path (next to plugin DLL)
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            TBLog.Info($"PersistCitiesToPluginFolder: prepared TravelButton_Cities.json ({prettyJson.Length} bytes) to write at: {jsonPath}");
+
+            var wroteAny = false;
+
+            // Ensure directory exists and write JSON next to the plugin DLL
+            try
+            {
+                var dir = Path.GetDirectoryName(jsonPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PersistCitiesToPluginFolder: could not ensure directory for jsonPath: " + ex);
+            }
+
+            try
+            {
+                File.WriteAllText(jsonPath, prettyJson, System.Text.Encoding.UTF8);
+                TBLog.Info($"PersistCitiesToPluginFolder: wrote TravelButton_Cities.json to: {jsonPath}");
+                wroteAny = true;
+                try { TBLog.Info($"PersistCitiesToPluginFolder: wrote {new FileInfo(jsonPath).Length} bytes to: {jsonPath}"); } catch { }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"PersistCitiesToPluginFolder: write failed for {jsonPath}: {ex.Message}");
+            }
+
+            // Optionally also write the legacy cfg in BepInEx/config (single canonical location).
+            // If you need to persist a legacy .cfg format, produce the contents here (legacyCfgContents)
+            // and the method will write it only into the detected config folder.
+            string legacyCfgContents = null;
+            // Example: if you want to produce a minimal legacy-format marker, uncomment:
+            // legacyCfgContents = "# TravelButton legacy cfg - generated by plugin\n";
+
+            if (!string.IsNullOrEmpty(legacyCfgContents))
+            {
+                var legacyPath = TravelButtonPlugin.GetLegacyCfgPath();
                 try
                 {
-                    var dir = Path.GetDirectoryName(full);
-                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                        Directory.CreateDirectory(dir);
+                    var legDir = Path.GetDirectoryName(legacyPath);
+                    if (!string.IsNullOrEmpty(legDir) && !Directory.Exists(legDir))
+                        Directory.CreateDirectory(legDir);
                 }
                 catch { }
 
                 try
                 {
-                    // Directly overwrite without creating .bak files
-                    File.WriteAllText(full, prettyJson, System.Text.Encoding.UTF8);
-                    TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote TravelButton_Cities.json to: {full}");
-                    try
-                    {
-                        var bytes = new FileInfo(full).Length;
-                        TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote {bytes} bytes to: {full}");
-                    }
-                    catch { }
+                    File.WriteAllText(TravelButtonPlugin.GetLegacyCfgPath(), legacyCfgContents, System.Text.Encoding.UTF8);
+                    TBLog.Info($"PersistCitiesToPluginFolder: wrote legacy cfg to: {TravelButtonPlugin.GetLegacyCfgPath()}");
                     wroteAny = true;
                 }
                 catch (Exception ex)
                 {
-                    TBLog.Warn($"PersistCitiesToConfigUsingUnity: write failed for {full}: {ex.Message}");
+                    TBLog.Warn($"PersistCitiesToPluginFolder: failed to write legacy cfg: {ex.Message}");
                 }
             }
 
-            TBLog.Info("PersistCitiesToConfigUsingUnity: end. success=" + wroteAny);
+            TBLog.Info("PersistCitiesToPluginFolder: end. success=" + wroteAny);
             return wroteAny;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("PersistCitiesToConfigUsingUnity: unexpected error: " + ex);
+            TBLog.Warn("PersistCitiesToPluginFolder: unexpected error: " + ex);
             return false;
         }
     }
@@ -4045,7 +3888,7 @@ public static class TravelButton
                 catch { /* ignore reflection issues; still attempt persistence below */ }
 
                 // persist the city config (existing plugin method)
-                try { PersistCitiesToConfigUsingUnity(); } catch (Exception ex) { TBLog.Warn("OnSuccessfulTeleport: PersistCitiesToConfig failed: " + ex.Message); }
+                try { PersistCitiesToPluginFolder(); } catch (Exception ex) { TBLog.Warn("OnSuccessfulTeleport: PersistCitiesToConfig failed: " + ex.Message); }
             }
         }
         catch (Exception ex)

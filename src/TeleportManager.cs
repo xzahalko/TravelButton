@@ -256,7 +256,19 @@ public partial class TeleportManager : MonoBehaviour
             if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 grounded, navSearchRadius: 15f, maxGroundRay: 400f))
             {
                 TBLog.Info($"TeleportManager: immediate probe grounded to {grounded} (raw {finalPos}). Using that as final target.");
-                finalPos = grounded;
+                // If we have an explicit coords hint, prefer to respect its Y exactly (skip ground probe),
+                // because some saved coordinates may already include correct Y for the playable spot.
+                if (!haveCoordsHint)
+                {
+                    if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 groundedPos, navSearchRadius: 15f, maxGroundRay: 400f))
+                    {
+                        finalPos = groundedPos;
+                    }
+                }
+                else
+                {
+                    TBLog.Info("[TeleportManager] haveCoordsHint=true: using coords hint as-is (skipping immediate ground probe).");
+                }
             }
             else
             {

@@ -159,16 +159,70 @@ public static class TeleportHelpers
         Vector3 probeTarget = target;
         try
         {
-            RaycastHit hit;
-            Vector3 rayStart = new Vector3(target.x, target.y + 50f, target.z);
-            if (Physics.Raycast(rayStart, Vector3.down, out hit, GROUNDED_RAY_MAX, ~0, QueryTriggerInteraction.Ignore))
+            // Prefer NavMesh if available near the target
+            NavMeshHit navHit = new NavMeshHit(); // initialize to avoid CS0165
+            bool navFound = false;
+            try
             {
-                probeTarget = new Vector3(target.x, hit.point.y, target.z);
-                TBLog.Info($"AttemptTeleportToPositionSafe: ground probe hit at {hit.point}; using {probeTarget}.");
+                // small radius sample first (5m); adjust if needed
+                navFound = NavMesh.SamplePosition(target, out navHit, 5.0f, NavMesh.AllAreas);
+            }
+            catch (Exception exNav)
+            {
+                TBLog.Warn("AttemptTeleportToPositionSafe: NavMesh.SamplePosition threw: " + exNav);
+                navFound = false;
+            }
+
+            if (navFound)
+            {
+                TBLog.Info($"AttemptTeleportToPositionSafe: NavMesh.SamplePosition found nearest nav at {navHit.position} (dist={Vector3.Distance(navHit.position, target):F2})");
+                probeTarget = new Vector3(navHit.position.x, navHit.position.y, navHit.position.z);
             }
             else
             {
-                TBLog.Info($"AttemptTeleportToPositionSafe: ground probe did not find ground below {target}.");
+                // Detailed raycast probe from high above the target straight down.
+                RaycastHit[] hits;
+                Vector3 rayStart = new Vector3(target.x, target.y + 200f, target.z);
+                try
+                {
+                    hits = Physics.RaycastAll(rayStart, Vector3.down, 400f, ~0, QueryTriggerInteraction.Ignore);
+                }
+                catch (Exception exRay)
+                {
+                    TBLog.Warn("AttemptTeleportToPositionSafe: RaycastAll threw: " + exRay);
+                    hits = null;
+                }
+
+                if (hits != null && hits.Length > 0)
+                {
+                    Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+                    var hit = hits[0];
+                    string colliderInfo = hit.collider != null ? $"{hit.collider.gameObject.name} (layer={hit.collider.gameObject.layer})" : "null";
+                    TBLog.Info($"AttemptTeleportToPositionSafe: RaycastAll hit closest collider '{colliderInfo}' at point {hit.point} normal={hit.normal}");
+                    probeTarget = new Vector3(target.x, hit.point.y, target.z);
+
+                    // Extra debug for other hits
+                    for (int i = 0; i < hits.Length; i++)
+                    {
+                        var h = hits[i];
+                        TBLog.Info($"AttemptTeleportToPositionSafe: RaycastAll [{i}] collider={(h.collider != null ? h.collider.gameObject.name : "null")} point={h.point} dist={h.distance:F2}");
+                    }
+                }
+                else
+                {
+                    TBLog.Info($"AttemptTeleportToPositionSafe: RaycastAll did not hit any collider below {target} (rayStart={rayStart}).");
+                }
+            }
+
+            // Plausibility check
+            float yDiff = Math.Abs(probeTarget.y - target.y);
+            if (yDiff > 50f)
+            {
+                TBLog.Warn($"AttemptTeleportToPositionSafe: ground Y {probeTarget.y:F2} differs from requested Y {target.y:F2} by {yDiff:F2}m — suspicious. Consider inspecting collider logs or clamping.");
+            }
+            else
+            {
+                TBLog.Info($"AttemptTeleportToPositionSafe: ground probe chose y={probeTarget.y:F2} (diff {yDiff:F2}m)");
             }
         }
         catch (Exception ex)
