@@ -343,13 +343,34 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     else
                     {
                         // No visited flags in JSON - check if legacy .cfg exists and migrate if present
-                        var cfgPath = TravelButtonMod.ConfigFilePath;
-                        if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)" && File.Exists(cfgPath))
+                        // Check for legacy BepInEx .cfg file existence
+                        bool legacyCfgExists = false;
+                        try
+                        {
+                            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
+                            var cfgPaths = new[]
+                            {
+                                Path.Combine(baseDir, "BepInEx", "config", "com.xzahalko.travelbutton.cfg"),
+                                Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg")
+                            };
+                            
+                            foreach (var p in cfgPaths)
+                            {
+                                if (File.Exists(p))
+                                {
+                                    legacyCfgExists = true;
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                        
+                        if (legacyCfgExists)
                         {
                             try
                             {
                                 ApplyVisitedFlagsFromCfg();
-                                LInfo($"Migrated visited flags from .cfg ({cfgPath}) into TravelButton_Cities.json.");
+                                LInfo("Migrated visited flags from legacy .cfg into TravelButton_Cities.json.");
                                 
                                 try
                                 {
