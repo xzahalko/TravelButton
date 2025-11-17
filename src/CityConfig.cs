@@ -11,7 +11,8 @@ using UnityEngine;
 public class CityConfig
 {
     public string name;
-    public int? price; // nullable so omission in JSON is explicit
+    // Use sentinel -1 to mean "price not specified" because UnityEngine.JsonUtility doesn't support Nullable<int>
+    public int price = -1;
     public float[] coords;
     public string targetGameObjectName;
     public string sceneName;
@@ -22,19 +23,15 @@ public class CityConfig
 
     public CityConfig() { }
 
-    // simple constructor for name-only calls
     public CityConfig(string name) { this.name = name; }
 
-    // Public property wrapper for visited to provide a clean getter/setter API.
-    // Use property Visited in code; the JSON serializer will still read/write the public field 'visited'.
     public bool Visited
     {
         get => visited;
         set => visited = value;
     }
 
-    // convenience constructor used by Default() and other initializers
-    public CityConfig(string name, int? price, float[] coords, string targetGameObjectName, string sceneName, string desc)
+    public CityConfig(string name, int price, float[] coords, string targetGameObjectName, string sceneName, string desc)
     {
         this.name = name;
         this.price = price;
@@ -85,7 +82,7 @@ public class TravelConfig
         }
         catch (Exception ex)
         {
-            Debug.LogError($"[TravelButton] CityConfig.LoadFromFile failed: {ex.Message}");
+            Debug.LogError($"[TravelButton] TravelConfig.LoadFromFile failed: {ex.Message}");
             return null;
         }
     }
@@ -100,7 +97,7 @@ public class TravelConfig
         try
         {
             // Find the "cities" property
-            int citiesIdx = json.IndexOf("\"cities\"");
+            int citiesIdx = json.IndexOf("\"cities\"", StringComparison.OrdinalIgnoreCase);
             if (citiesIdx < 0) return null;
 
             int colonIdx = json.IndexOf(':', citiesIdx);
@@ -223,7 +220,7 @@ public class TravelConfig
             city.desc = ExtractString(cityJson, "desc");
 
             int? priceValue = ExtractInt(cityJson, "price");
-            city.price = priceValue; // preserve null if absent
+            city.price = priceValue ?? -1; // use -1 sentinel when json omits price
 
             // Try to extract visited flag if present
             bool? visitedVal = ExtractBool(cityJson, "visited");
@@ -231,15 +228,16 @@ public class TravelConfig
 
             return city;
         }
-        catch
+        catch (Exception ex)
         {
+            Debug.LogError($"[TravelButton] ParseCityObject failed for {cityName}: {ex.Message}");
             return null;
         }
     }
 
     private static string ExtractString(string json, string propName)
     {
-        int idx = json.IndexOf($"\"{propName}\"");
+        int idx = json.IndexOf($"\"{propName}\"", StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
 
         int colonIdx = json.IndexOf(':', idx);
@@ -258,7 +256,7 @@ public class TravelConfig
 
     private static int? ExtractInt(string json, string propName)
     {
-        int idx = json.IndexOf($"\"{propName}\"");
+        int idx = json.IndexOf($"\"{propName}\"", StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
 
         int colonIdx = json.IndexOf(':', idx);
@@ -282,7 +280,7 @@ public class TravelConfig
 
     private static float[] ExtractFloatArray(string json, string propName)
     {
-        int idx = json.IndexOf($"\"{propName}\"");
+        int idx = json.IndexOf($"\"{propName}\"", StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
 
         int colonIdx = json.IndexOf(':', idx);
@@ -316,7 +314,7 @@ public class TravelConfig
 
     private static bool? ExtractBool(string json, string propName)
     {
-        int idx = json.IndexOf($"\"{propName}\"");
+        int idx = json.IndexOf($"\"{propName}\"", StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
         int colon = json.IndexOf(':', idx);
         if (colon < 0) return null;
@@ -333,6 +331,7 @@ public class TravelConfig
 
     private static int FindClosingQuote(string json, int startIdx)
     {
+        if (startIdx < 0 || startIdx >= json.Length) return -1;
         if (json[startIdx] != '"') return -1;
 
         for (int i = startIdx + 1; i < json.Length; i++)
@@ -346,6 +345,7 @@ public class TravelConfig
 
     private static int FindMatchingBrace(string json, int startIdx)
     {
+        if (startIdx < 0 || startIdx >= json.Length) return -1;
         if (json[startIdx] != '{') return -1;
 
         int depth = 0;
@@ -373,6 +373,7 @@ public class TravelConfig
 
     private static int FindMatchingBracket(string json, int startIdx)
     {
+        if (startIdx < 0 || startIdx >= json.Length) return -1;
         if (json[startIdx] != '[') return -1;
 
         int depth = 0;

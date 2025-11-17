@@ -187,7 +187,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                         // If JSON provides a price, set city.price so we can seed the Config.Bind default.
                         // BepInEx remains authoritative: EnsureBepInExConfigBindings will overwrite with the actual Config value.
-                        c.price = cc.price.HasValue ? cc.price.Value : (int?)null;
+                        if (cc.price >= 0)
+                            c.price = cc.price;      // assign actual price
+                        else
+                            c.price = (int?)null;    // no price present in JSON
 
                         // Do not set enabled from JSON; keep BepInEx authoritative.
                         c.enabled = false;
@@ -216,14 +219,139 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     TravelButton.Cities = new List<TravelButton.City>(map.Values);
                     LInfo($"Loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
 
-                    // Apply visited overrides from cz.valheimskal.travelbutton.cfg (if present)
+                    // --- Migration logic: migrate legacy .cfg visited flags only if JSON contains no visited=true entries ---
+                    bool jsonHadVisited = false;
                     try
                     {
-                        ApplyVisitedFlagsFromCfg();
+                        foreach (var cc in loaded.cities)
+                        {
+                            if (cc != null && cc.visited)
+                            {
+                                jsonHadVisited = true;
+                                break;
+                            }
+                        }
                     }
-                    catch (Exception ex)
+                    catch { jsonHadVisited = false; }
+
+                    if (jsonHadVisited)
                     {
-                        try { LogSource?.LogWarning(Prefix + "ApplyVisitedFlagsFromCfg failed: " + ex.Message); } catch { }
+                        LInfo("TravelButton_Cities.json already contains visited flags; skipping migration from legacy .cfg.");
+                    }
+                    else
+                    {
+                        // Determine candidate legacy cfg paths to check
+                        var candidateCfgs = new List<string>();
+                        try
+                        {
+                            // Primary best-effort value reported by the plugin
+                            if (!string.IsNullOrEmpty(TravelButton.ConfigFilePath))
+                                candidateCfgs.Add(TravelButton.ConfigFilePath);
+
+                            // Common BepInEx config location
+                            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
+                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
+                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton.cfg"));
+
+                            // r2modman / profile locations (from LogOutput earlier)
+                            try
+                            {
+                                var userRoaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                                if (!string.IsNullOrEmpty(userRoaming))
+                                {
+                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
+                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "TravelButton.cfg"));
+                                }
+                            }
+                            catch { /* ignore fallback generation errors */ }
+
+                            // also try TravelButton.ConfigFilePath directory if it's a file path
+                            try
+                            {
+                                var cfgPath = TravelButton.ConfigFilePath;
+                                if (!string.IsNullOrEmpty(cfgPath) && File.Exists(cfgPath))
+                                {
+                                    // we'll include it above; else try its directory for TravelButton_Cities.json sibling names
+                                    candidateCfgs.Add(cfgPath);
+                                }
+                                else if (!string.IsNullOrEmpty(cfgPath))
+                                {
+                                    try { var d = Path.GetDirectoryName(cfgPath); if (!string.IsNullOrEmpty(d)) candidateCfgs.Add(Path.Combine(d, "cz.valheimskal.travelbutton.cfg")); } catch { }
+                                }
+                            }
+                            catch { }
+                        }
+                        catch { }
+
+                        // De-duplicate and check existence
+                        var triedCfg = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        string foundCfg = null;
+                        foreach (var cp in candidateCfgs)
+                        {
+                            if (string.IsNullOrEmpty(cp)) continue;
+                            string full;
+                            try { full = Path.GetFullPath(cp); } catch { full = cp; }
+                            if (triedCfg.Contains(full)) continue;
+                            triedCfg.Add(full);
+
+                            bool exists = false;
+                            try { exists = File.Exists(full); } catch { exists = false; }
+                            LInfo($"Migration: checking legacy cfg candidate: '{full}' exists={exists}");
+
+                            if (exists)
+                            {
+                                foundCfg = full;
+                                break;
+                            }
+                        }
+
+                        if (string.IsNullOrEmpty(foundCfg))
+                        {
+                            LInfo("No legacy .cfg present to migrate visited flags from (checked TravelButton.ConfigFilePath and fallback locations).");
+                        }
+                        else
+                        {
+                            LInfo($"Legacy config detected at '{foundCfg}'. Applying visited flags from legacy .cfg into loaded JSON data (one-time migration).");
+
+                            bool applied = false;
+                            try
+                            {
+                                // If ApplyVisitedFlagsFromCfg reads TravelButton.ConfigFilePath internally, set it to foundCfg temporarily:
+                                try
+                                {
+                                    // only try if TravelButton exposes writable ConfigFilePath
+                                    var tbType = typeof(TravelButton);
+                                    var pf = tbType.GetField("ConfigFilePath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                                    if (pf != null)
+                                    {
+                                        try { pf.SetValue(null, foundCfg); LInfo("Migration: temporarily set TravelButton.ConfigFilePath to found cfg path for ApplyVisitedFlagsFromCfg."); } catch { /* ignore */ }
+                                    }
+                                }
+                                catch { /* ignore reflection attempt */ }
+
+                                ApplyVisitedFlagsFromCfg();
+                                applied = true;
+                                LInfo("ApplyVisitedFlagsFromCfg completed; now persisting migrated TravelButton_Cities.json to disk.");
+                            }
+                            catch (Exception ex)
+                            {
+                                applied = false;
+                                LWarn("ApplyVisitedFlagsFromCfg failed during migration: " + ex.Message);
+                            }
+
+                            if (applied)
+                            {
+                                try
+                                {
+                                    PersistCitiesToConfigUsingUnity();
+                                    LInfo("Persisted migrated TravelButton_Cities.json to disk.");
+                                }
+                                catch (Exception ex)
+                                {
+                                    LWarn("PersistCitiesToConfigUsingUnity failed while persisting migrated JSON: " + ex.Message);
+                                }
+                            }
+                        }
                     }
                 }
                 else
@@ -1660,8 +1788,10 @@ public static class TravelButton
     private static bool s_visitedKeysSetInitialized = false;
     // Lock used during visited-key initialization
     private static readonly object s_visitedKeysInitLock = new object();
+    private static HashSet<string> _visitedLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private static bool _visitedLookupPrepared = false;
 
-        public static void LogLoadedScenesAndRootObjects()
+    public static void LogLoadedScenesAndRootObjects()
     {
         try
         {
@@ -1893,6 +2023,7 @@ public static class TravelButton
         TBLog.Info($"AutoAssignSceneNameForCity: no loaded scene matched city '{cityName}'.");
     }
 
+/*
     public static bool HasPlayerVisited(TravelButton.City city)
     {
         if (city == null) return false;
@@ -1984,6 +2115,7 @@ public static class TravelButton
 
         return result;
     }
+*/
 
     // add to TravelButtonMod (src/TravelButtonMod.cs)
     public static void DumpCityInteractability()
@@ -2040,6 +2172,200 @@ public static class TravelButton
         {
             TBLog.Warn("DumpCityInteractability: top-level error: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Returns whether the player has visited the city (using the prepared visited lookup).
+    /// Normalizes by city name, sceneName and targetGameObjectName to favor matches from different sources.
+    /// </summary>
+    // Use this as the canonical object-based visited check. Replace the unused variant with this.
+    public static bool HasPlayerVisited(object cityObj)
+    {
+        if (cityObj == null) return false;
+
+        // ensure our plugin persisted lookup is prepared
+        PrepareVisitedLookup();
+
+        // Try to read name/scene/target from the runtime city object
+        string name = null;
+        string sceneName = null;
+        string targetName = null;
+
+        try
+        {
+            var t = cityObj.GetType();
+
+            // try properties first
+            try { name = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj, null)?.ToString(); } catch { }
+            try { sceneName = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj, null)?.ToString(); } catch { }
+            try { targetName = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj, null)?.ToString(); } catch { }
+
+            // fallback to fields if properties missing
+            if (string.IsNullOrEmpty(name))
+                try { name = t.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj)?.ToString(); } catch { }
+            if (string.IsNullOrEmpty(sceneName))
+                try { sceneName = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj)?.ToString(); } catch { }
+            if (string.IsNullOrEmpty(targetName))
+                try { targetName = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(cityObj)?.ToString(); } catch { }
+        }
+        catch { /* ignore reflection errors */ }
+
+        // 1) check our prepared plugin-persisted lookup (authoritative)
+        if (!string.IsNullOrEmpty(name) && _visitedLookup.Contains(NormalizeVisitedKey(name))) return true;
+        if (!string.IsNullOrEmpty(sceneName) && _visitedLookup.Contains(NormalizeVisitedKey(sceneName))) return true;
+        if (!string.IsNullOrEmpty(targetName) && _visitedLookup.Contains(NormalizeVisitedKey(targetName))) return true;
+
+        // 2) fallback: if we have a HasPlayerVisitedFast(string) function (existing), try it using normalized keys
+        //    Only use fallback when the plugin lookup didn't contain the key; this avoids conflicting signals.
+        try
+        {
+            if (!string.IsNullOrEmpty(name))
+            {
+                if (HasPlayerVisitedFast != null)
+                {
+                    if (HasPlayerVisitedFast(NormalizeVisitedKey(name))) return true;
+                }
+                else
+                {
+                    // if your fast function is a named static method (not a delegate), call it directly:
+                    // if (HasPlayerVisitedFast(NormalizeVisitedKey(name))) return true;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(sceneName))
+            {
+                if (HasPlayerVisitedFast != null)
+                {
+                    if (HasPlayerVisitedFast(NormalizeVisitedKey(sceneName))) return true;
+                }
+                // or direct call as above
+            }
+
+            if (!string.IsNullOrEmpty(targetName))
+            {
+                if (HasPlayerVisitedFast != null)
+                {
+                    if (HasPlayerVisitedFast(NormalizeVisitedKey(targetName))) return true;
+                }
+            }
+        }
+        catch { /* ignore fallback errors */ }
+
+        return false;
+    }
+
+
+    // Vrací true pokud by tlačítko města mělo být interaktivní (clickable) právě teď
+    private static bool ShouldBeInteractableNow(TravelButton.City city, Vector3 playerPos)
+    {
+        if (city == null) return false;
+
+        // 1) enabled in config
+        bool enabledByConfig = GetBoolMemberOrDefault(city, true, "enabled", "Enabled"); // nebo city.enabled
+
+        // 2) visited in history (from PrepareVisitedLookup / _visitedLookup)
+        // Normalize stejné klíče jako PrepareVisitedLookup používá
+        bool visitedInHistory = HasPlayerVisited(city); // adaptovat na vaši funkci (fast match + legacy fallback)
+
+        // 3) player has enough money
+        int price = GetCityPrice(city); // získejte cenu (reflexně nebo property), vrací >=0
+        long playerMoney = TravelButtonUI.GetPlayerCurrencyAmountOrMinusOne();
+        bool hasEnoughMoney = (price <= 0) || (playerMoney >= price);
+
+        // 4) coords available
+        bool coordsAvailable = (city.coords != null && city.coords.Length >= 3) || !string.IsNullOrEmpty(city.targetGameObjectName);
+
+        // 5) is current scene?
+        bool sceneMatches = IsPlayerInScene(city.sceneName, city.targetGameObjectName); // vaše existující pomocná funkce
+
+        // final: initialInteractable podle pravidel, přeloženo z vašeho popisu:
+        bool initialInteractable = enabledByConfig && visitedInHistory && hasEnoughMoney && coordsAvailable && !sceneMatches;
+
+        return initialInteractable;
+    }
+
+    // needs: using System; using System.Reflection; using UnityEngine; using UnityEngine.SceneManagement;
+
+    private static bool IsPlayerInScene(string sceneName, string targetGameObjectName)
+    {
+        try
+        {
+            // 1) check active scene name
+            if (!string.IsNullOrEmpty(sceneName))
+            {
+                var active = SceneManager.GetActiveScene().name;
+                if (!string.IsNullOrEmpty(active) && string.Equals(active, sceneName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            // 2) fallback: check for named object present in the currently loaded scenes
+            if (!string.IsNullOrEmpty(targetGameObjectName))
+            {
+                try
+                {
+                    var go = GameObject.Find(targetGameObjectName);
+                    if (go != null)
+                        return true;
+                }
+                catch { /* ignore GameObject.Find exceptions */ }
+            }
+        }
+        catch { /* ignore any unexpected errors */ }
+
+        return false;
+    }
+
+    // replace your existing GetCityPrice implementation with this version
+    private static int GetCityPrice(object cityObj)
+    {
+        if (cityObj == null) return -1;
+
+        try
+        {
+            var t = cityObj.GetType();
+
+            // try property first
+            var pinfo = t.GetProperty("price", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            if (pinfo != null)
+            {
+                var raw = pinfo.GetValue(cityObj, null);
+                if (raw != null)
+                {
+                    // Common numeric types handled explicitly
+                    if (raw is int ri) return ri;
+                    if (raw is long rl) return Convert.ToInt32(rl);
+                    if (raw is float rf) return Convert.ToInt32(rf);
+                    if (raw is double rd) return Convert.ToInt32(rd);
+
+                    // boxed nullable<int> with value will typically be boxed as int, so above covers it.
+                    // Fallback: try Convert.ToInt32 for other numeric/string types
+                    try { return Convert.ToInt32(raw); } catch { /* ignore conversion errors */ }
+                }
+            }
+
+            // try field next
+            var finfo = t.GetField("price", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            if (finfo != null)
+            {
+                var raw = finfo.GetValue(cityObj);
+                if (raw != null)
+                {
+                    if (raw is int ri2) return ri2;
+                    if (raw is long rl2) return Convert.ToInt32(rl2);
+                    if (raw is float rf2) return Convert.ToInt32(rf2);
+                    if (raw is double rd2) return Convert.ToInt32(rd2);
+
+                    try { return Convert.ToInt32(raw); } catch { /* ignore */ }
+                }
+            }
+        }
+        catch
+        {
+            // swallow reflection/convert exceptions and return sentinel below
+        }
+
+        // sentinel meaning "no price"
+        return -1;
     }
 
     // Try to locate a public or non-public static field/property named "Cities" in any loaded assembly
@@ -2844,81 +3170,465 @@ public static class TravelButton
         public bool visited;
     }
 
+    // Debug serializer output. Safe: writes preview only to temp and logs details.
+    public static bool PersistCitiesToConfigUsingUnity_debug()
+    {
+        try
+        {
+            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: begin");
+
+            // Build wrapper and populate explicitly
+            var tc = new TravelConfig();
+            tc.cities = new System.Collections.Generic.List<CityConfig>();
+
+            var runtimeCities = TravelButton.Cities ?? new List<TravelButton.City>();
+            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelButton.Cities runtime count = {runtimeCities.Count}");
+
+            foreach (var c in runtimeCities)
+            {
+                try
+                {
+                    string descValue = null;
+                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
+
+                    // robust price extraction (int/int?/other numerics)
+                    int priceSentinel = -1;
+                    try
+                    {
+                        if (c != null)
+                        {
+                            var t = c.GetType();
+                            object raw = null;
+                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                            if (pinfo != null) raw = pinfo.GetValue(c, null);
+                            else
+                            {
+                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (finfo != null) raw = finfo.GetValue(c);
+                            }
+
+                            if (raw != null)
+                            {
+                                if (raw is int ri) priceSentinel = ri;
+                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
+                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
+                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
+                                else priceSentinel = Convert.ToInt32(raw);
+                            }
+                        }
+                    }
+                    catch { priceSentinel = -1; }
+
+                    var cc = new CityConfig
+                    {
+                        name = c?.name ?? string.Empty,
+                        price = priceSentinel,
+                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
+                        targetGameObjectName = c?.targetGameObjectName,
+                        sceneName = c?.sceneName,
+                        desc = descValue ?? string.Empty,
+                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
+                    };
+
+                    TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: adding CityConfig name='{cc.name}' price={cc.price} visited={cc.visited} coords={(cc.coords == null ? "null" : $"len={cc.coords.Length}")} desc='{(string.IsNullOrEmpty(cc.desc) ? "[empty]" : cc.desc)}'");
+
+                    tc.cities.Add(cc);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: mapping error: " + ex.Message);
+                }
+            }
+
+            // Type info checks
+            var tcType = tc.GetType();
+            var ccType = typeof(CityConfig);
+            bool tcSerializable = Attribute.IsDefined(tcType, typeof(SerializableAttribute));
+            bool ccSerializable = Attribute.IsDefined(ccType, typeof(SerializableAttribute));
+            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelConfig type = {tcType.FullName}, assembly = {tcType.Assembly.FullName}, [Serializable]={tcSerializable}");
+            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: CityConfig type = {ccType.FullName}, assembly = {ccType.Assembly.FullName}, [Serializable]={ccSerializable}");
+            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: wrapper.cities is null? {tc.cities == null} count={(tc.cities == null ? -1 : tc.cities.Count)}");
+
+            // Inspect first few CityConfig objects
+            for (int i = 0; i < (tc.cities?.Count ?? 0); i++)
+            {
+                var x = tc.cities[i];
+                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: cities[{i}] name='{x.name}' price={x.price} visited={x.visited} scene='{x.sceneName}' target='{x.targetGameObjectName}' descLen={(x.desc?.Length ?? 0)} coords={(x.coords == null ? "null" : string.Join(",", x.coords))}");
+            }
+
+            // Serialize preview
+            string preview = null;
+            try
+            {
+                preview = UnityEngine.JsonUtility.ToJson(tc, true);
+                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: JsonUtility.ToJson length={preview?.Length ?? 0}");
+                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: preview (truncated 2000 chars): " + (preview == null ? "[null]" : (preview.Length > 2000 ? preview.Substring(0, 2000) + "..." : preview)));
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: JsonUtility.ToJson threw: " + ex.Message);
+            }
+
+            // write to temp file for inspection
+            try
+            {
+                var temp = Path.Combine(Path.GetTempPath(), "TravelButton_Cities_debug.json");
+                File.WriteAllText(temp, preview ?? "{}", System.Text.Encoding.UTF8);
+                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: wrote preview to temp: " + temp);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: failed to write temp preview: " + ex.Message);
+            }
+
+            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: end");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: unexpected: " + ex);
+            return false;
+        }
+    }
+
+    // Test-only helper: does not overwrite config files (writes preview to temp folder)
+    public static bool PersistCitiesToConfigUsingUnity_test()
+    {
+        try
+        {
+            TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: begin");
+
+            var tc = TravelConfig.Default() ?? new TravelConfig();
+            tc.cities = new System.Collections.Generic.List<CityConfig>();
+
+            var runtimeCities = TravelButton.Cities ?? new List<TravelButton.City>();
+            foreach (var c in runtimeCities)
+            {
+                try
+                {
+                    string descValue = null;
+                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
+
+                    // robust price extraction
+                    int priceSentinel = -1;
+                    try
+                    {
+                        if (c != null)
+                        {
+                            var t = c.GetType();
+                            object raw = null;
+                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                            if (pinfo != null) raw = pinfo.GetValue(c, null);
+                            else
+                            {
+                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (finfo != null) raw = finfo.GetValue(c);
+                            }
+
+                            if (raw != null)
+                            {
+                                if (raw is int ri) priceSentinel = ri;
+                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
+                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
+                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
+                                else priceSentinel = Convert.ToInt32(raw);
+                            }
+                        }
+                    }
+                    catch { priceSentinel = -1; }
+
+                    var cc = new CityConfig
+                    {
+                        name = c?.name ?? string.Empty,
+                        price = priceSentinel,
+                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
+                        targetGameObjectName = c?.targetGameObjectName,
+                        sceneName = c?.sceneName,
+                        desc = descValue ?? string.Empty,
+                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
+                    };
+
+                    tc.cities.Add(cc);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"PersistCitiesToConfigUsingUnity_TEST: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
+                }
+            }
+
+            string preview = null;
+            try
+            {
+                preview = UnityEngine.JsonUtility.ToJson(tc, true);
+                TBLog.Info($"PersistCitiesToConfigUsingUnity_TEST: json length={preview?.Length ?? 0}");
+                TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: preview: " + (preview?.Length > 800 ? preview.Substring(0, 800) + "..." : preview));
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: JsonUtility.ToJson failed: " + ex.Message);
+            }
+
+            // write to temp for inspection (safe)
+            try
+            {
+                var temp = Path.Combine(Path.GetTempPath(), "TravelButton_Cities_test.json");
+                File.WriteAllText(temp, preview ?? "{}", System.Text.Encoding.UTF8);
+                TBLog.Info("PersistCitiesToConfigUsingUnity_TEST: wrote preview to temp file: " + temp);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: failed to write preview to temp: " + ex.Message);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PersistCitiesToConfigUsingUnity_TEST: unexpected: " + ex);
+            return false;
+        }
+    }
+
     // Update in-memory Cities -> config and save; useful if user toggles a city via UI/editor
     // Replace or update PersistCitiesToConfig in src/TravelButtonMod.cs with the snippet below.
     // This ensures the visited field is serialized and the plugin writes the TravelButton_Cities.json the plugin reads.
     // It also reduces the misleading warning to Debug and logs the write path and basic serialized output info.
-    public static void PersistCitiesToConfigUsingUnity()
+    // Replace existing PersistCitiesToConfigUsingUnity with this manual-JSON writer
+    // Replace the existing PersistCitiesToConfigUsingUnity with this pretty-printing writer.
+    // PersistCitiesToConfigUsingUnity without backup (.bak) creation.
+    // Writes pretty-printed JSON to candidate paths and logs results, but does NOT copy or create .bak files.
+    public static bool PersistCitiesToConfigUsingUnity()
     {
         try
         {
-            string path = System.IO.Path.Combine(Paths.ConfigPath, "TravelButton_Cities.json");
+            TBLog.Info("PersistCitiesToConfigUsingUnity: begin");
 
-            // Map runtime TravelButton.City -> CityDto (fields only)
-            var dtoList = new List<CityDto>();
             if (TravelButton.Cities == null)
             {
                 TBLog.Info("PersistCitiesToConfigUsingUnity: TravelButton.Cities == null; nothing to persist.");
+                return false;
             }
-            else
-            {
-                TBLog.Info($"PersistCitiesToConfigUsingUnity: TravelButton.Cities.Count = {TravelButton.Cities.Count}");
 
-                foreach (var c in TravelButton.Cities)
+            // Build CityConfig list from runtime cities
+            var cityConfigs = new System.Collections.Generic.List<CityConfig>();
+            foreach (var c in TravelButton.Cities)
+            {
+                try
                 {
+                    string descValue = null;
+                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
+
+                    // robust price extraction
+                    int priceSentinel = -1;
                     try
                     {
-                        // name is usually present as 'name' field/property; fall back to ToString()
-                        var name = GetStringMember(c, "name") ?? (c?.ToString() ?? "(unknown)");
-
-                        // price may be int or nullable int or string
-                        var priceNullable = GetNullableIntMember(c, "price", "Price");
-
-                        // coords may be float[], List<float>, or Vector3
-                        var coords = GetFloatArrayMember(c, "coords", "Coords", "position", "Position");
-
-                        // strings
-                        var targetGameObjectName = GetStringMember(c, "targetGameObjectName", "target", "TargetGameObjectName");
-                        var sceneName = GetStringMember(c, "sceneName", "SceneName", "scene");
-                        var desc = GetStringMember(c, "desc", "description", "descText");
-
-                        // visited bool (field or property)
-                        var visited = GetBoolMemberOrDefault(c, false, "visited", "Visited");
-                        
-                        TBLog.Info($"PersistCitiesToConfigUsingUnity: city='{name ?? "(unknown)"}' price={priceNullable} coords={coords} target='{targetGameObjectName}' scene='{sceneName}' desc='{desc}' visited={visited}");
-
-                        var dto = new CityDto
+                        if (c != null)
                         {
-                            name = name,
-                            price = priceNullable.HasValue ? priceNullable.Value : -1,
-                            coords = coords,
-                            targetGameObjectName = targetGameObjectName,
-                            sceneName = sceneName,
-                            desc = desc,
-                            visited = visited
-                        };
-                        dtoList.Add(dto);
+                            var t = c.GetType();
+                            object raw = null;
+                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                            if (pinfo != null) raw = pinfo.GetValue(c, null);
+                            else
+                            {
+                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (finfo != null) raw = finfo.GetValue(c);
+                            }
+
+                            if (raw != null)
+                            {
+                                if (raw is int ri) priceSentinel = ri;
+                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
+                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
+                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
+                                else priceSentinel = Convert.ToInt32(raw);
+                            }
+                        }
                     }
-                    catch (Exception ex)
+                    catch { priceSentinel = -1; }
+
+                    var cc = new CityConfig
                     {
-                        TBLog.Warn("PersistCitiesToConfigUsingUnity: failed to map city '" + (c?.GetType().Name ?? "(null)") + "': " + ex.Message);
-                    }
+                        name = c?.name ?? string.Empty,
+                        price = priceSentinel,
+                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
+                        targetGameObjectName = c?.targetGameObjectName,
+                        sceneName = c?.sceneName,
+                        desc = descValue ?? string.Empty,
+                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
+                    };
+
+                    cityConfigs.Add(cc);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"PersistCitiesToConfigUsingUnity: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
                 }
             }
 
-            var wrapper = new CityListWrapper { cities = dtoList };
+            // Helpers for JSON escaping and numeric formatting
+            string SerializeString(string s)
+            {
+                if (s == null) return "null";
+                return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
+            }
 
-            // Serialize with Unity's JsonUtility (always present in-game)
-            string json = UnityEngine.JsonUtility.ToJson(wrapper, true);
+            string SerializeFloatArray(float[] arr)
+            {
+                if (arr == null) return "null";
+                var sbf = new System.Text.StringBuilder();
+                sbf.Append("[");
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    if (i > 0) sbf.Append(", ");
+                    sbf.Append(arr[i].ToString(System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sbf.Append("]");
+                return sbf.ToString();
+            }
 
-            System.IO.File.WriteAllText(path, json, System.Text.Encoding.UTF8);
+            // Pretty JSON builder (2-space indentation)
+            var sb = new System.Text.StringBuilder();
+            string indent(int n) => new string(' ', n * 2);
 
-            TBLog.Info("PersistCitiesToConfigUsingUnity: wrote TravelButton_Cities.json to: " + path);
-            TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote {json?.Length ?? 0} bytes.");
+            sb.AppendLine("{");
+            sb.AppendLine(indent(1) + "\"cities\": [");
+
+            for (int i = 0; i < cityConfigs.Count; i++)
+            {
+                var cc = cityConfigs[i];
+                sb.AppendLine(indent(2) + "{");
+
+                var fields = new System.Collections.Generic.List<string>();
+
+                // name (always)
+                fields.Add(indent(3) + "\"name\": " + SerializeString(cc.name ?? string.Empty));
+
+                // price (only if >= 0)
+                if (cc.price >= 0)
+                    fields.Add(indent(3) + "\"price\": " + cc.price.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+                // coords
+                if (cc.coords != null)
+                    fields.Add(indent(3) + "\"coords\": " + SerializeFloatArray(cc.coords));
+
+                // targetGameObjectName
+                if (!string.IsNullOrEmpty(cc.targetGameObjectName))
+                    fields.Add(indent(3) + "\"targetGameObjectName\": " + SerializeString(cc.targetGameObjectName));
+
+                // sceneName
+                if (!string.IsNullOrEmpty(cc.sceneName))
+                    fields.Add(indent(3) + "\"sceneName\": " + SerializeString(cc.sceneName));
+
+                // desc (include even if empty to preserve field)
+                fields.Add(indent(3) + "\"desc\": " + SerializeString(cc.desc ?? string.Empty));
+
+                // visited
+                fields.Add(indent(3) + "\"visited\": " + (cc.visited ? "true" : "false"));
+
+                // join fields with commas and newlines
+                for (int f = 0; f < fields.Count; f++)
+                {
+                    var line = fields[f] + (f < fields.Count - 1 ? "," : "");
+                    sb.AppendLine(line);
+                }
+
+                sb.Append(indent(2) + "}" + (i < cityConfigs.Count - 1 ? "," : ""));
+                sb.AppendLine();
+            }
+
+            sb.AppendLine(indent(1) + "]");
+            sb.AppendLine("}");
+
+            string prettyJson = sb.ToString();
+
+            TBLog.Info($"PersistCitiesToConfigUsingUnity: pretty json length={prettyJson.Length}");
+            TBLog.Info("PersistCitiesToConfigUsingUnity: JSON preview (first 2000 chars): " + (prettyJson.Length > 2000 ? prettyJson.Substring(0, 2000) + "..." : prettyJson));
+
+            // Build candidate write paths
+            var writeCandidates = new System.Collections.Generic.List<string>();
+            try
+            {
+                var cfgPath = TravelButton.ConfigFilePath;
+                if (!string.IsNullOrEmpty(cfgPath))
+                {
+                    try
+                    {
+                        var maybeDir = Path.GetDirectoryName(cfgPath);
+                        if (!string.IsNullOrEmpty(maybeDir))
+                            writeCandidates.Add(Path.Combine(maybeDir, "TravelButton_Cities.json"));
+                    }
+                    catch { }
+                }
+
+                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
+                writeCandidates.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                writeCandidates.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+
+                try
+                {
+                    var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    if (!string.IsNullOrEmpty(roaming))
+                    {
+                        writeCandidates.Add(Path.Combine(roaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "TravelButton_Cities.json"));
+                        writeCandidates.Add(Path.Combine(roaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "plugins", "TravelButton", "TravelButton_Cities.json"));
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+                    if (!string.IsNullOrEmpty(asmDir)) writeCandidates.Add(Path.Combine(asmDir, "TravelButton_Cities.json"));
+                }
+                catch { }
+                try { writeCandidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+            }
+            catch { }
+
+            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var wroteAny = false;
+            foreach (var candidate in writeCandidates)
+            {
+                if (string.IsNullOrEmpty(candidate)) continue;
+                string full;
+                try { full = Path.GetFullPath(candidate); } catch { full = candidate; }
+                if (tried.Contains(full)) continue;
+                tried.Add(full);
+
+                try
+                {
+                    var dir = Path.GetDirectoryName(full);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+                }
+                catch { }
+
+                try
+                {
+                    // Directly overwrite without creating .bak files
+                    File.WriteAllText(full, prettyJson, System.Text.Encoding.UTF8);
+                    TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote TravelButton_Cities.json to: {full}");
+                    try
+                    {
+                        var bytes = new FileInfo(full).Length;
+                        TBLog.Info($"PersistCitiesToConfigUsingUnity: wrote {bytes} bytes to: {full}");
+                    }
+                    catch { }
+                    wroteAny = true;
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"PersistCitiesToConfigUsingUnity: write failed for {full}: {ex.Message}");
+                }
+            }
+
+            TBLog.Info("PersistCitiesToConfigUsingUnity: end. success=" + wroteAny);
+            return wroteAny;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("PersistCitiesToConfigUsingUnity: error: " + ex.Message);
+            TBLog.Warn("PersistCitiesToConfigUsingUnity: unexpected error: " + ex);
+            return false;
         }
     }
 
@@ -3820,20 +4530,24 @@ public static class TravelButton
     /// Call this when you know saved visited state changed (e.g., after loading a save or marking a city visited)
     /// to force the cache to be rebuilt on next HasPlayerVisitedFast call.
     /// </summary>
-    public static void ClearVisitedCache()
+    private static void ClearVisitedCache()
     {
-        lock (s_visitedCacheLock)
+        try
         {
-            s_hasVisitedCache.Clear();
-        }
+            TBLog.Info("ClearVisitedCache: cleared visited caches and reset visited lookup.");
+            _visitedLookupPrepared = false;
 
-        lock (s_visitedKeysInitLock)
+            if (_visitedLookup == null)
+                _visitedLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            else
+                _visitedLookup.Clear();
+        }
+        catch (Exception ex)
         {
-            s_visitedKeysSet = null;
-            s_visitedKeysSetInitialized = false;
+            TBLog.Warn("ClearVisitedCache: error while clearing visited cache: " + ex);
+            _visitedLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _visitedLookupPrepared = false;
         }
-
-        TBLog.Info("ClearVisitedCache: cleared visited caches and reset visited lookup.");
     }
 
     // Probe an object for likely visited/discovered members and log their contents (small sample)
@@ -4563,23 +5277,6 @@ public static class TravelButton
         return null;
     }
 
-    // Improved matching & debug helpers for visited detection.
-    // Paste into same class where HasPlayerVisitedFast / HasPlayerVisited live.
-
-    private static string NormalizeVisitedKey(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return string.Empty;
-        // Lower-case
-        s = s.ToLowerInvariant().Trim();
-        // Remove common separators and punctuation
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"[\s_\-\.\:\/\\]+", "");
-        // Remove long numeric tokens likely to be timestamps/ids (8+ digits)
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"\d{6,}", "");
-        // Remove any non-alphanumeric leftover
-        s = System.Text.RegularExpressions.Regex.Replace(s, @"[^a-z0-9]", "");
-        return s;
-    }
-
     /// <summary>
     /// Returns true if any visited key appears to correspond to the city identifier.
     /// Uses normalization and substring heuristics to accommodate different save-key formats.
@@ -4866,134 +5563,252 @@ public static class TravelButton
     /// </summary>
     // Prepare the persistent visited-key lookup once per save/dialog open.
     // Calls BuildVisitedKeysFromSave() and caches results.
-    public static void PrepareVisitedLookup(bool forceRebuild = false)
+    // Replace your existing PrepareVisitedLookup (or integrate this logic) —
+    // this version prefers plugin-persisted visited flags if present.
+    public static void PrepareVisitedLookup()
     {
-        // ensure lock name matches the one in your file (s_visitedKeysInitLock)
-        lock (s_visitedKeysInitLock)
+        if (_visitedLookupPrepared) return;
+
+        try
         {
-            if (s_visitedKeysSetInitialized && !forceRebuild)
+            TBLog.Info("PrepareVisitedLookup: building visited lookup...");
+
+            var pluginPersisted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (TravelButton.Cities != null)
             {
-                TBLog.Info("PrepareVisitedLookup: reuse existing visited lookup cache.");
-                return;
+                foreach (var cc in TravelButton.Cities)
+                {
+                    try
+                    {
+                        if (cc != null && cc.visited)
+                        {
+                            var normalized = NormalizeVisitedKey(cc.name);
+                            if (!string.IsNullOrEmpty(normalized)) pluginPersisted.Add(normalized);
+                        }
+                    }
+                    catch { }
+                }
             }
 
+            var saveExtracted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                // 1) get save-extracted keys (may be empty)
-                var saveKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-                try
-                {
-                    var built = BuildVisitedKeysFromSave();
-                    if (built != null)
-                    {
-                        foreach (var k in built)
-                            if (!string.IsNullOrWhiteSpace(k))
-                                saveKeys.Add(k.Trim());
-                    }
-                }
-                catch (System.Exception ex)
-                {
-                    TBLog.Warn("PrepareVisitedLookup: BuildVisitedKeysFromSave failed: " + ex.Message);
-                }
+                FillSaveExtractedVisitedKeys(saveExtracted);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PrepareVisitedLookup: failed to extract visited keys from saves: " + ex.Message);
+            }
 
-                // 2) gather plugin-persisted keys (authoritative)
-                var pluginKeys = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            var normalizedSave = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in saveExtracted)
+                if (!string.IsNullOrEmpty(s)) normalizedSave.Add(NormalizeVisitedKey(s));
+
+            HashSet<string> finalSet;
+            if (pluginPersisted.Count > 0)
+            {
+                finalSet = new HashSet<string>(pluginPersisted, StringComparer.OrdinalIgnoreCase);
+                TBLog.Info($"PrepareVisitedLookup: using plugin-persisted visited flags ({pluginPersisted.Count} entries) and ignoring save history.");
+            }
+            else
+            {
+                finalSet = new HashSet<string>(normalizedSave, StringComparer.OrdinalIgnoreCase);
+                TBLog.Info($"PrepareVisitedLookup: no plugin-persisted visited flags found; using save-extracted visited keys ({normalizedSave.Count} entries).");
+            }
+
+            // Always assign a non-null set
+            _visitedLookup = finalSet ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _visitedLookupPrepared = true;
+            TBLog.Info($"PrepareVisitedLookup: final visited lookup count = {_visitedLookup.Count}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PrepareVisitedLookup: unexpected error: " + ex);
+            _visitedLookup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _visitedLookupPrepared = true;
+        }
+    }
+
+    // Normalizes a visited key for stable comparison across JSON, scene names and save-extracted keys.
+    // Converts to lower, trims, and keeps only alphanumeric characters.
+    private static string NormalizeVisitedKey(string key)
+    {
+        if (string.IsNullOrEmpty(key)) return string.Empty;
+        var lowered = key.Trim().ToLowerInvariant();
+
+        var sb = new System.Text.StringBuilder(lowered.Length);
+        foreach (char c in lowered)
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Attempts to fill `outSet` with visited keys extracted from the game's save data.
+    /// This function uses reflection to try a few common existing method/field names in this plugin so you
+    /// don't have to wire it manually right away. If your project already has a concrete extractor,
+    /// replace the body with a direct call to it.
+    /// </summary>
+    private static void FillSaveExtractedVisitedKeys(HashSet<string> outSet)
+    {
+        if (outSet == null) return;
+
+        try
+        {
+            // 1) Try to find a method that returns IEnumerable<string> and takes no parameters.
+            var candidateMethodNames = new[]
+            {
+            "ExtractVisitedKeysFromSave",
+            "GetVisitedKeysFromSaves",
+            "BuildSaveVisitedKeys",
+            "CollectVisitedKeysFromSave",
+            "GetVisitedKeys",
+            "ExtractVisitedKeys",
+            "BuildVisitedKeysFromSaves"
+        };
+
+            var tbType = typeof(TravelButton);
+            foreach (var name in candidateMethodNames)
+            {
                 try
                 {
-                    if (TravelButton.Cities != null)
+                    var mi = tbType.GetMethod(name, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                    if (mi != null)
                     {
-                        foreach (var c in TravelButton.Cities)
+                        // If returns IEnumerable<string> and requires no args
+                        if (typeof(System.Collections.IEnumerable).IsAssignableFrom(mi.ReturnType) && mi.GetParameters().Length == 0)
                         {
-                            try
+                            var ret = mi.Invoke(null, null) ?? mi.Invoke(Activator.CreateInstance(tbType), null);
+                            if (ret is System.Collections.IEnumerable ie)
                             {
-                                bool visitedFlag = false;
-                                var ct = c.GetType();
-                                var p = ct.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                                if (p != null && p.PropertyType == typeof(bool) && p.CanRead)
+                                foreach (var item in ie)
                                 {
-                                    visitedFlag = (bool)p.GetValue(c, null);
+                                    if (item != null)
+                                        outSet.Add(NormalizeVisitedKey(item.ToString()));
                                 }
-                                else
-                                {
-                                    var f = ct.GetField("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                                    if (f != null && f.FieldType == typeof(bool))
-                                    {
-                                        visitedFlag = (bool)f.GetValue(c);
-                                    }
-                                }
-
-                                if (visitedFlag)
-                                {
-                                    var name = (c.name ?? "").Trim();
-                                    if (!string.IsNullOrEmpty(name)) pluginKeys.Add(name);
-                                    var scene = (c.sceneName ?? "").Trim();
-                                    if (!string.IsNullOrEmpty(scene)) pluginKeys.Add(scene);
-                                }
+                                if (outSet.Count > 0) return;
                             }
-                            catch { /* ignore per-city reflection errors */ }
+                        }
+
+                        // If it takes a collection parameter to fill (e.g., void Fill(HashSet<string> outSet))
+                        var pars = mi.GetParameters();
+                        if (pars.Length == 1 && typeof(System.Collections.ICollection).IsAssignableFrom(pars[0].ParameterType))
+                        {
+                            // try invoke with a HashSet<string>
+                            object instance = null;
+                            if (!mi.IsStatic)
+                            {
+                                try { instance = Activator.CreateInstance(tbType); } catch { instance = null; }
+                            }
+                            var temp = new System.Collections.Generic.List<string>();
+                            mi.Invoke(instance, new object[] { temp });
+                            foreach (var s in temp) if (s != null) outSet.Add(NormalizeVisitedKey(s.ToString()));
+                            if (outSet.Count > 0) return;
                         }
                     }
                 }
-                catch (System.Exception exCities)
-                {
-                    TBLog.Warn("PrepareVisitedLookup: error enumerating TravelButtonMod.Cities: " + exCities.Message);
-                }
+                catch { /* ignore and try next candidate */ }
+            }
 
-                // 3) include any plugin fallback names recorded by MarkCityVisited
+            // 2) Try to discover a field/prop that already contains visited keys (common names)
+            var candidateFieldNames = new[]
+            {
+            "_visitedKeys", "visitedKeys", "SaveVisitedKeys", "saveVisitedKeys", "extractedVisitedKeys", "_saveVisitedKeys"
+        };
+
+            foreach (var fname in candidateFieldNames)
+            {
                 try
                 {
-                    if (s_pluginVisitedNames != null)
+                    var fi = tbType.GetField(fname, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                    if (fi != null)
                     {
-                        foreach (var nm in s_pluginVisitedNames)
-                            pluginKeys.Add(nm);
+                        var val = fi.GetValue(null) ?? fi.GetValue(Activator.CreateInstance(tbType));
+                        if (val is System.Collections.IEnumerable ie)
+                        {
+                            foreach (var item in ie)
+                                if (item != null)
+                                    outSet.Add(NormalizeVisitedKey(item.ToString()));
+                            if (outSet.Count > 0) return;
+                        }
+                    }
+
+                    var pi = tbType.GetProperty(fname, System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                    if (pi != null)
+                    {
+                        var val = pi.GetValue(null, null) ?? pi.GetValue(Activator.CreateInstance(tbType), null);
+                        if (val is System.Collections.IEnumerable ie2)
+                        {
+                            foreach (var item in ie2)
+                                if (item != null)
+                                    outSet.Add(NormalizeVisitedKey(item.ToString()));
+                            if (outSet.Count > 0) return;
+                        }
                     }
                 }
                 catch { /* ignore */ }
-
-                // 4) combine (pluginKeys first to be authoritative, then saveKeys)
-                var combined = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-                foreach (var pk in pluginKeys) combined.Add(pk);
-                foreach (var sk in saveKeys) combined.Add(sk);
-
-                // 5) parse compact summary tokens present (e.g. "Emercar;200|Berg;400|") and extract scene names
-                var extraSceneNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-                foreach (var kv in combined.ToList())
-                {
-                    if (string.IsNullOrWhiteSpace(kv)) continue;
-                    if (kv.IndexOf('|') >= 0 || kv.IndexOf(';') >= 0)
-                    {
-                        try
-                        {
-                            var parts = kv.Split(new char[] { '|' }, System.StringSplitOptions.RemoveEmptyEntries);
-                            foreach (var part in parts)
-                            {
-                                var sub = part.Split(new char[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries);
-                                if (sub.Length > 0)
-                                {
-                                    var sceneToken = sub[0].Trim();
-                                    if (!string.IsNullOrEmpty(sceneToken))
-                                        extraSceneNames.Add(sceneToken);
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-                }
-                foreach (var scene in extraSceneNames) combined.Add(scene);
-
-                // final assign
-                s_visitedKeysSet = combined;
-                s_visitedKeysSetInitialized = true;
-
-                TBLog.Info($"PrepareVisitedLookup: built visited lookup with {s_visitedKeysSet.Count} entries (pluginPersisted={pluginKeys.Count}, saveExtracted={saveKeys.Count}).");
             }
-            catch (System.Exception ex)
-            {
-                TBLog.Warn("PrepareVisitedLookup: failed to build visited keys: " + ex.Message);
-                s_visitedKeysSet = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-                s_visitedKeysSetInitialized = true;
-            }
+
+            // 3) Nothing discovered — leave outSet empty. Caller will fall back as appropriate.
+            TBLog.Info($"PrepareVisitedLookup: no automatic save-extractor found via reflection; saveExtracted will be empty. If you have a custom extractor, replace FillSaveExtractedVisitedKeys with a direct call to it.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("FillSaveExtractedVisitedKeys: reflection attempt failed: " + ex.Message);
         }
     }
-   
+
+    // Call this whenever visited flags (TravelButton.Cities) changed and you want UI to reflect them.
+    private static void NotifyVisitedFlagsChanged()
+    {
+        try
+        {
+            TBLog.Info("NotifyVisitedFlagsChanged: started");
+
+            // Reset and prepare the lookup so HasPlayerVisited uses fresh data
+            ClearVisitedCache();
+            PrepareVisitedLookup();
+
+            // Try to find the UI and trigger a full rebuild if present
+            try
+            {
+                var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+                if (ui != null)
+                {
+                    TBLog.Info("NotifyVisitedFlagsChanged: found TravelButtonUI, calling RebuildTravelDialog()");
+                    // RebuildTravelDialog will re-create or refresh the dialog structure
+                    ui.RebuildTravelDialog();
+                }
+                else
+                {
+                    TBLog.Info("NotifyVisitedFlagsChanged: TravelButtonUI not found (dialog not created yet)");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("NotifyVisitedFlagsChanged: error while rebuilding UI: " + ex);
+            }
+
+            // In case the dialog is currently open and RebuildTravelDialog didn't refresh inline,
+            // try RefreshCityButtonsWhileOpen if the UI exposes it.
+            try
+            {
+                var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
+                if (ui != null)
+                {
+                    TBLog.Info("NotifyVisitedFlagsChanged: calling RefreshCityButtonsWhileOpen()");
+                    ui.RefreshCityButtonsWhileOpen(); // safe even if it internally no-ops
+                }
+            }
+            catch { /* ignore */ }
+
+            TBLog.Info("NotifyVisitedFlagsChanged: completed");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("NotifyVisitedFlagsChanged: unexpected error: " + ex);
+        }
+    }
 }

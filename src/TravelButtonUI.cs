@@ -2342,6 +2342,8 @@ public class TravelButtonUI : MonoBehaviour
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
+        
+        PrepareVisitedLookup();
 
         try
         {
@@ -2349,7 +2351,7 @@ public class TravelButtonUI : MonoBehaviour
             try { ClearVisitedCache(); } catch { }
             try { TravelButton.ClearCityVisitedCache(); } catch { }
             // Prepare persistent lookup once so per-city HasPlayerVisitedFast is cheap
-            try { PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed at dialog open: " + ex.Message); }
+            try { TravelButton.PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed at dialog open: " + ex.Message); }
 
             // player pos
             try
@@ -2570,6 +2572,11 @@ public class TravelButtonUI : MonoBehaviour
                 int idx = 0;
                 foreach (var city in TravelButton.Cities)
                 {
+                    //ONZA debug
+                    var visited = HasPlayerVisited(city); // uses new authoritative HasPlayerVisited
+                    TBLog.Info($"OpenTravelDialog: creating button for '{city.name}' visited={visited}");
+
+
                     idx++;
                     TBLog.Info($"OpenTravelDialog: creating button #{idx} for '{city?.name}'");
 
