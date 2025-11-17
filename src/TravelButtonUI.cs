@@ -4998,11 +4998,21 @@ public partial class TravelButtonUI : MonoBehaviour
 
     // In TeleportHelpers static class - update AttemptTeleportToPositionSafe or the method you use to teleport
     // AttemptTeleportToPositionSafe + helper TryFindNearestNavMeshOrGround
-    [Obsolete("Use TeleportManager.SafePlacePlayerCoroutine or TravelButtonUI.SafeTeleportRoutine instead. This synchronous method will be removed in a future version.")]
+    /// <summary>
+    /// Robust coordinate-based teleport routine (restored from cb10ef3).
+    /// - Resolves authoritative player GameObject
+    /// - Temporarily disables movement components and Rigidbody physics (kinematic), zeros velocities
+    /// - Uses NavMeshAgent.Warp when present
+    /// - Runs grounding raycasts and overlap checks with iterative raises
+    /// - Restores component states after placement
+    /// This is the primary placement routine for coordinate teleports.
+    /// </summary>
     public static bool AttemptTeleportToPositionSafe(Vector3 target)
     {
         try
         {
+            TBLog.Debug($"AttemptTeleportToPositionSafe: ENTRY with target={target}");
+            
             // Ensure we reset the flag at start; we'll set it to true only on success.
             _lastAttemptedTeleportSucceeded = false;
 
@@ -5010,8 +5020,11 @@ public partial class TravelButtonUI : MonoBehaviour
             if (initialRoot == null)
             {
                 TBLog.Warn("AttemptTeleportToPositionSafe: player root not found.");
+                TBLog.Debug("AttemptTeleportToPositionSafe: EXIT - player root not found");
                 return false;
             }
+            
+            TBLog.Debug($"AttemptTeleportToPositionSafe: Found player root '{initialRoot.name}' at {initialRoot.transform.position}");
 
             // Resolve the actual GameObject that should be moved
             var moveGO = TeleportHelpers.ResolveActualPlayerGameObject(initialRoot) ?? initialRoot;
@@ -5398,8 +5411,13 @@ public partial class TravelButtonUI : MonoBehaviour
                             if (updatePosProp != null && updatePosProp.CanWrite) updatePosProp.SetValue(navAgentObj, false);
                             if (updateRotProp != null && updateRotProp.CanWrite) updateRotProp.SetValue(navAgentObj, false);
                             TBLog.Info("AttemptTeleportToPositionSafe: Temporarily disabled NavMeshAgent.updatePosition/updateRotation.");
+                            TBLog.Debug("AttemptTeleportToPositionSafe: NavMeshAgent detected and suspended for teleport.");
                         }
                         catch { }
+                    }
+                    else
+                    {
+                        TBLog.Debug("AttemptTeleportToPositionSafe: No NavMeshAgent found on player.");
                     }
                 }
             }
@@ -5461,9 +5479,12 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("AttemptTeleportToPositionSafe: error while suspending components: " + exSuspend.Message);
             }
+            
+            TBLog.Debug($"AttemptTeleportToPositionSafe: Suspended {disabledBehaviours.Count} behaviours and made {changedRigidbodies.Count} rigidbodies kinematic.");
 
             // --- Perform the move (prefer NavMeshAgent.Warp if available) ---
             bool moveSucceeded = false;
+            TBLog.Debug($"AttemptTeleportToPositionSafe: Beginning movement to {target}. NavMeshAgent present: {navAgentObj != null}");
             try
             {
                 if (navAgentObj != null && navAgentType != null)
@@ -5474,12 +5495,15 @@ public partial class TravelButtonUI : MonoBehaviour
                         if (warpMethod != null)
                         {
                             TBLog.Info($"AttemptTeleportToPositionSafe: warping NavMeshAgent to {target}.");
+                            TBLog.Debug($"AttemptTeleportToPositionSafe: Using NavMeshAgent.Warp path for teleport.");
                             var warped = (bool)warpMethod.Invoke(navAgentObj, new object[] { target });
                             moveSucceeded = warped;
+                            TBLog.Debug($"AttemptTeleportToPositionSafe: NavMeshAgent.Warp returned {warped}.");
                             try { moveGO.transform.position = target; } catch { }
                         }
                         else
                         {
+                            TBLog.Debug("AttemptTeleportToPositionSafe: NavMeshAgent.Warp method not found, using direct transform set.");
                             moveGO.transform.position = target;
                             moveSucceeded = true;
                         }
@@ -5487,6 +5511,7 @@ public partial class TravelButtonUI : MonoBehaviour
                     catch (Exception exWarp)
                     {
                         TBLog.Warn("AttemptTeleportToPositionSafe: NavMeshAgent.Warp failed: " + exWarp.Message);
+                        TBLog.Debug("AttemptTeleportToPositionSafe: Falling back to direct transform set after Warp failure.");
                         try { moveGO.transform.position = target; moveSucceeded = true; } catch { moveSucceeded = false; }
                     }
                     finally
@@ -5497,6 +5522,7 @@ public partial class TravelButtonUI : MonoBehaviour
                             var updateRotProp = navAgentType.GetProperty("updateRotation");
                             if (updatePosProp != null && updatePosProp.CanWrite) updatePosProp.SetValue(navAgentObj, true);
                             if (updateRotProp != null && updateRotProp.CanWrite) updateRotProp.SetValue(navAgentObj, true);
+                            TBLog.Debug("AttemptTeleportToPositionSafe: Restored NavMeshAgent.updatePosition/updateRotation.");
                         }
                         catch { }
                     }
@@ -5690,14 +5716,17 @@ public partial class TravelButtonUI : MonoBehaviour
 
             // Mark success/failure flag so callers can react after coroutine returns
             _lastAttemptedTeleportSucceeded = true;
-
+            
+            var finalPos = moveGO.transform.position;
             TBLog.Info($"AttemptTeleportToPositionSafe: completed teleport (moveSucceeded={moveSucceeded}).");
+            TBLog.Debug($"AttemptTeleportToPositionSafe: EXIT - SUCCESS. Final position: {finalPos}, moved from {before} (distance: {(finalPos - before).magnitude:F2}m)");
 
             return true;
         }
         catch (Exception ex)
         {
             TBLog.Warn("AttemptTeleportToPositionSafe: exception: " + ex.Message);
+            TBLog.Debug($"AttemptTeleportToPositionSafe: EXIT - FAILURE. Exception: {ex}");
             _lastAttemptedTeleportSucceeded = false;
             return false;
         }

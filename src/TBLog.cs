@@ -25,6 +25,16 @@ public static class TBLog
         catch (Exception) { /* swallow */ }
     }
 
+    public static void Debug(string message)
+    {
+        try
+        {
+            if (DebugConfig.IsDebug)
+                TravelButtonPlugin.LogInfo("[DEBUG] " + message);
+        }
+        catch (Exception) { /* swallow to avoid logging crash */ }
+    }
+
     // Optional helper for unconditional logging (bypass debug gate)
     public static void ForceInfo(string message)
     {

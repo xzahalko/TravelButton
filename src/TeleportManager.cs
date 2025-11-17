@@ -234,29 +234,83 @@ public partial class TeleportManager : MonoBehaviour
                 TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.Message);
             }
 
-            // Teleport attempts with bounded retries using coroutine-based safe placement
+            // Teleport attempts with bounded retries
+            // Prefer AttemptTeleportToPositionSafe for coordinate-based teleports (robust placement with NavMeshAgent.Warp)
+            // Use SafePlacePlayerCoroutine for anchor-based teleports
             const int maxTeleportAttempts = 3;
             int attempt = 0;
+            
+            bool useAttemptTeleportMethod = (haveCoordsHint || anchor == null);
+            if (useAttemptTeleportMethod)
+            {
+                TBLog.Info($"TeleportManager: Using AttemptTeleportToPositionSafe for coordinate-based teleport (haveCoordsHint={haveCoordsHint}, anchor={anchor != null}).");
+                TBLog.Debug($"TeleportManager: Coordinate teleport to {finalPos} - will use NavMeshAgent.Warp if available, with grounding and overlap checks.");
+            }
+            else
+            {
+                TBLog.Info($"TeleportManager: Using SafePlacePlayerCoroutine for anchor-based teleport (anchor found: {anchor.name}).");
+                TBLog.Debug($"TeleportManager: Anchor-based teleport to {finalPos} from anchor '{anchor.name}'.");
+            }
+            
             while (attempt < maxTeleportAttempts && !teleported)
             {
                 attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using SafePlacePlayerCoroutine.");
                 
-                bool placementSucceeded = false;
-                yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
+                if (useAttemptTeleportMethod)
                 {
-                    placementSucceeded = moved;
-                }));
-                
-                if (placementSucceeded)
-                {
-                    TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
-                    teleported = true;
-                    break;
+                    // Use AttemptTeleportToPositionSafe for coordinate-based teleports
+                    TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using AttemptTeleportToPositionSafe.");
+                    TBLog.Debug($"TeleportManager: Calling AttemptTeleportToPositionSafe with target {finalPos}.");
+                    
+                    bool placementSucceeded = false;
+                    try
+                    {
+                        placementSucceeded = TravelButtonUI.AttemptTeleportToPositionSafe(finalPos);
+                    }
+                    catch (Exception exAttempt)
+                    {
+                        TBLog.Warn($"TeleportManager: AttemptTeleportToPositionSafe threw exception: {exAttempt.Message}");
+                        placementSucceeded = false;
+                    }
+                    
+                    // Yield a frame to let physics settle
+                    yield return null;
+                    yield return null;
+                    
+                    if (placementSucceeded)
+                    {
+                        TBLog.Info("TeleportManager: AttemptTeleportToPositionSafe reported success.");
+                        TBLog.Debug($"TeleportManager: Player successfully placed at coordinate {finalPos}.");
+                        teleported = true;
+                        break;
+                    }
+                    else
+                    {
+                        TBLog.Warn($"TeleportManager: attempt {attempt} failed (AttemptTeleportToPositionSafe returned false).");
+                        TBLog.Debug($"TeleportManager: Coordinate placement failed, will retry or fallback to shim.");
+                    }
                 }
                 else
                 {
-                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (PlacePlayerUsingSafeRoutine reported no movement).");
+                    // Use SafePlacePlayerCoroutine for anchor-based teleports
+                    TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using SafePlacePlayerCoroutine.");
+                    
+                    bool placementSucceeded = false;
+                    yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
+                    {
+                        placementSucceeded = moved;
+                    }));
+                    
+                    if (placementSucceeded)
+                    {
+                        TBLog.Info("TeleportManager: SafePlacePlayerCoroutine reported success.");
+                        teleported = true;
+                        break;
+                    }
+                    else
+                    {
+                        TBLog.Warn($"TeleportManager: attempt {attempt} failed (SafePlacePlayerCoroutine reported no movement).");
+                    }
                 }
 
                 if (attempt < maxTeleportAttempts)
@@ -270,9 +324,46 @@ public partial class TeleportManager : MonoBehaviour
 
             if (!teleported)
             {
-                TBLog.Warn("TeleportManager: all teleport attempts failed. Notifying player.");
-                TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place player safely in destination.");
-                yield break;
+                // Last resort fallback: try SafePlacePlayerCoroutine as shim if coordinate-based method failed
+                if (useAttemptTeleportMethod)
+                {
+                    TBLog.Warn("TeleportManager: all AttemptTeleportToPositionSafe attempts failed. Trying SafePlacePlayerCoroutine as fallback shim.");
+                    TBLog.Debug("TeleportManager: Using coords-first shim (SafePlacePlayerCoroutine) as last resort.");
+                    
+                    bool shimSucceeded = false;
+                    Exception shimException = null;
+                    
+                    // Perform the yield outside of try-catch to avoid CS1626
+                    yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
+                    {
+                        shimSucceeded = moved;
+                    }));
+                    
+                    try
+                    {
+                        if (shimSucceeded)
+                        {
+                            TBLog.Info("TeleportManager: Fallback shim (SafePlacePlayerCoroutine) succeeded.");
+                            TBLog.Debug($"TeleportManager: Shim successfully placed player at {finalPos}.");
+                            teleported = true;
+                        }
+                        else
+                        {
+                            TBLog.Warn("TeleportManager: Fallback shim also failed.");
+                        }
+                    }
+                    catch (Exception exShim)
+                    {
+                        TBLog.Warn($"TeleportManager: Fallback shim processing threw exception: {exShim.Message}");
+                    }
+                }
+                
+                if (!teleported)
+                {
+                    TBLog.Warn("TeleportManager: all teleport attempts failed. Notifying player.");
+                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place player safely in destination.");
+                    yield break;
+                }
             }
 
             // small stabilization delay
