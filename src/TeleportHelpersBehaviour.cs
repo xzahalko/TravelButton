@@ -191,26 +191,58 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             try { targetPos = TeleportHelpers.EnsureClearance(targetPos); } catch { }
         }
 
-        // yield one frame and attempt teleport
+        // yield one frame and attempt teleport using coroutine-based safe placement
         yield return null;
 
         bool relocated = false;
+        
+        // Try to use TeleportManager's safe placement routine if available
+        TeleportManager mgr = null;
         try
         {
-            relocated = TeleportHelpers.AttemptTeleportToPositionSafe(targetPos);
-            if (relocated)
-            {
-                TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
-            }
-            else
-            {
-                TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
-            }
+            mgr = TeleportManager.Instance;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
-            relocated = false;
+            TBLog.Warn("EnsureSceneAndTeleport: TeleportManager.Instance threw: " + ex);
+        }
+
+        if (mgr != null)
+        {
+            // Use coroutine-based placement
+            yield return mgr.StartCoroutine(mgr.PlacePlayerUsingSafeRoutine(targetPos, moved =>
+            {
+                relocated = moved;
+                if (relocated)
+                {
+                    TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
+                }
+                else
+                {
+                    TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
+                }
+            }));
+        }
+        else
+        {
+            // Fallback: try to use TravelButtonUI.AttemptTeleportToPositionSafe if TeleportManager not available
+            try
+            {
+                relocated = TravelButtonUI.AttemptTeleportToPositionSafe(targetPos);
+                if (relocated)
+                {
+                    TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos} (fallback)");
+                }
+                else
+                {
+                    TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos} (fallback)");
+                }
+            }
+            catch (Exception ex)
+            {
+                TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
+                relocated = false;
+            }
         }
 
         callback?.Invoke(relocated);
