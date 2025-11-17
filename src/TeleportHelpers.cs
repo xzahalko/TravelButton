@@ -1,5 +1,9 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
+
 
 /// <summary>
 /// Static helper class for teleport-related utilities.
@@ -15,6 +19,305 @@ public static class TeleportHelpers
     
     // Clearance amount for grounding
     public static float TeleportGroundClearance = 0.5f;
+
+    private const float OVERLAP_CHECK_RADIUS = 0.45f;
+    private const float OVERLAP_RAISE_STEP = 0.25f;
+    private const float OVERLAP_MAX_RAISE = 3.0f;
+    private const float GROUNDED_RAY_MAX = 400f;
+    private const float MOVED_EPSILON = 0.05f;
+
+    // Coroutine that attempts a robust safe teleport to `target`. When finished it invokes resultCallback(true/false).
+    // Usage: yield return host.StartCoroutine(TeleportHelpers.AttemptTeleportToPositionSafe(target, moved => { /* ... */ }));
+    public static IEnumerator AttemptTeleportToPositionSafe(Vector3 target, Action<bool> resultCallback)
+    {
+        bool moved = false;
+        Transform playerTransform = null;
+        try
+        {
+            playerTransform = FindPlayerTransform();
+            if (playerTransform == null)
+            {
+                TBLog.Warn("AttemptTeleportToPositionSafe: could not find player transform.");
+                resultCallback?.Invoke(false);
+                yield break;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: FindPlayerTransform threw: " + ex);
+            resultCallback?.Invoke(false);
+            yield break;
+        }
+
+        Vector3 initialPos = playerTransform.position;
+        TBLog.Info($"AttemptTeleportToPositionSafe: requested target={target}, initialPlayerPos={initialPos}");
+        try { TBLog.Info($"[TeleportHelpers] initial player position: {initialPos}"); } catch { }
+
+        // Remember component states
+        CharacterController cc = null;
+        Rigidbody rb = null;
+        NavMeshAgent agent = null;
+        bool ccWasEnabled = false;
+        bool rbWasKinematic = false;
+        bool agentWasEnabled = false;
+        bool agentWasOnNavMesh = false;
+
+        try
+        {
+            cc = playerTransform.GetComponentInChildren<CharacterController>(true);
+            rb = playerTransform.GetComponentInChildren<Rigidbody>(true);
+            agent = playerTransform.GetComponentInChildren<NavMeshAgent>(true);
+
+            ccWasEnabled = cc != null ? cc.enabled : false;
+            if (rb != null) rbWasKinematic = rb.isKinematic;
+            agentWasEnabled = agent != null ? agent.enabled : false;
+            if (agent != null)
+            {
+                try { agentWasOnNavMesh = agent.isOnNavMesh; } catch { agentWasOnNavMesh = false; }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: error reading components: " + ex);
+        }
+
+        // Disable interfering components
+        try
+        {
+            if (cc != null) cc.enabled = false;
+            if (agent != null) agent.enabled = false;
+            if (rb != null)
+            {
+                rb.isKinematic = true;
+                try { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: disabling components failed: " + ex);
+        }
+
+        // If NavMeshAgent is present and on navmesh, try Warp first (preferred)
+        bool warpTried = false;
+        bool warpSucceeded = false;
+        if (agent != null && agentWasOnNavMesh)
+        {
+            try
+            {
+                warpTried = true;
+                TBLog.Info("AttemptTeleportToPositionSafe: NavMeshAgent present; attempting Warp.");
+                agent.enabled = true; // enable temporarily to call Warp reliably
+                agent.Warp(target);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("AttemptTeleportToPositionSafe: Warp attempt threw: " + ex);
+                warpSucceeded = false;
+            }
+            finally
+            {
+                try { agent.enabled = agentWasEnabled; } catch { }
+            }
+
+            // yield outside try/catch (allowed)
+            yield return null;
+
+            try
+            {
+                Vector3 afterWarp = playerTransform.position;
+                float dist = Vector3.Distance(afterWarp, target);
+                warpSucceeded = dist <= 1.0f || (agent != null && agent.isOnNavMesh);
+                TBLog.Info($"AttemptTeleportToPositionSafe: Warp completed; player at {afterWarp}; distToTarget={dist:F3}; isOnNavMesh={(agent != null ? agent.isOnNavMesh : false)}");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("AttemptTeleportToPositionSafe: Warp post-check threw: " + ex);
+                warpSucceeded = false;
+            }
+
+            if (warpSucceeded)
+            {
+                moved = Vector3.Distance(initialPos, playerTransform.position) > MOVED_EPSILON;
+                try
+                {
+                    if (rb != null)
+                    {
+                        rb.velocity = Vector3.zero;
+                        rb.angularVelocity = Vector3.zero;
+                        rb.isKinematic = rbWasKinematic;
+                    }
+                    if (cc != null) cc.enabled = ccWasEnabled;
+                }
+                catch { }
+                TBLog.Info($"AttemptTeleportToPositionSafe: warp succeeded; moved={moved}");
+                resultCallback?.Invoke(moved);
+                yield break;
+            }
+        }
+
+        // Transform-based placement (grounding + overlap/raise)
+        Vector3 probeTarget = target;
+        try
+        {
+            RaycastHit hit;
+            Vector3 rayStart = new Vector3(target.x, target.y + 50f, target.z);
+            if (Physics.Raycast(rayStart, Vector3.down, out hit, GROUNDED_RAY_MAX, ~0, QueryTriggerInteraction.Ignore))
+            {
+                probeTarget = new Vector3(target.x, hit.point.y, target.z);
+                TBLog.Info($"AttemptTeleportToPositionSafe: ground probe hit at {hit.point}; using {probeTarget}.");
+            }
+            else
+            {
+                TBLog.Info($"AttemptTeleportToPositionSafe: ground probe did not find ground below {target}.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: ground probe threw: " + ex);
+        }
+
+        // set position and yield outside of the try/catch
+        try
+        {
+            playerTransform.position = probeTarget;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: setting position threw: " + ex);
+        }
+
+        // yield outside try/catch
+        yield return null;
+
+        // Overlap check and iterative raise to avoid embedding
+        try
+        {
+            bool foundFree = false;
+            int maxSteps = Mathf.CeilToInt(OVERLAP_MAX_RAISE / OVERLAP_RAISE_STEP);
+            for (int step = 0; step <= maxSteps; step++)
+            {
+                Vector3 checkPos = playerTransform.position + Vector3.up * (step * OVERLAP_RAISE_STEP);
+                Vector3 overlapCenter = checkPos + Vector3.up * 0.5f;
+                Collider[] hits = Physics.OverlapSphere(overlapCenter, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+
+                bool overlapping = false;
+                if (hits != null && hits.Length > 0)
+                {
+                    foreach (var h in hits)
+                    {
+                        if (h == null || h.transform == null) continue;
+                        if (h.transform.IsChildOf(playerTransform)) continue; // ignore self collisions
+                        overlapping = true;
+                        break;
+                    }
+                }
+
+                if (!overlapping)
+                {
+                    if (step > 0) playerTransform.position = checkPos;
+                    foundFree = true;
+                    if (step > 0) TBLog.Info($"AttemptTeleportToPositionSafe: raised by {step * OVERLAP_RAISE_STEP:F2}m to avoid overlap -> {playerTransform.position}");
+                    break;
+                }
+            }
+
+            if (!foundFree)
+            {
+                TBLog.Warn($"AttemptTeleportToPositionSafe: could not find non-overlapping spot within {OVERLAP_MAX_RAISE}m above target; leaving at {playerTransform.position}");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: overlap/raise pass threw: " + ex);
+        }
+
+        // Ensure velocities zeroed and small settle frames
+        try
+        {
+            if (rb != null)
+            {
+                try { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; } catch { }
+            }
+        }
+        catch { }
+
+        // wait outside of try/catch
+        yield return null;
+        yield return null;
+
+        Vector3 finalPos = Vector3.zero;
+        try
+        {
+            finalPos = playerTransform.position;
+            moved = Vector3.Distance(initialPos, finalPos) > MOVED_EPSILON;
+            TBLog.Info($"AttemptTeleportToPositionSafe: placement complete. initial={initialPos}, final={finalPos}, moved={moved}");
+            try { TBLog.Info($"[TeleportHelpers] final player position: {finalPos}"); } catch { }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: error measuring final position: " + ex);
+            moved = false;
+        }
+
+        // Restore components
+        try
+        {
+            if (rb != null)
+            {
+                try
+                {
+                    rb.isKinematic = rbWasKinematic;
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                }
+                catch { }
+            }
+            if (cc != null) cc.enabled = ccWasEnabled;
+            if (agent != null) agent.enabled = agentWasEnabled;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AttemptTeleportToPositionSafe: restoring components failed: " + ex);
+        }
+
+        resultCallback?.Invoke(moved);
+        yield break;
+    }
+
+    // Heuristic find for authoritative player transform (tag, name heuristics, CharacterController)
+    public static Transform FindPlayerTransform()
+    {
+        try
+        {
+            try
+            {
+                var go = GameObject.FindWithTag("Player");
+                if (go != null && go.transform != null) return go.transform;
+            }
+            catch { /* ignore missing tag */ }
+
+            // Name heuristics
+            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
+            foreach (var t in allTransforms)
+            {
+                if (t == null || string.IsNullOrEmpty(t.name)) continue;
+                var n = t.name;
+                if (n.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase) || n.IndexOf("Player", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return t;
+                }
+            }
+
+            // CharacterController fallback
+            var controllers = UnityEngine.Object.FindObjectsOfType<CharacterController>();
+            foreach (var c in controllers)
+            {
+                if (c != null && c.transform != null) return c.transform;
+            }
+        }
+        catch { /* swallow */ }
+        return null;
+    }
 
     /// <summary>
     /// Find the player root GameObject using various heuristics.

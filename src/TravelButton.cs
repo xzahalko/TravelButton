@@ -30,6 +30,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private BepInEx.Configuration.ConfigEntry<bool> bex_enableMod;
     private BepInEx.Configuration.ConfigEntry<int> bex_globalPrice;
     private BepInEx.Configuration.ConfigEntry<string> bex_currencyItem;
+    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
 
     // per-city config entries
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
@@ -43,12 +44,228 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private DateTime _lastConfigChange = DateTime.MinValue;
 
+    private static TeleportMode ParseTeleportMode(string v)
+    {
+        if (string.IsNullOrEmpty(v)) return TeleportMode.Auto;
+        if (Enum.TryParse<TeleportMode>(v, true, out var parsed)) return parsed;
+        // optional: log invalid value
+        TBLog.Warn($"[TravelButtonPlugin] Unknown TeleportMode '{v}', defaulting to Auto.");
+        return TeleportMode.Auto;
+    }
+
+    private static string TeleportModeToString(TeleportMode mode) => mode.ToString();
+
     public static void Initialize(ManualLogSource manualLogSource)
     {
         if (manualLogSource == null) throw new ArgumentNullException(nameof(manualLogSource));
         LogSource = manualLogSource;
         try { LogSource.LogInfo(Prefix + "TravelButtonPlugin initialized with BepInEx ManualLogSource."); } catch { /* swallow */ }
     }
+
+    // static wrappers - always delegate safely to TravelButtonPlugin
+    public static void LogInfo(string message)
+    {
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogInfo(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
+    }
+
+    public static void LogWarning(string message)
+    {
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogWarning(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
+    }
+
+    public static void LogError(string message)
+    {
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogError(Prefix + (message ?? ""));
+        }
+        catch { /* swallow */ }
+    }
+
+    public static void LogDebug(string message)
+    {
+        try
+        {
+            var src = LogSource;
+            if (src == null) return;
+            src.LogDebug(Prefix + (message ?? ""));
+        }
+        catch
+        { }
+    }
+
+    private void Awake()
+    {
+        DebugConfig.IsDebug = true;
+
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
+
+        try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
+        }
+
+        this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
+        TBLog.Info("TravelButtonPlugin test (should appear in LogOutput.log)");
+
+        // sanity checks to confirm BepInEx receives logs:
+        TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
+
+        
+        // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
+        // This is a best-effort load for deterministic defaults so that other initialization steps can observe cities.
+        try
+        {
+            TryLoadCitiesJsonIntoTravelButtonMod();
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "Failed to load TravelButton_Cities.json during Initialize: " + ex.Message); } catch { }
+        }
+        
+        try
+        {
+            TBLog.Info("TravelButton: startup - loaded cities:");
+            if (TravelButton.Cities == null) TBLog.Info(" - Cities == null");
+            else
+            {
+                foreach (var c in TravelButton.Cities)
+                {
+                    try
+                    {
+                        TBLog.Info($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("Startup city log failed: " + ex);
+        }
+
+        try
+        {
+            TBLog.Info("TravelButtonPlugin.Awake: plugin initializing.");
+            TravelButton.InitFromConfig();
+            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
+            {
+                TBLog.Info($"Successfully loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json.");
+            }
+            else
+            {
+                TBLog.Warn("Failed to load cities from TravelButton_Cities.json or the file is empty.");
+            }
+            // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
+            StartCoroutine(TryInitConfigCoroutine());
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake exception: " + ex);
+        }
+
+        try
+        {
+            // existing initialization (logger, config, etc.)
+            // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
+            EnsureBepInExConfigBindings();
+
+            // start the file watcher so external edits to the config file are detected
+            StartConfigWatcher();
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("Awake initialization failed: " + ex);
+        }
+
+        // Bind teleport mode config using a simple string description (compatible with older BepInEx overloads)
+        try
+        {
+            bex_teleportMode = Config.Bind(
+                "General",
+                "TeleportMode",
+                "Auto",
+                "Teleportation mode: Auto (prefer New, fallback to Old), New (refactored SafePlacePlayer), Old (restored AttemptTeleportToPositionSafe). Change via Configuration Manager."
+            );
+
+            // Initialize TeleportService mode from config
+            var initialMode = ParseTeleportMode(bex_teleportMode.Value);
+            TeleportService.Instance.Mode = initialMode;
+            TBLog.Info($"[TravelButtonPlugin] TeleportMode initial value: {TeleportModeToString(initialMode)}");
+
+            // Watch for runtime changes from Configuration Manager or manual edits
+            bex_teleportMode.SettingChanged += (sender, args) =>
+            {
+                try
+                {
+                    var newMode = ParseTeleportMode(bex_teleportMode.Value);
+                    TeleportService.Instance.Mode = newMode;
+                    TBLog.Info($"[TravelButtonPlugin] TeleportMode changed to: {TeleportModeToString(newMode)}");
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("[TravelButtonPlugin] Failed to apply TeleportMode change: " + ex);
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("[TravelButtonPlugin] TeleportMode config binding failed: " + ex);
+        }
+
+        ShowPlayerNotification = (msg) =>
+        {
+            // enqueue to main thread if required; Show uses Unity main thread anyway
+            TravelButtonNotificationUI.Show(msg, 3f);
+        };
+    }
+
+    // Add OnDestroy to clean up the watcher and any resources:
+    private void OnDestroy()
+    {
+        try
+        {
+            StopConfigWatcher();
+
+            // other cleanup if necessary (e.g., persist, unsubscribe)
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OnDestroy cleanup failed: " + ex);
+        }
+    }
+
+    // handler
+    private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
+    {
+        try
+        {
+            string sceneName = scene.name ?? "";
+            if (string.IsNullOrEmpty(sceneName)) return;
+            MarkCityVisitedByScene(sceneName);
+        }
+        catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
+    }
+    // Add these snippets into src/TravelButton.cs in the TravelButton class.
+    // 1) Add a plugin fallback set (near other static fields)
+    private static System.Collections.Generic.HashSet<string> s_pluginVisitedNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+
+    // 2) If TravelButton.City does not already have a persisted visited field, add it to the City definition:
+    // Insert this inside the TravelButton.City class (near other serializable fields)
+    public bool visited = false; // persisted visited flag (default false)
+
 
     /// <summary>
     /// Load TravelButton_Cities.json from candidate locations using TravelConfig.LoadFromFile.
@@ -71,8 +288,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
-//                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-//                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+                //                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+                //                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
             }
             catch { }
 
@@ -84,8 +301,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-//            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
-//            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
+            //            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+            //            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
 
             try
             {
@@ -94,12 +311,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     var dir = cfgPath;
                     try { if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath); } catch { }
-//                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+                    //                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
                 }
             }
             catch { }
 
-  //          try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
+            //          try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
 
             // Find first candidate that exists and parses successfully
             string foundPath = null;
@@ -481,175 +698,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("ApplyVisitedFlagsFromCfg: unexpected error: " + ex.Message);
         }
     }
-
-    // static wrappers - always delegate safely to TravelButtonPlugin
-    public static void LogInfo(string message)
-    {
-        try
-        {
-            var src = LogSource;
-            if (src == null) return;
-            src.LogInfo(Prefix + (message ?? ""));
-        }
-        catch { /* swallow */ }
-    }
-
-    public static void LogWarning(string message)
-    {
-        try
-        {
-            var src = LogSource;
-            if (src == null) return;
-            src.LogWarning(Prefix + (message ?? ""));
-        }
-        catch { /* swallow */ }
-    }
-
-    public static void LogError(string message)
-    {
-        try
-        {
-            var src = LogSource;
-            if (src == null) return;
-            src.LogError(Prefix + (message ?? ""));
-        }
-        catch { /* swallow */ }
-    }
-
-    public static void LogDebug(string message)
-    {
-        try
-        {
-            var src = LogSource;
-            if (src == null) return;
-            src.LogDebug(Prefix + (message ?? ""));
-        }
-        catch
-        { }
-    }
-
-    private void Awake()
-    {
-        DebugConfig.IsDebug = true;
-
-        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
-
-        try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
-        }
-
-        this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
-        TBLog.Info("TravelButtonPlugin test (should appear in LogOutput.log)");
-
-        // sanity checks to confirm BepInEx receives logs:
-        TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
-
-        
-        // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
-        // This is a best-effort load for deterministic defaults so that other initialization steps can observe cities.
-        try
-        {
-            TryLoadCitiesJsonIntoTravelButtonMod();
-        }
-        catch (Exception ex)
-        {
-            try { LogSource?.LogWarning(Prefix + "Failed to load TravelButton_Cities.json during Initialize: " + ex.Message); } catch { }
-        }
-        
-        try
-        {
-            TBLog.Info("TravelButton: startup - loaded cities:");
-            if (TravelButton.Cities == null) TBLog.Info(" - Cities == null");
-            else
-            {
-                foreach (var c in TravelButton.Cities)
-                {
-                    try
-                    {
-                        TBLog.Info($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("Startup city log failed: " + ex);
-        }
-
-        try
-        {
-            TBLog.Info("TravelButtonPlugin.Awake: plugin initializing.");
-            TravelButton.InitFromConfig();
-            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
-            {
-                TBLog.Info($"Successfully loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json.");
-            }
-            else
-            {
-                TBLog.Warn("Failed to load cities from TravelButton_Cities.json or the file is empty.");
-            }
-            // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
-            StartCoroutine(TryInitConfigCoroutine());
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake exception: " + ex);
-        }
-
-        try
-        {
-            // existing initialization (logger, config, etc.)
-            // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
-            EnsureBepInExConfigBindings();
-
-            // start the file watcher so external edits to the config file are detected
-            StartConfigWatcher();
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("Awake initialization failed: " + ex);
-        }
-
-        ShowPlayerNotification = (msg) =>
-        {
-            // enqueue to main thread if required; Show uses Unity main thread anyway
-            TravelButtonNotificationUI.Show(msg, 3f);
-        };
-    }
-
-    // Add OnDestroy to clean up the watcher and any resources:
-    private void OnDestroy()
-    {
-        try
-        {
-            StopConfigWatcher();
-
-            // other cleanup if necessary (e.g., persist, unsubscribe)
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("OnDestroy cleanup failed: " + ex);
-        }
-    }
-
-    // handler
-    private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
-    {
-        try
-        {
-            string sceneName = scene.name ?? "";
-            if (string.IsNullOrEmpty(sceneName)) return;
-            MarkCityVisitedByScene(sceneName);
-        }
-        catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
-    }
-    // Add these snippets into src/TravelButton.cs in the TravelButton class.
-    // 1) Add a plugin fallback set (near other static fields)
-    private static System.Collections.Generic.HashSet<string> s_pluginVisitedNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-
-    // 2) If TravelButton.City does not already have a persisted visited field, add it to the City definition:
-    // Insert this inside the TravelButton.City class (near other serializable fields)
-    public bool visited = false; // persisted visited flag (default false)
 
     // mark and persist
     // --- Updated MarkCityVisitedByScene: identical to your version but calls NotifyVisitedFlagsChanged() after Persist.

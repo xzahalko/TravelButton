@@ -215,6 +215,15 @@ public partial class TeleportManager : MonoBehaviour
         try { onComplete?.Invoke(moved); } catch { }
     }
 
+    // TeleportManager.cs
+    // public wrapper so external code can request the existing placement coroutine
+    public IEnumerator PlacePlayerUsingSafeRoutineWrapper(Vector3 finalPos, Action<bool> resultCallback)
+    {
+        // call your existing internal method (which may be private)
+        // this yields the same behavior but exposes a public entrypoint
+        yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, resultCallback));
+    }
+
     // Helper: try to find player world position for movement detection
     private bool TryGetPlayerPosition(out Vector3 pos)
     {
