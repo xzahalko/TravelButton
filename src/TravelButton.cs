@@ -1784,8 +1784,6 @@ public static class TravelButton
     // mark if we've prepared the lookup for current save
     private static bool s_visitedLookupPrepared = false;
 
-    public static bool TeleportInProgress = false;
-
     // Cached raw visited keys extracted from save data (lazy-init)
     private static HashSet<string> s_visitedKeysSet = null;
     // One-time init guard for visited keys
@@ -3179,14 +3177,11 @@ public static class TravelButton
     {
         try
         {
-            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: begin");
-
             // Build wrapper and populate explicitly
             var tc = new TravelConfig();
             tc.cities = new System.Collections.Generic.List<CityConfig>();
 
             var runtimeCities = TravelButton.Cities ?? new List<TravelButton.City>();
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelButton.Cities runtime count = {runtimeCities.Count}");
 
             foreach (var c in runtimeCities)
             {
@@ -3234,8 +3229,6 @@ public static class TravelButton
                         visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
                     };
 
-                    TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: adding CityConfig name='{cc.name}' price={cc.price} visited={cc.visited} coords={(cc.coords == null ? "null" : $"len={cc.coords.Length}")} desc='{(string.IsNullOrEmpty(cc.desc) ? "[empty]" : cc.desc)}'");
-
                     tc.cities.Add(cc);
                 }
                 catch (Exception ex)
@@ -3244,29 +3237,11 @@ public static class TravelButton
                 }
             }
 
-            // Type info checks
-            var tcType = tc.GetType();
-            var ccType = typeof(CityConfig);
-            bool tcSerializable = Attribute.IsDefined(tcType, typeof(SerializableAttribute));
-            bool ccSerializable = Attribute.IsDefined(ccType, typeof(SerializableAttribute));
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: TravelConfig type = {tcType.FullName}, assembly = {tcType.Assembly.FullName}, [Serializable]={tcSerializable}");
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: CityConfig type = {ccType.FullName}, assembly = {ccType.Assembly.FullName}, [Serializable]={ccSerializable}");
-            TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: wrapper.cities is null? {tc.cities == null} count={(tc.cities == null ? -1 : tc.cities.Count)}");
-
-            // Inspect first few CityConfig objects
-            for (int i = 0; i < (tc.cities?.Count ?? 0); i++)
-            {
-                var x = tc.cities[i];
-                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: cities[{i}] name='{x.name}' price={x.price} visited={x.visited} scene='{x.sceneName}' target='{x.targetGameObjectName}' descLen={(x.desc?.Length ?? 0)} coords={(x.coords == null ? "null" : string.Join(",", x.coords))}");
-            }
-
             // Serialize preview
             string preview = null;
             try
             {
                 preview = UnityEngine.JsonUtility.ToJson(tc, true);
-                TBLog.Info($"PersistCitiesToConfigUsingUnity_DEBUG: JsonUtility.ToJson length={preview?.Length ?? 0}");
-                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: preview (truncated 2000 chars): " + (preview == null ? "[null]" : (preview.Length > 2000 ? preview.Substring(0, 2000) + "..." : preview)));
             }
             catch (Exception ex)
             {
@@ -3278,14 +3253,12 @@ public static class TravelButton
             {
                 var temp = Path.Combine(Path.GetTempPath(), "TravelButton_Cities_debug.json");
                 File.WriteAllText(temp, preview ?? "{}", System.Text.Encoding.UTF8);
-                TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: wrote preview to temp: " + temp);
             }
             catch (Exception ex)
             {
                 TBLog.Warn("PersistCitiesToConfigUsingUnity_DEBUG: failed to write temp preview: " + ex.Message);
             }
 
-            TBLog.Info("PersistCitiesToConfigUsingUnity_DEBUG: end");
             return true;
         }
         catch (Exception ex)

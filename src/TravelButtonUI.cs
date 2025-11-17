@@ -389,7 +389,6 @@ public partial class TravelButtonUI : MonoBehaviour
         {
             try { buttonObject.SetActive(true); } catch { }
         }
-        TBLog.Info("DEBUG: Forced Travel button visible and stopped visibility monitor.");
     }
 
     /// <summary>
