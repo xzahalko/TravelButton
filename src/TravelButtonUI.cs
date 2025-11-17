@@ -81,6 +81,9 @@ public class TravelButtonUI : MonoBehaviour
     private static readonly Dictionary<string, UnityEngine.UI.Button> s_cityButtonMap =
     new Dictionary<string, UnityEngine.UI.Button>(StringComparer.OrdinalIgnoreCase);
 
+    private static bool _lastAttemptedTeleportSucceeded = true;
+    public static bool LastAttemptedTeleportSucceeded => _lastAttemptedTeleportSucceeded;
+
     private void StartInventoryVisibilityMonitor()
     {
         if (inventoryVisibilityCoroutine != null) return;
@@ -2348,7 +2351,7 @@ public class TravelButtonUI : MonoBehaviour
         try
         {
             try { ClearSaveRootCache(); } catch { }
-            try { ClearVisitedCache(); } catch { }
+            try { TravelButton.ClearVisitedCache(); } catch { }
             try { TravelButton.ClearCityVisitedCache(); } catch { }
             // Prepare persistent lookup once so per-city HasPlayerVisitedFast is cheap
             try { TravelButton.PrepareVisitedLookup(); } catch (Exception ex) { TBLog.Warn("PrepareVisitedLookup failed at dialog open: " + ex.Message); }
@@ -5472,7 +5475,7 @@ public class TravelButtonUI : MonoBehaviour
 
     // Coroutine that refreshes button states while dialog is open.
     // NOTE: yields are outside try/catch to satisfy C# iterator restrictions.
-    private IEnumerator RefreshCityButtonsWhileOpen(GameObject dialogRoot)
+    public IEnumerator RefreshCityButtonsWhileOpen(GameObject dialogRoot)
     {
         refreshRequested = true;
         TBLog.Info("RefreshCityButtonsWhileOpen: started");

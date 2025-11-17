@@ -652,6 +652,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     public bool visited = false; // persisted visited flag (default false)
 
     // mark and persist
+    // --- Updated MarkCityVisitedByScene: identical to your version but calls NotifyVisitedFlagsChanged() after Persist.
     private static void MarkCityVisitedByScene(string sceneName)
     {
         try
@@ -781,6 +782,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     // keep original behavior: persist the Cities JSON/config
                     TravelButton.PersistCitiesToConfigUsingUnity();
                     TBLog.Info($"MarkCityVisitedByScene: marked and persisted visited for scene '{sceneName}'");
+
+                    // NEW: ensure UI and lookup are refreshed now that we changed & persisted visited flags
+                    NotifyVisitedFlagsChanged();
                 }
                 catch (Exception ex)
                 {
@@ -4530,7 +4534,7 @@ public static class TravelButton
     /// Call this when you know saved visited state changed (e.g., after loading a save or marking a city visited)
     /// to force the cache to be rebuilt on next HasPlayerVisitedFast call.
     /// </summary>
-    private static void ClearVisitedCache()
+    public static void ClearVisitedCache()
     {
         try
         {
@@ -5761,7 +5765,7 @@ public static class TravelButton
     }
 
     // Call this whenever visited flags (TravelButton.Cities) changed and you want UI to reflect them.
-    private static void NotifyVisitedFlagsChanged()
+    public static void NotifyVisitedFlagsChanged()
     {
         try
         {
@@ -5771,38 +5775,76 @@ public static class TravelButton
             ClearVisitedCache();
             PrepareVisitedLookup();
 
-            // Try to find the UI and trigger a full rebuild if present
+            // Call the static RebuildTravelDialog if available
+            try
+            {
+                TBLog.Info("NotifyVisitedFlagsChanged: calling TravelButtonUI.RebuildTravelDialog()");
+                try { TravelButtonUI.RebuildTravelDialog(); }
+                catch (Exception e) { TBLog.Warn("NotifyVisitedFlagsChanged: RebuildTravelDialog failed: " + e); }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("NotifyVisitedFlagsChanged: error while calling RebuildTravelDialog: " + ex);
+            }
+
+            // Attempt instance-based in-dialog refresh: find the UI instance and start its coroutine
             try
             {
                 var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
                 if (ui != null)
                 {
-                    TBLog.Info("NotifyVisitedFlagsChanged: found TravelButtonUI, calling RebuildTravelDialog()");
-                    // RebuildTravelDialog will re-create or refresh the dialog structure
-                    ui.RebuildTravelDialog();
+                    TBLog.Info("NotifyVisitedFlagsChanged: found TravelButtonUI instance, attempting to start RefreshCityButtonsWhileOpen coroutine");
+
+                    // Try to obtain a dialogRoot GameObject from the ui instance (common names)
+                    GameObject dialogRoot = null;
+                    try
+                    {
+                        var uiType = ui.GetType();
+                        // try property then field, common names
+                        var p = uiType.GetProperty("dialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)
+                                ?? uiType.GetProperty("DialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                        if (p != null)
+                        {
+                            var val = p.GetValue(ui, null);
+                            dialogRoot = val as GameObject;
+                        }
+                        else
+                        {
+                            var f = uiType.GetField("dialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)
+                                    ?? uiType.GetField("DialogRoot", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                            if (f != null)
+                            {
+                                var val = f.GetValue(ui);
+                                dialogRoot = val as GameObject;
+                            }
+                        }
+                    }
+                    catch (Exception exGet)
+                    {
+                        TBLog.Warn("NotifyVisitedFlagsChanged: failed to obtain dialogRoot via reflection: " + exGet);
+                        dialogRoot = null;
+                    }
+
+                    // Start the coroutine on the ui instance; pass null if we couldn't find dialogRoot
+                    try
+                    {
+                        ui.StartCoroutine(ui.RefreshCityButtonsWhileOpen(dialogRoot));
+                        TBLog.Info("NotifyVisitedFlagsChanged: started RefreshCityButtonsWhileOpen coroutine on TravelButtonUI instance");
+                    }
+                    catch (Exception exStart)
+                    {
+                        TBLog.Warn("NotifyVisitedFlagsChanged: failed to start RefreshCityButtonsWhileOpen coroutine: " + exStart);
+                    }
                 }
                 else
                 {
-                    TBLog.Info("NotifyVisitedFlagsChanged: TravelButtonUI not found (dialog not created yet)");
+                    TBLog.Info("NotifyVisitedFlagsChanged: TravelButtonUI instance not found (dialog not created yet)");
                 }
             }
             catch (Exception ex)
             {
-                TBLog.Warn("NotifyVisitedFlagsChanged: error while rebuilding UI: " + ex);
+                TBLog.Warn("NotifyVisitedFlagsChanged: unexpected error while trying instance refresh: " + ex);
             }
-
-            // In case the dialog is currently open and RebuildTravelDialog didn't refresh inline,
-            // try RefreshCityButtonsWhileOpen if the UI exposes it.
-            try
-            {
-                var ui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
-                if (ui != null)
-                {
-                    TBLog.Info("NotifyVisitedFlagsChanged: calling RefreshCityButtonsWhileOpen()");
-                    ui.RefreshCityButtonsWhileOpen(); // safe even if it internally no-ops
-                }
-            }
-            catch { /* ignore */ }
 
             TBLog.Info("NotifyVisitedFlagsChanged: completed");
         }
