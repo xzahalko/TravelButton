@@ -107,7 +107,7 @@ public static class ConfigManager
             enabled = true,
             price = 200,
             coords = new float[] { 1202.414f, -13.071f, 1378.836f },
-            targetGameObjectName = "Berg",
+            targetGameObjectName = "",
             sceneName = "Berg",
             desc = "Berg - example description",
             visited = false
