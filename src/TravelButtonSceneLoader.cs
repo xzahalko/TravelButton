@@ -12,6 +12,11 @@ using UnityEngine.SceneManagement;
 /// </summary>
 public class TravelButtonSceneLoader : MonoBehaviour
 {
+    // Configurable limits (tweak as needed)
+    private const float COORDS_CLAMP_VERTICAL_RANGE = 100f; // clamp final Y to coordsHint.y +/- this
+    private const float GROUND_PROBE_NAV_RADIUS = 15f;
+    private const float GROUND_PROBE_MAX_RAY = 400f;
+
     // Wrapper that matches UI callsite: StartCoroutine(LoadSceneAndTeleportCoroutine(city, cost, coordsHint, haveCoordsHint));
     public IEnumerator LoadSceneAndTeleportCoroutine(object cityObj, int cost, Vector3 coordsHint, bool haveCoordsHint)
     {
@@ -119,15 +124,15 @@ public class TravelButtonSceneLoader : MonoBehaviour
         while (Time.realtimeSinceStartup - graceStart < graceWait)
             yield return null;
 
-        // --- REPLACED SECTION: prefer coordsHint over anchor lookups ---
+        // --- FINAL TARGET SELECTION (prefer coordsHint, clamp relative to coordsHint, then ground probe if available) ---
 
         Vector3 finalPos = Vector3.zero;
         bool haveFinalPos = false;
 
         if (haveCoordsHint)
         {
-            // Prefer explicit coordinates when provided; do not attempt GameObject anchor lookups.
-            TBLog.Info($"LoadSceneAndTeleportCoroutine: using coordsHint {coordsHint} as teleport target.");
+            // Prefer explicit coordinates when provided; coordsHint is authoritative for X/Z and baseline Y.
+            TBLog.Info($"LoadSceneAndTeleportCoroutine: using coordsHint {coordsHint} as base teleport target (will attempt grounding but clamp to +/-{COORDS_CLAMP_VERTICAL_RANGE}m from coordsHint.y).");
             finalPos = coordsHint;
             haveFinalPos = true;
         }
@@ -182,37 +187,41 @@ public class TravelButtonSceneLoader : MonoBehaviour
             yield break;
         }
 
-        // Ground probe attempt (try to prefer nearby NavMesh/ground if helper exists)
+        // Ground probe attempt (try to prefer nearby NavMesh/ground if helper exists).
+        // If haveCoordsHint, we will clamp any grounded Y to coordsHint.y +/- COORDS_CLAMP_VERTICAL_RANGE
         try
         {
             bool grounded = false;
             Vector3 groundedPos = Vector3.zero;
-            // Try TravelButtonUI.TryFindNearestNavMeshOrGround if present
+
+            // Try TravelButtonUI.TryFindNearestNavMeshOrGround if present (reflection to be safe)
             var tbuiType = typeof(TravelButtonUI);
             var tryFindMethod = tbuiType.GetMethod("TryFindNearestNavMeshOrGround", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
             if (tryFindMethod != null)
             {
-                var parameters = new object[] { finalPos, null, 15f, 400f };
-                // Some overloads may use out Vector3; use dynamic invocation pattern via reflection
                 var methodParams = tryFindMethod.GetParameters();
-                if (methodParams.Length >= 2)
+                // Support both signature patterns: either (Vector3, out Vector3, float, float) OR (Vector3, out Vector3)
+                try
                 {
-                    // We'll try to call signature: bool TryFindNearestNavMeshOrGround(Vector3 in, out Vector3 outPos, float navSearchRadius = 15f, float maxGroundRay = 400f)
-                    var outPos = new object[] { finalPos, Vector3.zero, 15f, 400f };
-                    var result = tryFindMethod.Invoke(null, outPos);
-                    if (result is bool ok && ok)
+                    if (methodParams.Length >= 2)
                     {
-                        grounded = true;
-                        groundedPos = (Vector3)outPos[1];
+                        var outArgs = new object[] { finalPos, Vector3.zero, GROUND_PROBE_NAV_RADIUS, GROUND_PROBE_MAX_RAY };
+                        var ok = tryFindMethod.Invoke(null, outArgs);
+                        if (ok is bool b && b)
+                        {
+                            grounded = true;
+                            groundedPos = (Vector3)outArgs[1];
+                        }
                     }
                 }
+                catch { /* ignore reflection invocation failures */ }
             }
             else
             {
-                // fallback: if TravelButtonUI has a public static wrapper we can call directly, attempt it
+                // Fallback: try to call public static method directly if available
                 try
                 {
-                    if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 g, navSearchRadius: 15f, maxGroundRay: 400f))
+                    if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 g, navSearchRadius: GROUND_PROBE_NAV_RADIUS, maxGroundRay: GROUND_PROBE_MAX_RAY))
                     {
                         grounded = true;
                         groundedPos = g;
@@ -223,12 +232,41 @@ public class TravelButtonSceneLoader : MonoBehaviour
 
             if (grounded)
             {
-                TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe adjusted finalPos to {groundedPos} (raw {finalPos}).");
-                finalPos = groundedPos;
+                // If we have coordsHint, clamp the grounded Y to coordsHint.y +/- range so coords remain authoritative
+                if (haveCoordsHint)
+                {
+                    float minY = coordsHint.y - COORDS_CLAMP_VERTICAL_RANGE;
+                    float maxY = coordsHint.y + COORDS_CLAMP_VERTICAL_RANGE;
+                    float clampedY = Mathf.Clamp(groundedPos.y, minY, maxY);
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe found {groundedPos} -> clamped to {clampedY} (coordsHint.y={coordsHint.y}).");
+                    finalPos = new Vector3(finalPos.x, clampedY, finalPos.z);
+                }
+                else
+                {
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe adjusted finalPos to {groundedPos} (raw {finalPos}).");
+                    finalPos = groundedPos;
+                }
             }
             else
             {
-                TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe did not find nearby NavMesh/ground for {finalPos}.");
+                // No grounded result — if we have coordsHint clamp the Y to coordsHint +/- range (so we don't drift far from configured value)
+                if (haveCoordsHint)
+                {
+                    float clampedY = Mathf.Clamp(finalPos.y, coordsHint.y - COORDS_CLAMP_VERTICAL_RANGE, coordsHint.y + COORDS_CLAMP_VERTICAL_RANGE);
+                    if (!Mathf.Approximately(clampedY, finalPos.y))
+                    {
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: no grounding hit; clamping finalPos.y from {finalPos.y} to {clampedY} around coordsHint.y={coordsHint.y}");
+                        finalPos = new Vector3(finalPos.x, clampedY, finalPos.z);
+                    }
+                    else
+                    {
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: no grounding hit and finalPos.y already within clamp range ({finalPos.y}).");
+                    }
+                }
+                else
+                {
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding probe did not find nearby NavMesh/ground for {finalPos}.");
+                }
             }
         }
         catch (Exception exProbe)
@@ -236,7 +274,6 @@ public class TravelButtonSceneLoader : MonoBehaviour
             TBLog.Warn("LoadSceneAndTeleportCoroutine: grounding probe threw: " + exProbe.Message);
         }
 
-        // Teleport attempts with bounded retries using TeleportManager's safe placement if available
         // Teleport attempts with bounded retries using TeleportManager's safe placement if available
         const int maxTeleportAttempts = 3;
         int attempt = 0;
@@ -263,7 +300,7 @@ public class TravelButtonSceneLoader : MonoBehaviour
 
             if (tmRef != null)
             {
-                // Yield OUTSIDE of any try/catch that has a catch clause to satisfy the compiler.
+                // Use the TeleportManager coroutine-based safe placement (will do physics suspension + overlap-raise)
                 yield return StartCoroutine(tmRef.PlacePlayerUsingSafeRoutine(finalPos, moved => placementSucceeded = moved));
             }
             else

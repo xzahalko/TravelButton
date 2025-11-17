@@ -2394,8 +2394,15 @@ public partial class TravelButtonUI : MonoBehaviour
                 if (playerRoot != null)
                 {
                     var p = playerRoot.transform.position;
-                    TBLog.Info($"OpenTravelDialog: player pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
+                    TBLog.Info($"OpenTravelDialog: hrac pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
                 }
+                if (playerRoot != null) 
+                {
+                    Debug.Log("hrac exact start");
+                    Debug.Log($"hrac exact world position: ({PlayerPositionExact.TryGetExactPlayerWorldPosition():F3})");
+                } 
+                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
+                InventoryHelpers.SafeAddSilverToPlayer(100);
             }
             catch (Exception ex)
             {

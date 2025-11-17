@@ -4,6 +4,11 @@ using UnityEngine;
 
 public partial class TeleportManager : MonoBehaviour
 {
+    // Tune these constants for overlap/raise behavior
+    private const float OVERLAP_CHECK_RADIUS = 0.45f; // approximate player radius for overlap checks
+    private const float OVERLAP_RAISE_STEP = 0.25f;   // amount to raise per iteration when embedded
+    private const float OVERLAP_MAX_RAISE = 3.0f;     // maximum upward correction to escape embedding
+
     // Primary safe placement entrypoint used after scene activation.
     // Call: yield return StartCoroutine(SafePlacePlayerCoroutine(finalTarget));
     public IEnumerator SafePlacePlayerCoroutine(Vector3 finalTarget)
@@ -22,12 +27,19 @@ public partial class TeleportManager : MonoBehaviour
             tbui = null;
         }
 
-        // If we found TravelButtonUI, delegate to its SafeTeleportRoutine (yield is outside any try/catch)
-        if (tbui != null)
+        // If we do NOT have a supplied finalTarget (zero), allow TravelButtonUI to decide.
+        // If a finalTarget was provided (coords hint present), prefer our internal placement
+        // so clamping and overlap-raise remain authoritative.
+        bool haveSuppliedTarget = (finalTarget != Vector3.zero);
+        if (tbui != null && !haveSuppliedTarget)
         {
-            TBLog.Info("SafePlacePlayerCoroutine: delegating to TravelButtonUI.SafeTeleportRoutine");
-            yield return tbui.SafeTeleportRoutine(null, finalTarget);
+            TBLog.Info("SafePlacePlayerCoroutine: delegating to TravelButtonUI.SafeTeleportRoutine (no explicit finalTarget)");
+            yield return tbui.SafeTeleportRoutine(null, finalTarget); // TravelButtonUI handles its own safety
             yield break;
+        }
+        else if (tbui != null && haveSuppliedTarget)
+        {
+            TBLog.Info("SafePlacePlayerCoroutine: TravelButtonUI present but explicit finalTarget supplied — using internal safe placement to respect coordsHint.");
         }
 
         // Fallback detection: try to find player transform (no yields inside try/catch)
@@ -60,20 +72,9 @@ public partial class TeleportManager : MonoBehaviour
             yield break;
         }
 
-        // Determine a grounded/safe position (no yields)
-        Vector3 safe;
-        string chosenSource;
-        try
-        {
-            safe = FindSafeLanding(finalTarget, playerTransform, out chosenSource);
-            TBLog.Info($"SafePlacePlayerCoroutine: chosen safe pos {safe} (source={chosenSource})");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("SafePlacePlayerCoroutine: FindSafeLanding threw: " + ex);
-            safe = finalTarget;
-            chosenSource = "error";
-        }
+        // Determine a safe position to set (we already passed in finalTarget which should be pre-grounded/clamped)
+        Vector3 safe = finalTarget;
+        TBLog.Info($"SafePlacePlayerCoroutine: chosen pre-placement pos {safe}");
 
         // Gather physics/controller comps and remember state (no yields)
         Rigidbody rb = null;
@@ -119,6 +120,50 @@ public partial class TeleportManager : MonoBehaviour
             TBLog.Warn("SafePlacePlayerCoroutine: set position failed: " + ex);
         }
 
+        // Small immediate overlap-check and raise if embedded (D)
+        try
+        {
+            // If player is overlapping geometry at the placed position, try raising in small steps.
+            bool fixedUp = false;
+            int maxSteps = Mathf.CeilToInt(OVERLAP_MAX_RAISE / OVERLAP_RAISE_STEP);
+            for (int i = 0; i <= maxSteps; i++)
+            {
+                Vector3 checkPos = playerTransform.position + Vector3.up * (i * OVERLAP_RAISE_STEP);
+                // Perform an overlap check at the player's feet area
+                Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                bool overlapping = false;
+                if (hits != null && hits.Length > 0)
+                {
+                    // If all hits belong to the player's own hierarchy, ignore them
+                    foreach (var h in hits)
+                    {
+                        if (h == null || h.transform == null) continue;
+                        if (h.transform.IsChildOf(playerTransform)) continue; // skip self
+                        overlapping = true;
+                        break;
+                    }
+                }
+
+                if (!overlapping)
+                {
+                    // Move player up to this non-overlapping checkPos
+                    if (i > 0) playerTransform.position = checkPos;
+                    fixedUp = true;
+                    if (i > 0) TBLog.Info($"SafePlacePlayerCoroutine: raised player by {i * OVERLAP_RAISE_STEP:F2}m to avoid overlap -> {playerTransform.position}");
+                    break;
+                }
+            }
+
+            if (!fixedUp)
+            {
+                TBLog.Warn($"SafePlacePlayerCoroutine: could not find non-overlapping spot within {OVERLAP_MAX_RAISE}m above {playerTransform.position}. Player may still be embedded.");
+            }
+        }
+        catch (Exception exOverlap)
+        {
+            TBLog.Warn("SafePlacePlayerCoroutine: overlap/raise check failed: " + exOverlap);
+        }
+
         // Wait two frames to let scene scripts and physics settle (yields are outside try/catch)
         yield return null;
         yield return null;
@@ -144,213 +189,50 @@ public partial class TeleportManager : MonoBehaviour
             TBLog.Warn("SafePlacePlayerCoroutine: error restoring controllers/physics: " + ex);
         }
 
-        TBLog.Info($"SafePlacePlayerCoroutine: placement complete at {safe} for player {playerTransform.name}");
+        TBLog.Info($"SafePlacePlayerCoroutine: placement complete at {playerTransform.position} for player {playerTransform.name}");
         yield break;
     }
 
-    // Helper: find a safe landing near hint. Returns chosen source (Raycast/Anchor/Clamp).
-    private Vector3 FindSafeLanding(Vector3 hint, Transform playerTransform, out string source)
-    {
-        source = "none";
-        try
-        {
-            const float upSearch = 150f;
-            const float downMax = 400f;
-            const float sampleRadius = 8f;
-            const int radialSteps = 12;
-
-            RaycastHit hit;
-            Vector3 top = hint + Vector3.up * upSearch;
-
-            // Direct downward raycast from above hint
-            if (Physics.Raycast(top, Vector3.down, out hit, upSearch + downMax, ~0, QueryTriggerInteraction.Ignore))
-            {
-                Vector3 found = hit.point;
-                if (IsVerticalDeltaAcceptable(playerTransform, found))
-                {
-                    source = "raycast";
-                    return found;
-                }
-            }
-
-            // small radial sampling around hint
-            for (int i = 0; i < radialSteps; i++)
-            {
-                float ang = (360f / radialSteps) * i * Mathf.Deg2Rad;
-                Vector3 offs = new Vector3(Mathf.Cos(ang), 0, Mathf.Sin(ang)) * sampleRadius;
-                top = hint + offs + Vector3.up * upSearch;
-                if (Physics.Raycast(top, Vector3.down, out hit, upSearch + downMax, ~0, QueryTriggerInteraction.Ignore))
-                {
-                    Vector3 found = hit.point;
-                    if (IsVerticalDeltaAcceptable(playerTransform, found))
-                    {
-                        source = "radial";
-                        return found;
-                    }
-                }
-            }
-
-#if UNITY_NAVMESH_PICK
-            // optional: NavMesh.SamplePosition if your project uses NavMesh
-            UnityEngine.AI.NavMeshHit navHit;
-            if (UnityEngine.AI.NavMesh.SamplePosition(hint, out navHit, 100f, UnityEngine.AI.NavMesh.AllAreas))
-            {
-                if (IsVerticalDeltaAcceptable(playerTransform, navHit.position))
-                {
-                    source = "navmesh";
-                    return navHit.position;
-                }
-            }
-#endif
-
-            // Try anchors by name (scene spawn, PlayerStart, or city anchor). Adjust names as needed.
-            string[] anchorNames = new[] { "PlayerStart", "PlayerSpawn", "SpawnPoint", "PlayerAnchor", "LocationAnchor" };
-            foreach (var name in anchorNames)
-            {
-                try
-                {
-                    var go = GameObject.Find(name);
-                    if (go != null)
-                    {
-                        var pos = go.transform.position;
-                        if (IsVerticalDeltaAcceptable(playerTransform, pos))
-                        {
-                            source = $"anchor:{name}";
-                            return pos;
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            // Last resort: clamp hint.y to within +/-100m of player's current y
-            float safeY = (playerTransform != null) ? playerTransform.position.y : 0f;
-            float clampedY = Mathf.Clamp(hint.y, safeY - 100f, safeY + 100f);
-            source = "clamped";
-            return new Vector3(hint.x, clampedY, hint.z);
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("FindSafeLanding: error: " + ex);
-            source = "error";
-            return hint;
-        }
-    }
-
-    private bool IsVerticalDeltaAcceptable(Transform playerTransform, Vector3 candidate)
-    {
-        try
-        {
-            if (playerTransform == null) return true;
-            float curY = playerTransform.position.y;
-            float delta = Mathf.Abs(candidate.y - curY);
-            const float maxVerticalDelta = 100f;
-            return delta <= maxVerticalDelta;
-        }
-        catch { return true; }
-    }
-
-    /// <summary>
-    /// Helper that wraps SafePlacePlayerCoroutine and tracks before/after position to report success.
-    /// Call this from another coroutine: yield return StartCoroutine(PlacePlayerUsingSafeRoutine(pos, moved => {...}));
-    /// </summary>
+    // Helper: attempt to place the player safely using SafePlacePlayerCoroutine
+    // Invokes onComplete(true) if player's position changed (movement detected)
     public IEnumerator PlacePlayerUsingSafeRoutine(Vector3 finalTarget, Action<bool> onComplete)
     {
-        TBLog.Info($"PlacePlayerUsingSafeRoutine: starting for target={finalTarget}");
-        
-        // Snapshot before position
         Vector3 beforePos = Vector3.zero;
-        bool haveBeforePos = false;
-        try
-        {
-            Transform playerTransform = null;
-            var go = GameObject.FindWithTag("Player");
-            if (go != null) playerTransform = go.transform;
-            else
-            {
-                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
-                {
-                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
-                    {
-                        playerTransform = g.transform;
-                        break;
-                    }
-                }
-            }
-            
-            if (playerTransform != null)
-            {
-                beforePos = playerTransform.position;
-                haveBeforePos = true;
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: failed to get before position: " + ex);
-        }
+        bool haveBefore = TryGetPlayerPosition(out beforePos);
 
-        // Run the safe placement coroutine
-        yield return SafePlacePlayerCoroutine(finalTarget);
+        // Delegate to safe placement (which will yield TravelButtonUI.SafeTeleportRoutine if available)
+        yield return StartCoroutine(SafePlacePlayerCoroutine(finalTarget));
 
-        // Snapshot after position
         Vector3 afterPos = Vector3.zero;
-        bool haveAfterPos = false;
+        bool haveAfter = TryGetPlayerPosition(out afterPos);
+
+        bool moved = false;
+        if (haveBefore && haveAfter)
+            moved = (afterPos - beforePos).sqrMagnitude > 0.01f;
+        else if (!haveBefore && haveAfter)
+            moved = true;
+
+        try { onComplete?.Invoke(moved); } catch { }
+    }
+
+    // Helper: try to find player world position for movement detection
+    private bool TryGetPlayerPosition(out Vector3 pos)
+    {
+        pos = Vector3.zero;
         try
         {
-            Transform playerTransform = null;
             var go = GameObject.FindWithTag("Player");
-            if (go != null) playerTransform = go.transform;
-            else
+            if (go != null) { pos = go.transform.position; return true; }
+            foreach (var g in GameObject.FindObjectsOfType<GameObject>())
             {
-                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+                if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
                 {
-                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
-                    {
-                        playerTransform = g.transform;
-                        break;
-                    }
+                    pos = g.transform.position;
+                    return true;
                 }
             }
-            
-            if (playerTransform != null)
-            {
-                afterPos = playerTransform.position;
-                haveAfterPos = true;
-            }
         }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: failed to get after position: " + ex);
-        }
-
-        // Determine if movement occurred
-        bool moved = false;
-        if (haveBeforePos && haveAfterPos)
-        {
-            moved = (afterPos - beforePos).sqrMagnitude > 0.01f;
-            TBLog.Info($"PlacePlayerUsingSafeRoutine: moved={moved} (before={beforePos}, after={afterPos})");
-        }
-        else if (haveAfterPos && !haveBeforePos)
-        {
-            // If we couldn't get before but can after, assume success
-            moved = true;
-            TBLog.Info($"PlacePlayerUsingSafeRoutine: assuming moved=true (after={afterPos}, no before position)");
-        }
-        else
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: could not determine movement (no position data)");
-        }
-
-        // Invoke callback
-        try
-        {
-            onComplete?.Invoke(moved);
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: callback threw: " + ex);
-        }
-        
-        yield break;
+        catch { }
+        return false;
     }
 }

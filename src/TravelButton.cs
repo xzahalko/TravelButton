@@ -71,8 +71,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             try
             {
                 var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
-                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+//                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
+//                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
             }
             catch { }
 
@@ -84,8 +84,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
             catch { }
 
-            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
-            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
+//            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+//            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
 
             try
             {
@@ -94,12 +94,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     var dir = cfgPath;
                     try { if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath); } catch { }
-                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
+//                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
                 }
             }
             catch { }
 
-            try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
+  //          try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
 
             // Find first candidate that exists and parses successfully
             string foundPath = null;

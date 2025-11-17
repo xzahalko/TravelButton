@@ -1,52 +1,58 @@
-{
+﻿{
   "cities": [
     {
       "name": "Cierzo",
       "price": 200,
-      "coords": [1410.388, 6.786, 1665.642],
+      "coords": [1410.3, 6.7, 1665.6],
       "targetGameObjectName": "Cierzo",
       "sceneName": "CierzoNewTerrain",
-      "desc": "Cierzo - example description"
+      "desc": "",
+      "visited": true
     },
     {
       "name": "Levant",
       "price": 200,
-      "coords": [-55.212, 1.056, 79.379],
+      "coords": [-55.2, 1.0, 79.3],
       "targetGameObjectName": "Levant_Location",
       "sceneName": "Levant",
-      "desc": "Levant - example description"
+      "desc": "",
+      "visited": true
     },
     {
       "name": "Monsoon",
       "price": 200,
-      "coords": [61.553, -3.743, 167.599],
+      "coords": [61.5, -3.7, 167.5],
       "targetGameObjectName": "Monsoon_Location",
       "sceneName": "Monsoon",
-      "desc": "Monsoon - example description"
+      "desc": "",
+      "visited": true
     },
     {
       "name": "Berg",
       "price": 200,
-      "coords": [1202.414, -13.071, 1378.836],
-      "targetGameObjectName": "Berg",
+      "coords": [1202.4, 13.0, 1378.8],
+      "targetGameObjectName": "xxx",
       "sceneName": "Berg",
-      "desc": "Berg - example description"
+      "desc": "",
+      "visited": true
     },
     {
       "name": "Harmattan",
       "price": 200,
-      "coords": [93.757, 65.474, 767.849],
+      "coords": [93.7, 65.4, 767.8],
       "targetGameObjectName": "Harmattan_Location",
       "sceneName": "Harmattan",
-      "desc": "Harmattan - example description"
+      "desc": "",
+      "visited": true
     },
     {
       "name": "Sirocco",
       "price": 200,
-      "coords": [62.530, 56.805, -54.049],
+      "coords": [62.5, 56.8, -54.0],
       "targetGameObjectName": "Sirocco_Location",
       "sceneName": "NewSirocco",
-      "desc": "Sirocco - example description"
+      "desc": "",
+      "visited": false
     }
   ]
 }
