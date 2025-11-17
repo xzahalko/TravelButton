@@ -191,13 +191,45 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             try { targetPos = TeleportHelpers.EnsureClearance(targetPos); } catch { }
         }
 
-        // yield one frame and attempt teleport
+        // yield one frame before attempting teleport
         yield return null;
 
         bool relocated = false;
+        
+        // Prepare coroutine outside try-catch to avoid CS1626
+        TeleportManager teleportMgr = null;
+        IEnumerator placementCoroutine = null;
+        
         try
         {
-            relocated = TeleportHelpers.AttemptTeleportToPositionSafe(targetPos);
+            // Use coroutine-based safe placement via TeleportManager
+            teleportMgr = TeleportManager.Instance;
+            if (teleportMgr == null)
+            {
+                // Create TeleportManager if it doesn't exist
+                var go = new GameObject("TeleportManagerHost");
+                teleportMgr = go.AddComponent<TeleportManager>();
+                TBLog.Info("EnsureSceneAndTeleport: created TeleportManager instance.");
+            }
+
+            placementCoroutine = teleportMgr.PlacePlayerUsingSafeRoutine(targetPos, moved => relocated = moved);
+        }
+        catch (Exception ex)
+        {
+            TravelButtonPlugin.LogError("EnsureSceneAndTeleport: error preparing placement coroutine: " + ex);
+            callback?.Invoke(false);
+            yield break;
+        }
+
+        // Yield outside try-catch to avoid CS1626
+        if (placementCoroutine != null && teleportMgr != null)
+        {
+            yield return teleportMgr.StartCoroutine(placementCoroutine);
+        }
+
+        // Check result after yield
+        try
+        {
             if (relocated)
             {
                 TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos}");
@@ -209,8 +241,7 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
-            relocated = false;
+            TravelButtonPlugin.LogError("EnsureSceneAndTeleport: error checking teleport result: " + ex);
         }
 
         callback?.Invoke(relocated);
