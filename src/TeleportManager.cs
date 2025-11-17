@@ -10,8 +10,7 @@ using UnityEngine.SceneManagement;
 /// - Exposes StartTeleport(sceneName, targetName, coordsHint, haveCoordsHint, cost).
 /// - Runs the robust scene-ready + grounding + teleport coroutine (bounded retries/timeouts).
 /// - Emits OnTeleportFinished(success) so callers (UI) can re-enable/restore state.
-/// - Relies on static helpers in TravelButton (AttemptTeleportToPositionSafe, TryFindNearestNavMeshOrGround) and
-///   TravelButtonPlugin.ShowPlayerNotification / TBLog for logging and player notifications.
+/// - Uses SafePlacePlayerCoroutine and PlacePlayerUsingSafeRoutine for safe player placement.
 /// </summary>
 public partial class TeleportManager : MonoBehaviour
 {
