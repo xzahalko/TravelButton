@@ -29,6 +29,7 @@ public static class TeleportHelpers
     /// Attempt to teleport player to a safe position.
     /// Forwards to TravelButtonUI.AttemptTeleportToPositionSafe(target).
     /// </summary>
+    [Obsolete("AttemptTeleportToPositionSafe is deprecated. Use TeleportManager.PlacePlayerUsingSafeRoutine for coroutine-based safe placement.", false)]
     public static bool AttemptTeleportToPositionSafe(Vector3 target)
     {
         return TravelButtonUI.AttemptTeleportToPositionSafe(target);
