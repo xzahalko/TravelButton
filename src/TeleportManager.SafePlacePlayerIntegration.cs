@@ -1,129 +1,260 @@
 using System;
 using System.Collections;
 using UnityEngine;
+using UnityEngine.AI;
 
-public partial class TeleportManager : MonoBehaviour
+/// <summary>
+/// TeleportManagerSafePlace: Static helper class that provides robust post-load safe-placement integration.
+/// This ensures TeleportMode=New teleports reliably place the player on ground/navmesh and the 
+/// CharacterController/Rigidbody settle correctly after scene load.
+/// </summary>
+public static class TeleportManagerSafePlace
 {
-    // Tune these constants for overlap/raise behavior
-    private const float OVERLAP_CHECK_RADIUS = 0.45f; // approximate player radius for overlap checks
-    private const float OVERLAP_RAISE_STEP = 0.25f;   // amount to raise per iteration when embedded
-    private const float OVERLAP_MAX_RAISE = 3.0f;     // maximum upward correction to escape embedding
+    // Tune these constants for grounding behavior
+    private const float RAYCAST_UP_OFFSET = 4.0f;      // how far above target we start raycast
+    private const float RAYCAST_MAX_DOWN = 20.0f;      // max distance to look down for ground
+    private const float NAV_SAMPLE_RADIUS = 6.0f;      // NavMesh search radius
+    private const float OVERLAP_CHECK_RADIUS = 0.5f;   // approximate player radius for overlap checks
+    private const float OVERLAP_RAISE_STEP = 0.25f;    // amount to raise per iteration when embedded
+    private const float OVERLAP_MAX_RAISE = 2.0f;      // maximum upward correction to escape embedding
+    private const float PLAYER_WAIT_TIMEOUT = 5.0f;    // max time to wait for player to exist in scene
+    private const float CC_NUDGE_AMOUNT = 0.25f;       // CharacterController downward nudge distance
 
-    // Primary safe placement entrypoint used after scene activation.
-    // Call: yield return StartCoroutine(SafePlacePlayerCoroutine(finalTarget));
-    public IEnumerator SafePlacePlayerCoroutine(Vector3 finalTarget)
+    /// <summary>
+    /// Primary safe placement coroutine to be called after scene load.
+    /// Finds the player, computes grounded position, applies it, and settles physics.
+    /// </summary>
+    /// <param name="host">MonoBehaviour host to run this coroutine on</param>
+    /// <param name="requestedTarget">Target position for player placement</param>
+    /// <param name="onComplete">Callback invoked with true if placement succeeded, false otherwise</param>
+    public static IEnumerator PlacePlayerUsingSafeRoutine_Internal(MonoBehaviour host, Vector3 requestedTarget, Action<bool> onComplete)
     {
-        TBLog.Info($"SafePlacePlayerCoroutine: requested finalTarget={finalTarget}");
+        TBLog.Info($"TeleportManagerSafePlace: requestedTarget={requestedTarget}");
 
-        // Detection phase: try to locate TravelButtonUI (do not yield inside try/catch)
-        TravelButtonUI tbui = null;
-        try
+        // Step 1: Wait for player root/CharacterController to exist in the newly loaded scene
+        Transform playerRoot = null;
+        CharacterController cc = null;
+        float waitStart = Time.realtimeSinceStartup;
+        bool playerFound = false;
+
+        while (Time.realtimeSinceStartup - waitStart < PLAYER_WAIT_TIMEOUT)
         {
-            tbui = UnityEngine.Object.FindObjectOfType<TravelButtonUI>();
-            TBLog.Info($"SafePlacePlayerCoroutine: TravelButtonUI lookup -> {(tbui != null ? "FOUND" : "null")}");
+            // Try finding by CharacterController first
+            try
+            {
+                cc = UnityEngine.Object.FindObjectOfType<CharacterController>();
+                if (cc != null)
+                {
+                    playerRoot = cc.transform;
+                    playerFound = true;
+                    TBLog.Info($"TeleportManagerSafePlace: found player by CharacterController on '{cc.gameObject.name}'");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: FindObjectOfType<CharacterController> threw: {ex.Message}");
+            }
+
+            // Fallback: try tag "Player"
+            try
+            {
+                GameObject playerGo = GameObject.FindWithTag("Player");
+                if (playerGo != null)
+                {
+                    playerRoot = playerGo.transform;
+                    playerFound = true;
+                    TBLog.Info($"TeleportManagerSafePlace: found player by tag 'Player' -> '{playerGo.name}'");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: FindWithTag threw: {ex.Message}");
+            }
+
+            // Fallback: try name prefix "PlayerChar" (non-Cam objects)
+            try
+            {
+                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+                {
+                    if (g == null || string.IsNullOrEmpty(g.name)) continue;
+                    if (!g.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase)) continue;
+                    
+                    // Skip camera-like objects
+                    if (g.name.IndexOf("Cam", StringComparison.OrdinalIgnoreCase) >= 0 || g.GetComponent<Camera>() != null)
+                        continue;
+
+                    playerRoot = g.transform;
+                    playerFound = true;
+                    TBLog.Info($"TeleportManagerSafePlace: found player by name heuristic -> '{g.name}'");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: heuristic scan threw: {ex.Message}");
+            }
+
+            if (playerFound) break;
+
+            // Wait a frame before trying again
+            yield return null;
         }
-        catch (Exception ex)
-        {
-            TBLog.Warn("SafePlacePlayerCoroutine: FindObjectOfType<TravelButtonUI> threw: " + ex.ToString());
-            tbui = null;
-        }
 
-        // If we do NOT have a supplied finalTarget (zero), allow TravelButtonUI to decide.
-        // If a finalTarget was provided (coords hint present), prefer our internal placement
-        // so clamping and overlap-raise remain authoritative.
-        bool haveSuppliedTarget = (finalTarget != Vector3.zero);
-        TBLog.Info($"SafePlacePlayerCoroutine: haveSuppliedTarget={haveSuppliedTarget}");
-
-        if (tbui != null && !haveSuppliedTarget)
+        if (!playerFound || playerRoot == null)
         {
-            TBLog.Info("SafePlacePlayerCoroutine: delegating to TravelButtonUI.SafeTeleportRoutine (no explicit finalTarget)");
-            // Log before delegation
-            float delStart = Time.realtimeSinceStartup;
-            yield return tbui.SafeTeleportRoutine(null, finalTarget); // TravelButtonUI handles its own safety
-            float delDur = Time.realtimeSinceStartup - delStart;
-            TBLog.Info($"SafePlacePlayerCoroutine: returned from TravelButtonUI.SafeTeleportRoutine (duration={delDur:F2}s)");
+            TBLog.Warn($"TeleportManagerSafePlace: timeout waiting for player (waited {PLAYER_WAIT_TIMEOUT}s); aborting placement");
+            try { onComplete?.Invoke(false); } catch (Exception ex) { TBLog.Warn($"TeleportManagerSafePlace: onComplete callback threw: {ex}"); }
             yield break;
         }
-        else if (tbui != null && haveSuppliedTarget)
-        {
-            TBLog.Info("SafePlacePlayerCoroutine: TravelButtonUI present but explicit finalTarget supplied � using internal safe placement to respect coordsHint.");
-        }
 
-        // Fallback detection: try to find player transform (no yields inside try/catch)
-        Transform playerTransform = null;
+        TBLog.Info($"TeleportManagerSafePlace: player root found: '{playerRoot.name}' at position {playerRoot.position}");
+
+        // Step 2: Compute grounded final position using raycast → NavMesh → overlap/raise fallback
+        Vector3 finalPos = requestedTarget;
+        bool groundedViaRaycast = false;
+        bool groundedViaNavmesh = false;
+        string groundingMethod = "none";
+
+        // 2a) Try raycast down from above the requested target
         try
         {
-            var go = GameObject.FindWithTag("Player");
-            if (go != null)
+            Vector3 rayStart = requestedTarget + Vector3.up * RAYCAST_UP_OFFSET;
+            RaycastHit hit;
+            if (Physics.Raycast(rayStart, Vector3.down, out hit, RAYCAST_UP_OFFSET + RAYCAST_MAX_DOWN, ~0, QueryTriggerInteraction.Ignore))
             {
-                playerTransform = go.transform;
-                TBLog.Info($"SafePlacePlayerCoroutine: found player by tag 'Player' -> name='{go.name}'");
+                // Use hit.point as ground; add small offset to avoid interpenetration
+                finalPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
+                groundedViaRaycast = true;
+                groundingMethod = "raycast";
+                TBLog.Info($"TeleportManagerSafePlace: grounded by raycast to {hit.point} => finalPos={finalPos} (collider='{hit.collider?.name}')");
             }
             else
             {
-                TBLog.Info("SafePlacePlayerCoroutine: GameObject.FindWithTag('Player') returned null; scanning for PlayerChar* names");
-                int scanned = 0;
-                foreach (var g in GameObject.FindObjectsOfType<GameObject>())
-                {
-                    scanned++;
-                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
-                    {
-                        playerTransform = g.transform;
-                        TBLog.Info($"SafePlacePlayerCoroutine: found player by name heuristic -> '{g.name}' (scanned {scanned} GameObjects)");
-                        break;
-                    }
-                }
-                if (playerTransform == null) TBLog.Info($"SafePlacePlayerCoroutine: player search scanned {scanned} GameObjects and found no candidate.");
+                TBLog.Info("TeleportManagerSafePlace: raycast down found no ground under requested target.");
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: error locating player transform: " + ex.ToString());
-            playerTransform = null;
+            TBLog.Warn($"TeleportManagerSafePlace: raycast grounding threw: {ex}");
         }
 
-        if (playerTransform == null)
+        // 2b) If no raycast ground, try NavMesh.SamplePosition
+        if (!groundedViaRaycast)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: no player transform found; aborting placement");
-            yield break;
+            try
+            {
+                NavMeshHit navHit;
+                if (NavMesh.SamplePosition(requestedTarget, out navHit, NAV_SAMPLE_RADIUS, NavMesh.AllAreas))
+                {
+                    finalPos = navHit.position;
+                    groundedViaNavmesh = true;
+                    groundingMethod = "navmesh";
+                    TBLog.Info($"TeleportManagerSafePlace: snapped to NavMesh at {navHit.position} (distance={navHit.distance})");
+                }
+                else
+                {
+                    TBLog.Info("TeleportManagerSafePlace: NavMesh.SamplePosition failed to find nearby nav position.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: NavMesh.SamplePosition threw: {ex}");
+            }
         }
 
-        // Determine a safe position to set (we already passed in finalTarget which should be pre-grounded/clamped)
-        Vector3 safe = finalTarget;
-        TBLog.Info($"SafePlacePlayerCoroutine: chosen pre-placement pos {safe} (player transform root='{playerTransform.root?.name ?? "<null>"}')");
+        // 2c) If neither raycast nor navmesh, use overlap/raise fallback
+        if (!groundedViaRaycast && !groundedViaNavmesh)
+        {
+            try
+            {
+                TBLog.Info("TeleportManagerSafePlace: attempting overlap/raise fallback to avoid intersections.");
+                bool fixedUp = false;
+                int maxSteps = Mathf.CeilToInt(OVERLAP_MAX_RAISE / OVERLAP_RAISE_STEP);
+                
+                for (int i = 0; i <= maxSteps; i++)
+                {
+                    Vector3 checkPos = requestedTarget + Vector3.up * (i * OVERLAP_RAISE_STEP);
+                    Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                    bool overlapping = false;
+                    
+                    if (hits != null && hits.Length > 0)
+                    {
+                        foreach (var h in hits)
+                        {
+                            if (h == null || h.transform == null) continue;
+                            if (h.transform.IsChildOf(playerRoot)) continue;
+                            overlapping = true;
+                            break;
+                        }
+                    }
 
-        // Gather physics/controller comps and remember state (no yields)
+                    TBLog.Info($"TeleportManagerSafePlace: overlap step {i}, hits={(hits?.Length ?? 0)}, overlapping={overlapping}, checkPos={checkPos}");
+
+                    if (!overlapping)
+                    {
+                        finalPos = checkPos;
+                        fixedUp = true;
+                        groundingMethod = "overlap-raise";
+                        break;
+                    }
+                }
+
+                if (!fixedUp)
+                {
+                    TBLog.Warn($"TeleportManagerSafePlace: could not find non-overlapping spot; using requestedTarget {requestedTarget}");
+                    finalPos = requestedTarget;
+                    groundingMethod = "fallback-requested";
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: overlap fallback threw: {ex}");
+                finalPos = requestedTarget;
+                groundingMethod = "fallback-exception";
+            }
+        }
+
+        TBLog.Info($"TeleportManagerSafePlace: grounding strategy used: {groundingMethod}, finalPos={finalPos}");
+
+        // Step 3: Get CharacterController and Rigidbody components, remember their states
         Rigidbody rb = null;
-        CharacterController cc = null;
         bool ccWasEnabled = false;
         bool rbWasKinematic = false;
+
         try
         {
-            var rbcands = playerTransform.GetComponentsInChildren<Rigidbody>(true);
-            TBLog.Info($"SafePlacePlayerCoroutine: found {rbcands?.Length ?? 0} Rigidbody(s) under player transform.");
+            // Re-get CharacterController from playerRoot if we didn't find it initially
+            if (cc == null)
+            {
+                cc = playerRoot.GetComponentInChildren<CharacterController>(true);
+            }
+            
+            var rbcands = playerRoot.GetComponentsInChildren<Rigidbody>(true);
             if (rbcands != null && rbcands.Length > 0) rb = rbcands[0];
-            cc = playerTransform.GetComponentInChildren<CharacterController>(true);
-            TBLog.Info($"SafePlacePlayerCoroutine: CharacterController present? {(cc != null ? "YES" : "NO")}");
+
             ccWasEnabled = cc != null ? cc.enabled : false;
             rbWasKinematic = rb != null ? rb.isKinematic : false;
-            TBLog.Info($"SafePlacePlayerCoroutine: recorded ccWasEnabled={ccWasEnabled}, rbWasKinematic={rbWasKinematic}");
+
+            TBLog.Info($"TeleportManagerSafePlace: cc={(cc != null ? "YES" : "NO")} ccWasEnabled={ccWasEnabled}, rb={(rb != null ? "YES" : "NO")} rbWasKinematic={rbWasKinematic}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: error reading player components: " + ex.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: error reading components: {ex}");
         }
 
-        // Disable movement/physics as best-effort (no yields)
+        // Step 4: Disable CharacterController and set Rigidbody kinematic, clear velocities
         try
         {
             if (cc != null)
             {
-                TBLog.Info("SafePlacePlayerCoroutine: disabling CharacterController");
                 cc.enabled = false;
+                TBLog.Info("TeleportManagerSafePlace: CharacterController disabled for repositioning");
             }
+            
             if (rb != null)
             {
-                TBLog.Info($"SafePlacePlayerCoroutine: setting Rigidbody.isKinematic=true on '{rb.gameObject.name}' (was {rbWasKinematic})");
                 rb.isKinematic = true;
                 try
                 {
@@ -132,264 +263,142 @@ public partial class TeleportManager : MonoBehaviour
                 }
                 catch (Exception exVel)
                 {
-                    TBLog.Warn("SafePlacePlayerCoroutine: failed to zero rigidbody velocities: " + exVel.ToString());
+                    TBLog.Warn($"TeleportManagerSafePlace: failed to zero rigidbody velocities: {exVel}");
                 }
+                TBLog.Info($"TeleportManagerSafePlace: Rigidbody set to kinematic, velocities cleared");
             }
-            // NOTE: if your game has custom controllers (LocalPlayer/PlayerController), disable them here similarly.
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: error disabling controllers/physics: " + ex.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: error disabling components: {ex}");
         }
 
-        // Record pre-move position for diagnostics
-        Vector3 beforePos = Vector3.zero;
+        // Step 5: Apply the final position (do not yield inside this try block)
+        bool appliedPosition = false;
         try
         {
-            beforePos = playerTransform.position;
-            TBLog.Info($"SafePlacePlayerCoroutine: player position before move = {beforePos}");
-        }
-        catch { }
-
-        // Set the position (no yields inside try)
-        try
-        {
-            playerTransform.position = safe;
-            TBLog.Info($"SafePlacePlayerCoroutine: set player position to {safe}");
+            TBLog.Info($"TeleportManagerSafePlace: applying finalPos={finalPos}");
+            playerRoot.position = finalPos;
+            appliedPosition = true;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: set position failed: " + ex.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: failed to set position: {ex}");
         }
 
-        // Small immediate overlap-check and raise if embedded (D)
+        // Step 6: Wait for physics to notice the transform change (yields outside try/catch)
+        if (appliedPosition)
+        {
+            yield return new WaitForFixedUpdate();
+            yield return new WaitForFixedUpdate();
+            yield return null; // allow Update to run once as well
+        }
+        else
+        {
+            // Still yield one frame so caller's coroutine scheduling remains sane
+            yield return null;
+        }
+
+        // Step 7: Call Physics.SyncTransforms to ensure physics uses the new transform immediately
         try
         {
-            // If player is overlapping geometry at the placed position, try raising in small steps.
-            bool fixedUp = false;
-            int maxSteps = Mathf.CeilToInt(OVERLAP_MAX_RAISE / OVERLAP_RAISE_STEP);
-            TBLog.Info($"SafePlacePlayerCoroutine: overlap check will try up to {maxSteps} steps (step={OVERLAP_RAISE_STEP}, maxRaise={OVERLAP_MAX_RAISE}, radius={OVERLAP_CHECK_RADIUS})");
-            for (int i = 0; i <= maxSteps; i++)
-            {
-                Vector3 checkPos = playerTransform.position + Vector3.up * (i * OVERLAP_RAISE_STEP);
-                // Perform an overlap check at the player's feet area
-                Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, OVERLAP_CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
-                int hitsCount = hits?.Length ?? 0;
-                int nonSelfHits = 0;
-                var hitNames = new System.Text.StringBuilder();
-
-                bool overlapping = false;
-                if (hits != null && hits.Length > 0)
-                {
-                    foreach (var h in hits)
-                    {
-                        if (h == null || h.transform == null) continue;
-                        bool isSelf = h.transform.IsChildOf(playerTransform);
-                        if (!isSelf)
-                        {
-                            nonSelfHits++;
-                            hitNames.Append(h.name).Append(",");
-                            overlapping = true;
-                        }
-                    }
-                }
-
-                TBLog.Info($"SafePlacePlayerCoroutine: overlap step {i}: hits={hitsCount}, nonSelfHits={nonSelfHits}, overlapping={overlapping}, checkPos={checkPos}");
-
-                if (!overlapping)
-                {
-                    // Move player up to this non-overlapping checkPos
-                    if (i > 0)
-                    {
-                        playerTransform.position = checkPos;
-                        TBLog.Info($"SafePlacePlayerCoroutine: moved player to non-overlapping position at step {i}: {playerTransform.position}");
-                    }
-                    fixedUp = true;
-                    break;
-                }
-            }
-
-            if (!fixedUp)
-            {
-                TBLog.Warn($"SafePlacePlayerCoroutine: could not find non-overlapping spot within {OVERLAP_MAX_RAISE}m above {playerTransform.position}. Player may still be embedded.");
-            }
+            Physics.SyncTransforms();
+            TBLog.Info("TeleportManagerSafePlace: Physics.SyncTransforms called");
         }
-        catch (Exception exOverlap)
+        catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: overlap/raise check failed: " + exOverlap.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: Physics.SyncTransforms threw: {ex}");
         }
 
-        // Wait two frames to let scene scripts and physics settle (yields are outside try/catch)
-        TBLog.Info("SafePlacePlayerCoroutine: waiting two frames for physics to settle");
-        yield return null;
-        yield return null;
+        // Step 8: Force-enable CharacterController (recommended default) and keep RB kinematic while CC settles
+        bool ccForced = false;
+        try
+        {
+            if (cc != null)
+            {
+                if (!cc.enabled)
+                {
+                    cc.enabled = true;
+                    ccForced = true;
+                    TBLog.Info("TeleportManagerSafePlace: CharacterController force-enabled for settling");
+                }
+                else
+                {
+                    TBLog.Info("TeleportManagerSafePlace: CharacterController already enabled");
+                }
+            }
 
-        // Restore physics/controllers (no yields)
+            // Keep Rigidbody kinematic while CC settles; clear velocities again
+            if (rb != null)
+            {
+                try
+                {
+                    rb.velocity = Vector3.zero;
+                    rb.angularVelocity = Vector3.zero;
+                }
+                catch { }
+                rb.isKinematic = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"TeleportManagerSafePlace: error during CC/RB force-enable: {ex}");
+        }
+
+        // Step 9: Nudge CharacterController down to trigger grounding/collision probes
+        if (cc != null && cc.enabled)
+        {
+            try
+            {
+                cc.Move(Vector3.down * CC_NUDGE_AMOUNT);
+                TBLog.Info($"TeleportManagerSafePlace: CharacterController nudged down by {CC_NUDGE_AMOUNT}");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"TeleportManagerSafePlace: CharacterController nudge threw: {ex}");
+            }
+
+            // Wait one physics tick for the CharacterController to settle
+            yield return new WaitForFixedUpdate();
+            yield return null;
+        }
+
+        // Step 10: Restore Rigidbody.isKinematic to original value, zero velocities again
         try
         {
             if (rb != null)
             {
                 try
                 {
-                    rb.isKinematic = rbWasKinematic;
                     rb.velocity = Vector3.zero;
                     rb.angularVelocity = Vector3.zero;
-                    TBLog.Info($"SafePlacePlayerCoroutine: restored Rigidbody.isKinematic={rbWasKinematic} on '{rb.gameObject.name}'");
+                    rb.isKinematic = rbWasKinematic;
+                    TBLog.Info($"TeleportManagerSafePlace: Rigidbody.isKinematic restored to {rbWasKinematic}");
                 }
-                catch (Exception exRestoreRb)
-                {
-                    TBLog.Warn("SafePlacePlayerCoroutine: failed restoring rigidbody state: " + exRestoreRb.ToString());
-                }
+                catch { }
             }
-            if (cc != null)
-            {
-                cc.enabled = ccWasEnabled;
-                TBLog.Info($"SafePlacePlayerCoroutine: restored CharacterController.enabled={ccWasEnabled}");
-            }
-            // Re-enable custom controllers here (if you disabled any)
+
+            // If we forced CC on but it was originally disabled, keep it enabled (recommended for reliability)
+            // Most game systems expect CC to be active after placement
+            Vector3 finalPlayerPos = playerRoot.position;
+            TBLog.Info($"TeleportManagerSafePlace: final pos={finalPlayerPos} ccEnabled={(cc != null ? cc.enabled.ToString() : "<none>")} rbIsKinematic={(rb != null ? rb.isKinematic.ToString() : "<none>")}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: error restoring controllers/physics: " + ex.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: restore failed: {ex}");
         }
 
-        Vector3 afterPos = Vector3.zero;
+        // Step 11: Invoke onComplete callback with success=true (best-effort)
         try
         {
-            afterPos = playerTransform.position;
-            TBLog.Info($"SafePlacePlayerCoroutine: placement complete. before={beforePos}, after={afterPos}, playerName='{playerTransform.name}'");
+            TBLog.Info("TeleportManagerSafePlace: placement succeeded (best-effort)");
+            onComplete?.Invoke(true);
         }
         catch (Exception ex)
         {
-            TBLog.Warn("SafePlacePlayerCoroutine: error reading final player position: " + ex.ToString());
+            TBLog.Warn($"TeleportManagerSafePlace: onComplete callback threw: {ex}");
         }
 
         yield break;
-    }
-
-    // Helper: attempt to place the player safely using SafePlacePlayerCoroutine
-    // Invokes onComplete(true) if player's position changed (movement detected)
-    public IEnumerator PlacePlayerUsingSafeRoutine(Vector3 finalTarget, Action<bool> onComplete)
-    {
-        TBLog.Info($"PlacePlayerUsingSafeRoutine: ENTER finalTarget={finalTarget}");
-
-        Vector3 beforePos = Vector3.zero;
-        bool haveBefore = false;
-        try
-        {
-            haveBefore = TryGetPlayerPosition(out beforePos);
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: TryGetPlayerPosition threw: " + ex.ToString());
-            haveBefore = false;
-        }
-        TBLog.Info($"PlacePlayerUsingSafeRoutine: before position present={haveBefore} pos={(haveBefore ? beforePos.ToString() : "<no-before>")}");
-
-        // Delegate to safe placement (which will yield TravelButtonUI.SafeTeleportRoutine if available)
-        float startTime = Time.realtimeSinceStartup;
-
-        TBLog.Info("PlacePlayerUsingSafeRoutine: starting SafePlacePlayerCoroutine...");
-        yield return StartCoroutine(SafePlacePlayerCoroutine(finalTarget));
-        float dur = Time.realtimeSinceStartup - startTime;
-        TBLog.Info($"PlacePlayerUsingSafeRoutine: SafePlacePlayerCoroutine completed in {dur:F2}s");
-
-        Vector3 afterPos = Vector3.zero;
-        bool haveAfter = false;
-        try
-        {
-            haveAfter = TryGetPlayerPosition(out afterPos);
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: TryGetPlayerPosition (after) threw: " + ex.ToString());
-            haveAfter = false;
-        }
-        TBLog.Info($"PlacePlayerUsingSafeRoutine: after position present={haveAfter} pos={(haveAfter ? afterPos.ToString() : "<no-after>")}");
-
-        bool moved = false;
-        if (haveBefore && haveAfter)
-        {
-            var delta = afterPos - beforePos;
-            float sq = delta.sqrMagnitude;
-            moved = sq > 0.01f;
-            TBLog.Info($"PlacePlayerUsingSafeRoutine: computed movement delta={delta} sqrMagnitude={sq:F6} -> moved={moved}");
-        }
-        else if (!haveBefore && haveAfter)
-        {
-            moved = true;
-            TBLog.Info("PlacePlayerUsingSafeRoutine: no before position but have after position -> moved=true");
-        }
-        else
-        {
-            moved = false;
-            TBLog.Info("PlacePlayerUsingSafeRoutine: insufficient position info -> moved=false");
-        }
-
-        try
-        {
-            TBLog.Info("PlacePlayerUsingSafeRoutine: invoking onComplete callback with moved=" + moved);
-            onComplete?.Invoke(moved);
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("PlacePlayerUsingSafeRoutine: onComplete threw: " + ex.ToString());
-        }
-
-        TBLog.Info("PlacePlayerUsingSafeRoutine: EXIT");
-    }
-
-    // TeleportManager.cs
-    // public wrapper so external code can request the existing placement coroutine
-    public IEnumerator PlacePlayerUsingSafeRoutineWrapper(Vector3 finalPos, Action<bool> resultCallback)
-    {
-        // call your existing internal method (which may be private)
-        // this yields the same behavior but exposes a public entrypoint
-        yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, resultCallback));
-    }
-
-    // Helper: try to find player world position for movement detection
-    private bool TryGetPlayerPosition(out Vector3 pos)
-    {
-        pos = Vector3.zero;
-        try
-        {
-            TBLog.Info("TryGetPlayerPosition: attempting to find player by tag 'Player'");
-            var go = GameObject.FindWithTag("Player");
-            if (go != null)
-            {
-                pos = go.transform.position;
-                TBLog.Info($"TryGetPlayerPosition: found by tag 'Player' -> name='{go.name}', pos={pos}");
-                return true;
-            }
-
-            TBLog.Info("TryGetPlayerPosition: no GameObject with tag 'Player' found; scanning all GameObjects for 'PlayerChar*' names");
-            int scanned = 0;
-            foreach (var g in GameObject.FindObjectsOfType<GameObject>())
-            {
-                scanned++;
-                try
-                {
-                    if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
-                    {
-                        pos = g.transform.position;
-                        TBLog.Info($"TryGetPlayerPosition: found by name heuristic '{g.name}' after scanning {scanned} objects -> pos={pos}");
-                        return true;
-                    }
-                }
-                catch (Exception exInner)
-                {
-                    TBLog.Warn($"TryGetPlayerPosition: exception reading GameObject '{g?.name ?? "<null>"}' during scan: {exInner}");
-                }
-            }
-
-            TBLog.Info($"TryGetPlayerPosition: scanned {scanned} GameObjects; no player found");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryGetPlayerPosition: exception while locating player: " + ex.ToString());
-        }
-
-        return false;
     }
 }

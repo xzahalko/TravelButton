@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -376,7 +377,7 @@ public partial class TeleportManager : MonoBehaviour
             }
             else
             {
-                TBLog.Warn("[TeleportManager] TeleportService did not report movement; falling back to SafePlacePlayerCoroutine loop.");
+                TBLog.Warn("[TeleportManager] TeleportService did not report movement; falling back to TeleportManagerSafePlace loop.");
             }
         }
 
@@ -388,27 +389,41 @@ public partial class TeleportManager : MonoBehaviour
             while (attempt < maxTeleportAttempts && !teleported)
             {
                 attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using PlacePlayerUsingSafeRoutine.");
+                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using TeleportManagerSafePlace.");
 
                 bool placementSucceeded = false;
                 float callStart = Time.realtimeSinceStartup;
-                yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
+                
+                // Get coroutine host - prefer TeleportHelpersBehaviour, fallback to this
+                var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                if (host != null)
                 {
-                    placementSucceeded = moved;
-                }));
+                    yield return host.StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(host, finalPos, moved =>
+                    {
+                        placementSucceeded = moved;
+                    }));
+                }
+                else
+                {
+                    yield return StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, finalPos, moved =>
+                    {
+                        placementSucceeded = moved;
+                    }));
+                }
+                
                 float callDur = Time.realtimeSinceStartup - callStart;
 
-                TBLog.Info($"TeleportManager: PlacePlayerUsingSafeRoutine returned placementSucceeded={placementSucceeded} (duration={callDur:F2}s)");
+                TBLog.Info($"TeleportManager: TeleportManagerSafePlace returned placementSucceeded={placementSucceeded} (duration={callDur:F2}s)");
 
                 if (placementSucceeded)
                 {
-                    TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
+                    TBLog.Info("TeleportManager: TeleportManagerSafePlace reported success.");
                     teleported = true;
                     break;
                 }
                 else
                 {
-                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (PlacePlayerUsingSafeRoutine reported no movement).");
+                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (TeleportManagerSafePlace reported no movement).");
                 }
 
                 if (attempt < maxTeleportAttempts)
@@ -499,5 +514,36 @@ public partial class TeleportManager : MonoBehaviour
         }
 
         yield break;
+    }
+
+    // ============================================================================
+    // Compatibility wrappers for backward compatibility with existing code
+    // These delegate to the new TeleportManagerSafePlace static class
+    // ============================================================================
+
+    /// <summary>
+    /// Compatibility wrapper for PlacePlayerUsingSafeRoutine.
+    /// Delegates to TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal.
+    /// </summary>
+    public IEnumerator PlacePlayerUsingSafeRoutine(Vector3 finalPos, Action<bool> resultCallback)
+    {
+        var host = TeleportHelpersBehaviour.GetOrCreateHost();
+        if (host != null)
+        {
+            yield return host.StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(host, finalPos, resultCallback));
+        }
+        else
+        {
+            yield return StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, finalPos, resultCallback));
+        }
+    }
+
+    /// <summary>
+    /// Compatibility wrapper for PlacePlayerUsingSafeRoutineWrapper.
+    /// Delegates to TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal.
+    /// </summary>
+    public IEnumerator PlacePlayerUsingSafeRoutineWrapper(Vector3 finalPos, Action<bool> resultCallback)
+    {
+        yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, resultCallback));
     }
 }
