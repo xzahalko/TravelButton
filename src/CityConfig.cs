@@ -2,29 +2,24 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using Newtonsoft.Json;
 
-/// <summary>
-/// DTOs and JSON helpers for TravelButton_Cities.json (array form).
-/// TravelConfig uses a List<CityConfig> as the 'cities' property so callers can Add().
-/// </summary>
 [Serializable]
 public class CityConfig
 {
     public string name;
-    // Use sentinel -1 to mean "price not specified" because UnityEngine.JsonUtility doesn't support Nullable<int>
     public int price = -1;
     public float[] coords;
     public string targetGameObjectName;
     public string sceneName;
     public string desc;
-
-    // Persisted visited flag — default false.
     public bool visited = false;
-
     public CityConfig() { }
 
     public CityConfig(string name) { this.name = name; }
 
+    // Prevent double-serialization: ignore the property in JSON so only the 'visited' field is written.
+    [JsonIgnore]
     public bool Visited
     {
         get => visited;
@@ -46,38 +41,17 @@ public class CityConfig
 [Serializable]
 public class TravelConfig
 {
-    // Use List<T> so callers can Add(...) items
     public List<CityConfig> cities = new List<CityConfig>();
 
-    /// <summary>
-    /// Load TravelConfig from a JSON file using UnityEngine.JsonUtility (expects { "cities": [ ... ] }).
-    /// Falls back to object-keyed format if needed via ParseObjectKeyedForm.
-    /// </summary>
     public static TravelConfig LoadFromFile(string filePath)
     {
-        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
-        {
-            return null;
-        }
-
+        if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return null;
         try
         {
             string json = File.ReadAllText(filePath);
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                return null;
-            }
-
-            // Try to parse as array-form first (preferred format)
-            // Format: { "cities": [ { "name": "...", ... }, ... ] }
+            if (string.IsNullOrWhiteSpace(json)) return null;
             var wrapper = JsonUtility.FromJson<TravelConfig>(json);
-            if (wrapper != null && wrapper.cities != null && wrapper.cities.Count > 0)
-            {
-                return wrapper;
-            }
-
-            // Fallback: try to parse object-keyed form
-            // Format: { "cities": { "CityA": { ... }, "CityB": { ... } } }
+            if (wrapper != null && wrapper.cities != null && wrapper.cities.Count > 0) return wrapper;
             return ParseObjectKeyedForm(json);
         }
         catch (Exception ex)
@@ -433,13 +407,6 @@ public class TravelConfig
     public static TravelConfig Default()
     {
         var tc = new TravelConfig();
-
-        tc.cities.Add(new CityConfig("Cierzo") { price = 200, coords = new float[] { 1410.3f, 6.7f, 1665.6f }, targetGameObjectName = "Cierzo", sceneName = "CierzoNewTerrain", desc = "Cierzo - example description" });
-        tc.cities.Add(new CityConfig("Levant") { price = 200, coords = new float[] { -55.2f, 1.0f, 79.3f }, targetGameObjectName = "Levant_Location", sceneName = "Levant", desc = "Levant - example description" });
-        tc.cities.Add(new CityConfig("Monsoon") { price = 200, coords = new float[] { 61.5f, -3.7f, 167.5f }, targetGameObjectName = "Monsoon_Location", sceneName = "Monsoon", desc = "Monsoon - example description" });
-        tc.cities.Add(new CityConfig("Berg") { price = 200, coords = new float[] { 1202.4f, -13.0f, 1378.8f }, targetGameObjectName = "xxx", sceneName = "Berg", desc = "Berg - example description" });
-        tc.cities.Add(new CityConfig("Harmattan") { price = 200, coords = new float[] { 93.7f, 65.4f, 767.8f }, targetGameObjectName = "Harmattan_Location", sceneName = "Harmattan", desc = "Harmattan - example description" });
-        tc.cities.Add(new CityConfig("Sirocco") { price = 200, coords = new float[] { 62.5f, 56.8f, -54.0f }, targetGameObjectName = "Sirocco_Location", sceneName = "NewSirocco", desc = "Sirocco - example description" });
 
         return tc;
     }

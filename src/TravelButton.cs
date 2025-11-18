@@ -1,19 +1,24 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections;
+using System.Collections;
+using System.Collections.Generic;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq;
+using System.Reflection;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using static TravelButton;
-using Newtonsoft.Json;
+using static TravelButtonUI;
 
 //
 // TravelButtonMod.cs
@@ -260,7 +265,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // sanity checks to confirm BepInEx receives logs:
         TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
-        
+        try
+        {
+            CityJsonParser.InitCities();
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitCities: unexpected error in Awake: " + ex);
+        }
+
         // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
         // This is a best-effort load for deterministic defaults so that other initialization steps can observe cities.
         try
@@ -317,7 +330,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             // existing initialization (logger, config, etc.)
             // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
-            EnsureBepInExConfigBindings();
+            TravelButtonUI.EnsureCitiesInitializedFromJsonOrDefaults();
 
             // start the file watcher so external edits to the config file are detected
             StartConfigWatcher();
@@ -3369,11 +3382,86 @@ public static class TravelButton
         public string desc;
         public bool visited;
     }
-     
-    // It reuses your robust mapping logic but uses Newtonsoft.Json to produce the final JSON,
-    // and writes only a single canonical copy next to the plugin DLL (GetCitiesJsonPath()).
-    // Optionally a legacy cfg can be written into the detected BepInEx config folder (GetLegacyCfgPath()).
-    public static bool PersistCitiesToPluginFolder()
+
+    // Add these helpers inside the TravelButton class (near other reflection helpers)
+
+    private static string GetStringMemberSafe(object target, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null) return null;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            if (string.IsNullOrEmpty(name)) continue;
+            try
+            {
+                var p = t.GetProperty(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                if (p != null && p.CanRead)
+                {
+                    var val = p.GetValue(target, null);
+                    if (val != null) return val.ToString();
+                }
+
+                var f = t.GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                if (f != null)
+                {
+                    var val = f.GetValue(target);
+                    if (val != null) return val.ToString();
+                }
+            }
+            catch
+            {
+                // ignore and try next candidate
+            }
+        }
+        return null;
+    }
+
+    private static bool GetBoolMemberOrDefault(object target, bool defaultValue, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null) return defaultValue;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            if (string.IsNullOrEmpty(name)) continue;
+            try
+            {
+                var p = t.GetProperty(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                if (p != null && p.CanRead)
+                {
+                    var val = p.GetValue(target, null);
+                    if (val is bool b) return b;
+                    if (val != null)
+                    {
+                        // try common conversions
+                        if (bool.TryParse(val.ToString(), out bool parsed)) return parsed;
+                        try { return Convert.ToBoolean(val); } catch { }
+                    }
+                }
+
+                var f = t.GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                if (f != null)
+                {
+                    var val = f.GetValue(target);
+                    if (val is bool b2) return b2;
+                    if (val != null)
+                    {
+                        if (bool.TryParse(val.ToString(), out bool parsed2)) return parsed2;
+                        try { return Convert.ToBoolean(val); } catch { }
+                    }
+                }
+            }
+            catch
+            {
+                // ignore and try next
+            }
+        }
+        return defaultValue;
+    }
+
+    // PersistCitiesToPluginFolder: writes canonical JSON next to the plugin DLL
+    // By default (forceWrite = false) this writes only if the canonical JSON file is missing.
+    // If you pass forceWrite = true it will overwrite existing JSON.
+    public static bool PersistCitiesToPluginFolder(bool forceWrite = false)
     {
         try
         {
@@ -3385,54 +3473,21 @@ public static class TravelButton
                 return false;
             }
 
-            // Build CityConfig list from runtime cities (keeps your robust mapping)
-            var cityConfigs = new System.Collections.Generic.List<CityConfig>();
+            var cityConfigs = new List<CityConfig>();
             foreach (var c in TravelButton.Cities)
             {
                 try
                 {
-                    string descValue = null;
-                    try { descValue = GetStringMember(c, "desc", "description", "descText"); } catch { descValue = null; }
-
-                    // robust price extraction
-                    int priceSentinel = -1;
-                    try
-                    {
-                        if (c != null)
-                        {
-                            var t = c.GetType();
-                            object raw = null;
-                            var pinfo = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                            if (pinfo != null) raw = pinfo.GetValue(c, null);
-                            else
-                            {
-                                var finfo = t.GetField("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
-                                if (finfo != null) raw = finfo.GetValue(c);
-                            }
-
-                            if (raw != null)
-                            {
-                                if (raw is int ri) priceSentinel = ri;
-                                else if (raw is long rl) priceSentinel = Convert.ToInt32(rl);
-                                else if (raw is float rf) priceSentinel = Convert.ToInt32(rf);
-                                else if (raw is double rd) priceSentinel = Convert.ToInt32(rd);
-                                else priceSentinel = Convert.ToInt32(raw);
-                            }
-                        }
-                    }
-                    catch { priceSentinel = -1; }
-
                     var cc = new CityConfig
                     {
                         name = c?.name ?? string.Empty,
-                        price = priceSentinel,
+                        price = (c?.price ?? -1),
                         coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
                         targetGameObjectName = c?.targetGameObjectName,
                         sceneName = c?.sceneName,
-                        desc = descValue ?? string.Empty,
+                        desc = GetStringMemberSafe(c, "desc", "description", "descText") ?? string.Empty,
                         visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
                     };
-
                     cityConfigs.Add(cc);
                 }
                 catch (Exception ex)
@@ -3441,28 +3496,12 @@ public static class TravelButton
                 }
             }
 
-            // Create the JSON structure { "cities": [ ... ] }
             var wrapper = new { cities = cityConfigs };
+            string prettyJson = JsonConvert.SerializeObject(wrapper, Formatting.Indented);
 
-            // Serialize with Newtonsoft.Json (indented, culture-invariant default for numbers)
-            string prettyJson;
-            try
-            {
-                prettyJson = JsonConvert.SerializeObject(wrapper, Formatting.Indented);
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToPluginFolder: JSON serialization failed: " + ex);
-                return false;
-            }
-
-            // Determine canonical JSON path (next to plugin DLL)
             var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
             TBLog.Info($"PersistCitiesToPluginFolder: prepared TravelButton_Cities.json ({prettyJson.Length} bytes) to write at: {jsonPath}");
 
-            var wroteAny = false;
-
-            // Ensure directory exists and write JSON next to the plugin DLL
             try
             {
                 var dir = Path.GetDirectoryName(jsonPath);
@@ -3474,55 +3513,159 @@ public static class TravelButton
                 TBLog.Warn("PersistCitiesToPluginFolder: could not ensure directory for jsonPath: " + ex);
             }
 
+            if (!forceWrite && File.Exists(jsonPath))
+            {
+                TBLog.Info($"PersistCitiesToPluginFolder: skipping write because canonical JSON already exists at {jsonPath} (forceWrite=false).");
+                return false;
+            }
+
             try
             {
                 File.WriteAllText(jsonPath, prettyJson, System.Text.Encoding.UTF8);
                 TBLog.Info($"PersistCitiesToPluginFolder: wrote TravelButton_Cities.json to: {jsonPath}");
-                wroteAny = true;
                 try { TBLog.Info($"PersistCitiesToPluginFolder: wrote {new FileInfo(jsonPath).Length} bytes to: {jsonPath}"); } catch { }
+                TBLog.Info("PersistCitiesToPluginFolder: end. success=True");
+                return true;
             }
             catch (Exception ex)
             {
                 TBLog.Warn($"PersistCitiesToPluginFolder: write failed for {jsonPath}: {ex.Message}");
+                return false;
             }
-
-            // Optionally also write the legacy cfg in BepInEx/config (single canonical location).
-            // If you need to persist a legacy .cfg format, produce the contents here (legacyCfgContents)
-            // and the method will write it only into the detected config folder.
-            string legacyCfgContents = null;
-            // Example: if you want to produce a minimal legacy-format marker, uncomment:
-            // legacyCfgContents = "# TravelButton legacy cfg - generated by plugin\n";
-
-            if (!string.IsNullOrEmpty(legacyCfgContents))
-            {
-                var legacyPath = TravelButtonPlugin.GetLegacyCfgPath();
-                try
-                {
-                    var legDir = Path.GetDirectoryName(legacyPath);
-                    if (!string.IsNullOrEmpty(legDir) && !Directory.Exists(legDir))
-                        Directory.CreateDirectory(legDir);
-                }
-                catch { }
-
-                try
-                {
-                    File.WriteAllText(TravelButtonPlugin.GetLegacyCfgPath(), legacyCfgContents, System.Text.Encoding.UTF8);
-                    TBLog.Info($"PersistCitiesToPluginFolder: wrote legacy cfg to: {TravelButtonPlugin.GetLegacyCfgPath()}");
-                    wroteAny = true;
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"PersistCitiesToPluginFolder: failed to write legacy cfg: {ex.Message}");
-                }
-            }
-
-            TBLog.Info("PersistCitiesToPluginFolder: end. success=" + wroteAny);
-            return wroteAny;
         }
         catch (Exception ex)
         {
             TBLog.Warn("PersistCitiesToPluginFolder: unexpected error: " + ex);
             return false;
+        }
+    }
+
+    // New: update only visited flag and coords in the canonical JSON, preserve all other fields untouched.
+    // If a runtime city is not present, it will be appended.
+    public static bool PersistVisitedOnly()
+    {
+        try
+        {
+            TBLog.Info("PersistVisitedAndCoordsOnly: begin");
+
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                TBLog.Warn("PersistVisitedAndCoordsOnly: canonical path empty");
+                return false;
+            }
+
+            JObject root;
+            if (File.Exists(jsonPath))
+            {
+                // load existing JSON
+                try
+                {
+                    string txt = File.ReadAllText(jsonPath);
+                    root = string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("PersistVisitedAndCoordsOnly: failed to read/parse existing JSON, aborting: " + ex);
+                    return false;
+                }
+            }
+            else
+            {
+                // nothing exists -> create new structure
+                root = new JObject();
+                root["cities"] = new JArray();
+            }
+
+            // Ensure cities array exists
+            if (!(root["cities"] is JArray citiesArray))
+            {
+                citiesArray = new JArray();
+                root["cities"] = citiesArray;
+            }
+
+            // Build lookup by name for quick matching
+            var jsonIndexByName = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            foreach (var token in citiesArray.Children())
+            {
+                if (token is JObject jo)
+                {
+                    var name = jo.Value<string>("name") ?? jo.Value<string>("Name");
+                    if (!string.IsNullOrEmpty(name) && !jsonIndexByName.ContainsKey(name))
+                        jsonIndexByName[name] = jo;
+                }
+            }
+
+            // For each runtime city update visited and coords
+            foreach (var c in TravelButton.Cities)
+            {
+                if (c == null) continue;
+                string name = c.name ?? string.Empty;
+                if (string.IsNullOrEmpty(name)) continue;
+
+                JObject jo;
+                if (!jsonIndexByName.TryGetValue(name, out jo))
+                {
+                    // create a new minimal object with name + visited + coords
+                    jo = new JObject();
+                    jo["name"] = name;
+                    citiesArray.Add(jo);
+                    jsonIndexByName[name] = jo;
+                }
+
+                // update visited
+                bool visitedVal = GetBoolMemberOrDefault(c, false, "visited", "Visited");
+                jo["visited"] = visitedVal;
+            }
+
+            // Write back canonical JSON (indented)
+            try
+            {
+                var dir = Path.GetDirectoryName(jsonPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch { }
+
+            try
+            {
+                File.WriteAllText(jsonPath, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+                TBLog.Info($"PersistVisitedAndCoordsOnly: wrote updates to: {jsonPath}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"PersistVisitedAndCoordsOnly: write failed: {ex.Message}");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PersistVisitedAndCoordsOnly: unexpected error: " + ex);
+            return false;
+        }
+    }
+
+    // Small debug helper to log the canonical JSON contents (for verification)
+    public static void DumpCanonicalJsonToLog()
+    {
+        try
+        {
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (!File.Exists(jsonPath))
+            {
+                TBLog.Info("DumpCanonicalJsonToLog: canonical JSON not found at: " + jsonPath);
+                return;
+            }
+            var txt = File.ReadAllText(jsonPath);
+            TBLog.Info("DumpCanonicalJsonToLog: begin file contents ----------");
+            foreach (var line in txt.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                TBLog.Info("JSON: " + line);
+            TBLog.Info("DumpCanonicalJsonToLog: end file contents ----------");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpCanonicalJsonToLog: failed: " + ex.Message);
         }
     }
 
@@ -3627,20 +3770,6 @@ public static class TravelButton
         catch { }
         return null;
     }
-
-    private static bool GetBoolMemberOrDefault(object obj, bool defaultValue, params string[] names)
-    {
-        var v = GetMemberRaw(obj, names);
-        if (v == null) return defaultValue;
-        try
-        {
-            if (v is bool b) return b;
-            if (v is string s && bool.TryParse(s, out var pb)) return pb;
-            return Convert.ToBoolean(v);
-        }
-        catch { return defaultValue; }
-    }
-
 
     /// <summary>
     /// Set (or add) an entry CityName.Visited = true/false under [TravelButton.Cities]
