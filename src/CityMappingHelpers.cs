@@ -183,10 +183,40 @@ public static class CityMappingHelpers
                 return null;
             }
 
+            // Parse JSON but ignore comments (allow files with // header comments)
             JToken root;
             try
             {
-                root = JToken.Parse(txt);
+                // Trim only the leading comment/header block so internal comments in JSON (if any) remain untouched.
+                string trimmed;
+                using (var reader = new StringReader(txt))
+                {
+                    var sb = new System.Text.StringBuilder();
+                    string line;
+                    bool seenNonComment = false;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        if (!seenNonComment)
+                        {
+                            if (string.IsNullOrWhiteSpace(line))
+                                continue; // skip leading blank lines
+                            var t = line.TrimStart();
+                            if (t.StartsWith("//")) continue; // skip leading comment line
+                                                              // first non-comment, non-blank line -> start keeping from here
+                            seenNonComment = true;
+                        }
+                        sb.AppendLine(line);
+                    }
+                    trimmed = sb.ToString();
+                }
+
+                if (string.IsNullOrWhiteSpace(trimmed))
+                {
+                    TBLog.Warn($"ParseCitiesJsonFile: file contained only comments/whitespace: {full}");
+                    return null;
+                }
+
+                root = JToken.Parse(trimmed);
             }
             catch (Exception jex)
             {

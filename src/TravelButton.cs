@@ -331,6 +331,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // existing initialization (logger, config, etc.)
             // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
             CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
+            EnsureBepInExConfigBindings();
 
             // start the file watcher so external edits to the config file are detected
             StartConfigWatcher();
@@ -1551,7 +1552,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     // EnsureBepInExConfigBindings: do NOT create any BepInEx ConfigEntry for "Sirocco" so it won't appear
     // in the in-game ConfigurationManager UI. Do NOT remove or modify the cfg file; instead, read any
     // existing Sirocco values from disk and apply them to the runtime model so manual edits still work.
-    private void EnsureBepInExConfigBindings()
+    public void EnsureBepInExConfigBindings()
     {
         try
         {

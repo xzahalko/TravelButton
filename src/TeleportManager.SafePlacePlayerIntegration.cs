@@ -77,39 +77,39 @@ public partial class TeleportManager : MonoBehaviour
         TBLog.Info($"SafePlacePlayerCoroutine: chosen pre-placement pos {safe}");
 
         // Gather physics/controller comps and remember state (no yields)
-        Rigidbody rb = null;
-        CharacterController cc = null;
-        bool ccWasEnabled = false;
-        bool rbWasKinematic = false;
-        try
-        {
-            var rbcands = playerTransform.GetComponentsInChildren<Rigidbody>(true);
-            if (rbcands != null && rbcands.Length > 0) rb = rbcands[0];
-            cc = playerTransform.GetComponentInChildren<CharacterController>(true);
-            ccWasEnabled = cc != null ? cc.enabled : false;
-            rbWasKinematic = rb != null ? rb.isKinematic : false;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("SafePlacePlayerCoroutine: error reading player components: " + ex);
-        }
+        /*        Rigidbody rb = null;
+                CharacterController cc = null;
+                bool ccWasEnabled = false;
+                bool rbWasKinematic = false;
+                try
+                {
+                    var rbcands = playerTransform.GetComponentsInChildren<Rigidbody>(true);
+                    if (rbcands != null && rbcands.Length > 0) rb = rbcands[0];
+                    cc = playerTransform.GetComponentInChildren<CharacterController>(true);
+                    ccWasEnabled = cc != null ? cc.enabled : false;
+                    rbWasKinematic = rb != null ? rb.isKinematic : false;
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("SafePlacePlayerCoroutine: error reading player components: " + ex);
+                }
 
-        // Disable movement/physics as best-effort (no yields)
-        try
-        {
-            if (cc != null) cc.enabled = false;
-            if (rb != null)
-            {
-                rb.isKinematic = true;
-                try { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; } catch { }
-            }
-            // NOTE: if your game has custom controllers (LocalPlayer/PlayerController), disable them here similarly.
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("SafePlacePlayerCoroutine: error disabling controllers/physics: " + ex);
-        }
-
+                // Disable movement/physics as best-effort (no yields)
+                try
+                {
+                    if (cc != null) cc.enabled = false;
+                    if (rb != null)
+                    {
+                        rb.isKinematic = true;
+                        try { rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; } catch { }
+                    }
+                    // NOTE: if your game has custom controllers (LocalPlayer/PlayerController), disable them here similarly.
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("SafePlacePlayerCoroutine: error disabling controllers/physics: " + ex);
+                }
+        */
         // Set the position (no yields inside try)
         try
         {
@@ -169,6 +169,7 @@ public partial class TeleportManager : MonoBehaviour
         yield return null;
 
         // Restore physics/controllers (no yields)
+/*
         try
         {
             if (rb != null)
@@ -188,7 +189,7 @@ public partial class TeleportManager : MonoBehaviour
         {
             TBLog.Warn("SafePlacePlayerCoroutine: error restoring controllers/physics: " + ex);
         }
-
+*/
         TBLog.Info($"SafePlacePlayerCoroutine: placement complete at {playerTransform.position} for player {playerTransform.name}");
         yield break;
     }
