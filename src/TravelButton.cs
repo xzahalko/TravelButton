@@ -44,7 +44,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityVisited = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
 
     // Filenames used by the plugin
-    private const string CitiesJsonFileName = "TravelButton_Cities.json";
+    public const string CitiesJsonFileName = "TravelButton_Cities.json";
     private const string LegacyCfgFileName = "cz.valheimskal.travelbutton.cfg";
 
     /// <summary>
@@ -267,7 +267,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
-            CityJsonParser.InitCities();
+            CityMappingHelpers.InitCities();
         }
         catch (Exception ex)
         {
@@ -330,7 +330,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             // existing initialization (logger, config, etc.)
             // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
-            TravelButtonUI.EnsureCitiesInitializedFromJsonOrDefaults();
+            CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
 
             // start the file watcher so external edits to the config file are detected
             StartConfigWatcher();

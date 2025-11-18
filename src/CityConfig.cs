@@ -1,6 +1,8 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using UnityEngine;
 using Newtonsoft.Json;
 
@@ -403,11 +405,66 @@ public class TravelConfig
     }
 
     // Provide a default TravelConfig (seeded with user-provided defaults)
-    // NOTE: now sets 'visited' fields to false for each seeded city.
+    // This implementation obtains canonical defaults from ConfigManager.Default() and maps them into this TravelConfig form.
+    // If ConfigManager.Default() is unavailable or mapping fails, returns an empty TravelConfig.
     public static TravelConfig Default()
     {
-        var tc = new TravelConfig();
+        try
+        {
+            // Try to call ConfigManager.Default() via reflection to avoid hard compile-time coupling.
+            Type cmType = null;
+            try
+            {
+                cmType = Type.GetType("ConfigManager") ?? typeof(ConfigManager);
+            }
+            catch { cmType = null; }
 
-        return tc;
+            if (cmType != null)
+            {
+                var mi = cmType.GetMethod("Default", BindingFlags.Public | BindingFlags.Static);
+                if (mi != null)
+                {
+                    var defaultsObj = mi.Invoke(null, null);
+                    if (defaultsObj != null)
+                    {
+                        // Try to read a 'cities' member (dictionary or IEnumerable)
+                        object citiesVal = null;
+                        var prop = defaultsObj.GetType().GetProperty("cities", BindingFlags.Public | BindingFlags.Instance);
+                        if (prop != null) citiesVal = prop.GetValue(defaultsObj);
+                        else
+                        {
+                            var field = defaultsObj.GetType().GetField("cities", BindingFlags.Public | BindingFlags.Instance);
+                            if (field != null) citiesVal = field.GetValue(defaultsObj);
+                        }
+
+                        if (citiesVal != null)
+                        {
+                            var result = new TravelConfig();
+
+                            // If it's a dictionary (object keyed), iterate entries
+                            if (citiesVal is IDictionary dict)
+                            {
+                                CityMappingHelpers.MapDefaultCityToTarget(citiesVal, result.cities);
+                                return result;
+                            }
+
+                            // If it's an IEnumerable (list), iterate items and map
+                            if (citiesVal is IEnumerable ie)
+                            {
+                                CityMappingHelpers.MapParsedCityToTarget(citiesVal, result.cities);
+                                return result;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("[TravelButton] TravelConfig.Default reflection/mapping failed: " + ex);
+        }
+
+        // Last resort: return an empty TravelConfig
+        return new TravelConfig();
     }
 }

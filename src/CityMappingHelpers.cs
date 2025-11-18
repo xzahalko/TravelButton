@@ -28,20 +28,7 @@ public static class CityMappingHelpers
             // Try canonical plugin-path first (uses the runtime helper in TravelButton.cs)
             try
             {
-                string canonical = null;
-                try
-                {
-                    // Expect TravelButton.GetCitiesJsonPath() to exist and return the canonical path.
-                    // If the method is non-public in your codebase, change accessibility or call via your preferred accessor.
-                    var mi = typeof(TravelButton).GetMethod("GetCitiesJsonPath", BindingFlags. | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (mi != null)
-                        canonical = mi.Invoke(null, null) as string;
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("InitCities: failed calling TravelButton.GetCitiesJsonPath(): " + ex.Message);
-                    canonical = null;
-                }
+                var canonical = TryGetCanonicalCitiesJsonPath();
 
                 if (!string.IsNullOrEmpty(canonical))
                 {
@@ -84,13 +71,24 @@ public static class CityMappingHelpers
                 var pathsType = Type.GetType("BepInEx.Paths, BepInEx");
                 if (pathsType != null)
                 {
-                    var prop = pathsType.GetProperty("ConfigPath", BindingFlags. | BindingFlags.Public);
+                    // ConfigPath is a public static property on BepInEx.Paths
+                    var prop = pathsType.GetProperty("ConfigPath", BindingFlags.Static | BindingFlags.Public);
                     if (prop != null)
                     {
                         var cfg = prop.GetValue(null) as string;
                         if (!string.IsNullOrEmpty(cfg))
                         {
-                            var bepConfig = Path.Combine(cfg, "TravelButton_Cities.json");
+                            string fileName = "TravelButton_Cities.json";
+                            try
+                            {
+                                // Prefer the canonical filename constant if available
+                                fileName = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static) != null
+                                    ? TravelButtonPlugin.CitiesJsonFileName
+                                    : fileName;
+                            }
+                            catch { /* ignore and use literal fallback */ }
+
+                            var bepConfig = Path.Combine(cfg, fileName);
                             candidates.Add(bepConfig);
                         }
                     }
@@ -136,7 +134,7 @@ public static class CityMappingHelpers
                     string full = Path.GetFullPath(path);
                     if (!File.Exists(full)) continue;
 
-                    var list = CityJsonParser.ParseCitiesJsonFile(full);
+                    var list = ParseCitiesJsonFile(full);
                     if (list != null && list.Count > 0)
                     {
                         loadedCities = list;
@@ -304,7 +302,7 @@ public static class CityMappingHelpers
                                 coords[0] = arr[0].Value<float>();
                                 coords[1] = arr[1].Value<float>();
                                 coords[2] = arr[2].Value<float>();
-                                SetFloatArrayMember(city, coords, "coords", "Coords", "position", "Position");
+                                SetFloatArrayOnTarget(city, coords, "coords", "Coords", "position", "Position");
                             }
                         }
                         catch { /* ignore invalid coords */ }
@@ -1015,7 +1013,7 @@ public static class CityMappingHelpers
                     if (item is CityEntry ce)
                     {
                         var dst = Activator.CreateInstance(elementType);
-                        MapParsedCityToTarget_Public(ce, dst);
+                        MapParsedCityToTarget(ce, dst);
                         listInstance.Add(dst);
                     }
                     else
@@ -1128,6 +1126,104 @@ public static class CityMappingHelpers
         return -1;
     }
 
+    // Helper: try common ways to obtain the canonical cities JSON path.
+    // Returns the first plausible candidate path or null if none found.
+    // This consolidates the earlier reflection attempts and uses correct BindingFlags.
+    private static string TryGetCanonicalCitiesJsonPath()
+    {
+        // 1) Try TravelButton.GetCitiesJsonPath() if present (static method)
+        try
+        {
+            var tbType = typeof(TravelButton);
+            if (tbType != null)
+            {
+                var mi = tbType.GetMethod("GetCitiesJsonPath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (mi != null)
+                {
+                    var res = mi.Invoke(null, null) as string;
+                    if (!string.IsNullOrEmpty(res)) return res;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryGetCanonicalCitiesJsonPath: TravelButton.GetCitiesJsonPath() reflection failed: " + ex.Message);
+        }
+
+        // 2) Try BepInEx.Paths.ConfigPath (public static property) via reflection
+        try
+        {
+            var pathsType = Type.GetType("BepInEx.Paths, BepInEx");
+            if (pathsType != null)
+            {
+                var prop = pathsType.GetProperty("ConfigPath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+                if (prop != null)
+                {
+                    var cfg = prop.GetValue(null) as string;
+                    if (!string.IsNullOrEmpty(cfg))
+                    {
+                        string fileName = null;
+                        try
+                        {
+                            // Prefer the canonical filename constant if available
+                            var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                            if (f != null)
+                                fileName = TravelButtonPlugin.CitiesJsonFileName;
+                        }
+                        catch { /* ignore */ }
+
+                        if (string.IsNullOrEmpty(fileName)) fileName = "TravelButton_Cities.json";
+                        var candidate = Path.Combine(cfg, fileName);
+                        if (!string.IsNullOrEmpty(candidate)) return candidate;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryGetCanonicalCitiesJsonPath: BepInEx.Paths.ConfigPath reflection failed: " + ex.Message);
+        }
+
+        // 3) Try plugin assembly directory
+        try
+        {
+            var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            if (!string.IsNullOrEmpty(asmDir))
+            {
+                var fileName = "TravelButton_Cities.json";
+                try
+                {
+                    var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    if (f != null) fileName = TravelButtonPlugin.CitiesJsonFileName;
+                }
+                catch { }
+                var candidate = Path.Combine(asmDir, fileName);
+                return candidate;
+            }
+        }
+        catch { /* ignore */ }
+
+        // 4) Fallback: current working directory
+        try
+        {
+            var cwd = Directory.GetCurrentDirectory();
+            if (!string.IsNullOrEmpty(cwd))
+            {
+                var fileName = "TravelButton_Cities.json";
+                try
+                {
+                    var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    if (f != null) fileName = TravelButtonPlugin.CitiesJsonFileName;
+                }
+                catch { }
+                return Path.Combine(cwd, fileName);
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
     // ----------------------
     // Reflection mapping helpers
     // ----------------------
@@ -1149,26 +1245,46 @@ public static class CityMappingHelpers
         return null;
     }
 
-    private static void MapParsedCityToTarget(CityEntry src, object dst)
+    // Map parsed CityEntry (or any parsed DTO) -> target runtime instance (via reflection)
+    public static void MapParsedCityToTarget(object src, object dst)
     {
         if (src == null || dst == null) return;
         try
         {
-            SetStringOnTarget(dst, src.name, "name");
-            SetIntOnTarget(dst, src.price, "price");
-            SetFloatArrayOnTarget(dst, src.coords, "coords");
-            SetStringOnTarget(dst, src.targetGameObjectName, "targetGameObjectName", "target", "targetName");
-            SetStringOnTarget(dst, src.sceneName, "sceneName", "scene");
-            SetStringOnTarget(dst, src.desc, "desc", "description", "descText");
-            SetBoolOnTarget(dst, src.visited, "visited", "Visited");
+            // name
+            SetStringOnTarget(dst, GetStringFromSource(src, "name") ?? GetStringFromSource(src, "Name"), "name");
+
+            // price (int? in source)
+            var price = GetIntFromSource(src, "price") ?? GetIntFromSource(src, "Price");
+            SetIntOnTarget(dst, price ?? -1, "price");
+
+            // coords (float[] or enumerable)
+            var coords = GetFloatArrayFromSource(src, "coords") ?? GetFloatArrayFromSource(src, "Coords");
+            SetFloatArrayOnTarget(dst, coords, "coords");
+
+            // targetGameObjectName / target aliases
+            var targetName = GetStringFromSource(src, "targetGameObjectName") ?? GetStringFromSource(src, "target") ?? GetStringFromSource(src, "targetName");
+            SetStringOnTarget(dst, targetName, "targetGameObjectName", "target", "targetName");
+
+            // sceneName / scene
+            var scene = GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene");
+            SetStringOnTarget(dst, scene, "sceneName", "scene");
+
+            // desc / description / descText
+            var desc = GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description") ?? GetStringFromSource(src, "descText");
+            SetStringOnTarget(dst, desc, "desc", "description", "descText");
+
+            // visited flag
+            var visited = GetBoolFromSource(src, "visited") ?? GetBoolFromSource(src, "Visited");
+            SetBoolOnTarget(dst, visited ?? false, "visited", "Visited");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("CityMappingHelpers.MapParsedCityToTarget: failed mapping city '" + src?.name + "': " + ex);
+            TBLog.Warn("CityMappingHelpers.MapParsedCityToTarget: failed mapping city '" + GetStringFromSource(src, "name") + "': " + ex);
         }
     }
 
-    private static void MapDefaultCityToTarget(object src, object dst)
+    public static void MapDefaultCityToTarget(object src, object dst)
     {
         if (src == null || dst == null) return;
         try
@@ -1262,7 +1378,7 @@ public static class CityMappingHelpers
         }
     }
 
-    private static string GetStringFromSource(object src, string propName)
+    public static string GetStringFromSource(object src, string propName)
     {
         if (src == null) return null;
         var t = src.GetType();

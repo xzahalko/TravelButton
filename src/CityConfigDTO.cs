@@ -6,16 +6,17 @@ using UnityEngine;
 
 //
 // CityConfigDTO.cs
-// - DTOs for TravelButton_Cities.json: JsonCityConfig (per-city) and JsonTravelConfig (root).
+// - DTOs for the cities JSON: JsonCityConfig (per-city) and JsonTravelConfig (root).
 // - JSON load/save helpers using Unity's JsonUtility (no Newtonsoft dependency).
-// - JsonTravelConfig.Default() provides default cities when JSON is missing.
 //
-// NOTE: JsonCityConfig does NOT include 'enabled' or 'price' fields - those are managed by BepInEx config.
-//       JSON only contains city metadata: coords, targetGameObjectName, sceneName, desc.
+// IMPORTANT:
+// - This file is a pure DTO + JSON helpers. It MUST NOT contain seeded default city data.
+// - Canonical seeded defaults belong only in ConfigManager.Default() (ConfigManager.cs).
+// - Filename is not hard-coded here; this file uses TravelButtonPlugin.CitiesJsonFileName for the filename constant.
 //
 
 /// <summary>
-/// Per-city configuration DTO for TravelButton_Cities.json.
+/// Per-city configuration DTO for the cities JSON.
 /// Represents metadata loaded from JSON file.
 /// Does NOT include 'enabled' or 'price' fields - those are managed by BepInEx config.
 /// </summary>
@@ -23,10 +24,12 @@ using UnityEngine;
 public class JsonCityConfig
 {
     public string name;
+    public int? price;                  // Price can be null to indicate "use global/default"
     public float[] coords;              // [x, y, z] teleport coordinates
     public string targetGameObjectName; // GameObject name to find in scene
     public string sceneName;            // Unity scene name
     public string desc;                 // Optional description
+    public bool visited = false;        // persisted visited flag (single field is used for JSON)
 
     public JsonCityConfig() { }
 
@@ -37,7 +40,7 @@ public class JsonCityConfig
 }
 
 /// <summary>
-/// Root configuration DTO for TravelButton_Cities.json.
+/// Root configuration DTO for the cities JSON.
 /// Contains a list of JsonCityConfig objects.
 /// </summary>
 [Serializable]
@@ -46,58 +49,13 @@ public class JsonTravelConfig
     public List<JsonCityConfig> cities = new List<JsonCityConfig>();
 
     /// <summary>
-    /// Returns a default JsonTravelConfig with predefined cities.
-    /// Used when TravelButton_Cities.json does not exist.
+    /// Returns an empty JsonTravelConfig.
+    /// Do NOT seed defaults here — canonical defaults live in ConfigManager.Default().
     /// </summary>
     public static JsonTravelConfig Default()
     {
-        var config = new JsonTravelConfig();
-        config.cities = new List<JsonCityConfig>
-        {
-            new JsonCityConfig("Cierzo")
-            {
-                coords = new float[] { 1410.388f, 6.786f, 1665.642f },
-                targetGameObjectName = "Cierzo",
-                sceneName = "CierzoNewTerrain",
-                desc = "Starting city in the Chersonese region"
-            },
-            new JsonCityConfig("Levant")
-            {
-                coords = new float[] { -55.212f, 10.056f, 79.379f },
-                targetGameObjectName = "WarpLocation_HM",
-                sceneName = "Levant",
-                desc = "Desert city in the Abrassar region"
-            },
-            new JsonCityConfig("Monsoon")
-            {
-                coords = new float[] { 61.553f, -3.743f, 167.599f },
-                targetGameObjectName = "Monsoon_Location",
-                sceneName = "Monsoon",
-                desc = "Coastal city in the Hallowed Marsh"
-            },
-            new JsonCityConfig("Berg")
-            {
-                coords = new float[] { 1202.414f, -13.071f, 1378.836f },
-                targetGameObjectName = "Berg",
-                sceneName = "Berg",
-                desc = "Mountain city in the Enmerkar Forest"
-            },
-            new JsonCityConfig("Harmattan")
-            {
-                coords = new float[] { 93.757f, 65.474f, 767.849f },
-                targetGameObjectName = "Harmattan_Location",
-                sceneName = "Harmattan",
-                desc = "Desert city in the Antique Plateau"
-            },
-            new JsonCityConfig("Sirocco")
-            {
-                coords = new float[] { 600.0f, 1.2f, -300.0f },
-                targetGameObjectName = "Sirocco_Location",
-                sceneName = "NewSirocco",
-                desc = "Caldera settlement"
-            }
-        };
-        return config;
+        // Intentionally return an empty config. Seeded defaults must come from ConfigManager.Default().
+        return new JsonTravelConfig();
     }
 
     /// <summary>
@@ -121,7 +79,6 @@ public class JsonTravelConfig
             }
 
             // Remove comment lines (starting with //) before parsing
-            // This is a best-effort approach to allow documentation in JSON files
             var lines = new List<string>();
             foreach (var line in json.Split('\n'))
             {
@@ -165,8 +122,9 @@ public class JsonTravelConfig
             }
 
             // Add a header comment to the JSON file (using a workaround since JSON doesn't support comments)
+            string fileName = TravelButtonPlugin.CitiesJsonFileName;
             var sb = new StringBuilder();
-            sb.AppendLine("// TravelButton_Cities.json");
+            sb.AppendLine("// " + fileName);
             sb.AppendLine("// Schema: { \"cities\": [ { \"name\": \"...\", \"coords\": [x,y,z], \"targetGameObjectName\": \"...\", \"sceneName\": \"...\", \"desc\": \"...\" }, ... ] }");
             sb.AppendLine("// Note: 'enabled' and 'price' are managed by BepInEx config, not this file.");
             sb.AppendLine();
@@ -176,7 +134,7 @@ public class JsonTravelConfig
             sb.Append(json);
 
             File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
-            TBLog.Info($"SaveToJson: wrote TravelButton_Cities.json to {path}");
+            TBLog.Info($"SaveToJson: wrote {Path.GetFileName(path)} to {path}");
         }
         catch (Exception ex)
         {
@@ -185,7 +143,7 @@ public class JsonTravelConfig
     }
 
     /// <summary>
-    /// Attempt to find and load TravelButton_Cities.json from common locations.
+    /// Attempt to find and load the cities JSON from common locations.
     /// Returns null if not found in any candidate path.
     /// </summary>
     public static JsonTravelConfig TryLoadFromCommonLocations()
@@ -214,11 +172,13 @@ public class JsonTravelConfig
     }
 
     /// <summary>
-    /// Get candidate file paths for TravelButton_Cities.json in priority order.
+    /// Get candidate file paths for the cities JSON in priority order.
+    /// Uses TravelButtonPlugin.CitiesJsonFileName for the filename.
     /// </summary>
     private static List<string> GetCandidatePaths()
     {
         var paths = new List<string>();
+        string fileName = TravelButtonPlugin.CitiesJsonFileName;
 
         // BepInEx config directory
         try
@@ -226,8 +186,8 @@ public class JsonTravelConfig
             var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
             if (!string.IsNullOrEmpty(baseDir))
             {
-                paths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-                paths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+                paths.Add(Path.Combine(baseDir, "BepInEx", "config", fileName));
+                paths.Add(Path.Combine(baseDir, "config", fileName));
             }
         }
         catch { }
@@ -238,7 +198,7 @@ public class JsonTravelConfig
             var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             if (!string.IsNullOrEmpty(asmDir))
             {
-                paths.Add(Path.Combine(asmDir, "TravelButton_Cities.json"));
+                paths.Add(Path.Combine(asmDir, fileName));
             }
         }
         catch { }
@@ -249,7 +209,7 @@ public class JsonTravelConfig
             var cwd = Directory.GetCurrentDirectory();
             if (!string.IsNullOrEmpty(cwd))
             {
-                paths.Add(Path.Combine(cwd, "TravelButton_Cities.json"));
+                paths.Add(Path.Combine(cwd, fileName));
             }
         }
         catch { }
@@ -260,7 +220,7 @@ public class JsonTravelConfig
             var dataPath = Application.dataPath;
             if (!string.IsNullOrEmpty(dataPath))
             {
-                paths.Add(Path.Combine(dataPath, "TravelButton_Cities.json"));
+                paths.Add(Path.Combine(dataPath, fileName));
             }
         }
         catch { }
@@ -269,11 +229,14 @@ public class JsonTravelConfig
     }
 
     /// <summary>
-    /// Get the best candidate path for writing TravelButton_Cities.json.
+    /// Get the best candidate path for writing the cities JSON.
     /// Prefers BepInEx config dir, then plugin folder, then CWD.
+    /// Uses TravelButtonPlugin.CitiesJsonFileName for filename.
     /// </summary>
     public static string GetPreferredWritePath()
     {
+        string fileName = TravelButtonPlugin.CitiesJsonFileName;
+
         // Prefer BepInEx config directory
         try
         {
@@ -283,7 +246,7 @@ public class JsonTravelConfig
                 var configDir = Path.Combine(baseDir, "BepInEx", "config");
                 if (Directory.Exists(configDir))
                 {
-                    return Path.Combine(configDir, "TravelButton_Cities.json");
+                    return Path.Combine(configDir, fileName);
                 }
                 // Try to create the config dir if BepInEx folder exists
                 var bepInExDir = Path.Combine(baseDir, "BepInEx");
@@ -292,7 +255,7 @@ public class JsonTravelConfig
                     try
                     {
                         Directory.CreateDirectory(configDir);
-                        return Path.Combine(configDir, "TravelButton_Cities.json");
+                        return Path.Combine(configDir, fileName);
                     }
                     catch { }
                 }
@@ -306,12 +269,12 @@ public class JsonTravelConfig
             var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             if (!string.IsNullOrEmpty(asmDir))
             {
-                return Path.Combine(asmDir, "TravelButton_Cities.json");
+                return Path.Combine(asmDir, fileName);
             }
         }
         catch { }
 
         // Last resort: current working directory
-        return Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json");
+        return Path.Combine(Directory.GetCurrentDirectory(), fileName);
     }
 }

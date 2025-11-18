@@ -31,7 +31,7 @@
       "name": "Berg",
       "price": 200,
       "coords": [1202.4, 13.0, 1378.8],
-      "targetGameObjectName": "xxx",
+      "targetGameObjectName": "Berg",
       "sceneName": "Berg",
       "desc": "",
       "visited": true
