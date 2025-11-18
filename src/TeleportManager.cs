@@ -38,6 +38,49 @@ public partial class TeleportManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Ensure there is a TeleportManager instance. If not present, create a GameObject and add the component.
+    /// Returns the instance (new or existing).
+    /// </summary>
+    public static TeleportManager EnsureInstance()
+    {
+        if (Instance != null) return Instance;
+
+        try
+        {
+            var go = new GameObject("TeleportManager");
+            // Create component; Awake() on the component will run immediately and set Instance + DontDestroyOnLoad.
+            var tm = go.AddComponent<TeleportManager>();
+            // Defensive: if Awake didn't run for some reason, set Instance and DontDestroyOnLoad here.
+            if (Instance == null) Instance = tm;
+            try { GameObject.DontDestroyOnLoad(go); } catch { /* swallow in case of editor/runtime differences */ }
+
+            TBLog.Info("TeleportManager: created singleton instance at runtime (EnsureInstance).");
+            return Instance;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TeleportManager: EnsureInstance failed to create instance: " + ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Static safe entry point to request a scene teleport without requiring TeleportManager.Instance to already exist.
+    /// Returns true if request accepted (transition started).
+    /// </summary>
+    public static bool RequestSceneTeleport(string sceneName, string targetGameObjectName, Vector3 coordsHint, bool haveCoordsHint, int cost = 0)
+    {
+        var tm = EnsureInstance();
+        if (tm == null)
+        {
+            TBLog.Warn("TeleportManager.RequestSceneTeleport: could not ensure TeleportManager instance.");
+            return false;
+        }
+
+        return tm.StartSceneTeleport(sceneName, targetGameObjectName, coordsHint, haveCoordsHint, cost);
+    }
+
     // Add these instance wrappers into your TeleportManager MonoBehaviour class.
 
     /// <summary>
@@ -147,6 +190,58 @@ public partial class TeleportManager : MonoBehaviour
         }
     }
 
+    public bool StartSceneLoad(string sceneName, Vector3 coordsHint, Action<Scene, AsyncOperation, bool> onComplete)
+    {
+        if (string.IsNullOrEmpty(sceneName))
+        {
+            TBLog.Warn("TeleportManager.StartSceneLoad: sceneName is null/empty — rejecting request.");
+            TravelButtonPlugin.ShowPlayerNotification?.Invoke("Scene load cancelled: destination not configured.");
+            return false;
+        }
+
+        if (_isSceneTransitionInProgress)
+        {
+            TBLog.Warn("TeleportManager.StartSceneLoad: another scene transition is in progress; rejecting request.");
+            TravelButtonPlugin.ShowPlayerNotification?.Invoke("Scene load is already in progress. Please wait.");
+            return false;
+        }
+
+        // Mark transition in progress and start the loader coroutine. We will clear the flag when
+        // the onComplete callback fires (wrapped below) so that callers don't accidentally start
+        // other transitions concurrently.
+        _isSceneTransitionInProgress = true;
+
+        Action<Scene, AsyncOperation, bool> wrapped = (scene, asyncOp, ok) =>
+        {
+            try
+            {
+                onComplete?.Invoke(scene, asyncOp, ok);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("TeleportManager.StartSceneLoad: onComplete callback threw: " + ex);
+            }
+            finally
+            {
+                // Clear transition flag regardless of onComplete outcome so manager is usable again.
+                _isSceneTransitionInProgress = false;
+            }
+        };
+
+        try
+        {
+            StartCoroutine(LoadSceneCoroutine(sceneName, coordsHint, wrapped));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TeleportManager.StartSceneLoad: failed to start LoadSceneCoroutine: " + ex);
+            TravelButtonPlugin.ShowPlayerNotification?.Invoke("Scene load failed to start.");
+            _isSceneTransitionInProgress = false;
+            return false;
+        }
+    }
+
     // Helper: best-effort safe reader for logging the player's current position.
     // Keep this private and simple — it's only for debug messages.
     private Vector3 GetPlayerPositionDebug()
@@ -196,8 +291,19 @@ public partial class TeleportManager : MonoBehaviour
 
         TBLog.Info($"TeleportManager: starting LoadSceneAndTeleportCoroutine for '{sceneName}' (cost={cost}) haveCoordsHint={haveCoordsHint} coordsHint={coordsHint}");
 
+        if (CoordsConvertor.TryConvertToVector3(coordsHint, out Vector3 destCords))
+        {
+            TBLog.Info($"Converted coords -> {destCords}");            
+            // use coords
+        }
+        else
+        {
+            TBLog.Warn("Could not convert coordsVal to Vector3");
+            yield break;
+        }
+
         // 1) Load scene (separate coroutine) -> results returned via callback
-        yield return StartCoroutine(LoadSceneCoroutine(sceneName, (scene, asyncOp, ok) =>
+        yield return StartCoroutine(LoadSceneCoroutine(sceneName, destCords, (scene, asyncOp, ok) =>
         {
             loadSuccess = ok;
             loadedScene = scene;
@@ -236,7 +342,8 @@ public partial class TeleportManager : MonoBehaviour
     /// The callback parameters are: (Scene loadedScene, AsyncOperation asyncOp, bool success).
     /// This coroutine only manages loading lifecycle: starting the async op, waiting for progress/isDone, and basic diagnostics.
     /// </summary>
-    private IEnumerator LoadSceneCoroutine(string sceneName, Action<Scene, AsyncOperation, bool> onComplete)
+    // Replace the existing LoadSceneCoroutine with this corrected version
+    private IEnumerator LoadSceneCoroutine(string sceneName, Vector3 coordsHint, Action<Scene, AsyncOperation, bool> onComplete)
     {
         if (onComplete == null) yield break;
 
@@ -246,7 +353,7 @@ public partial class TeleportManager : MonoBehaviour
         bool startOk = true;
         try
         {
-            // Start the async load. Do NOT yield inside this try/catch.
+            // Start the async load.
             async = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
             if (async == null)
             {
@@ -255,7 +362,18 @@ public partial class TeleportManager : MonoBehaviour
             }
             else
             {
-                TBLog.Info($"TeleportManager: initiated LoadSceneAsync for '{sceneName}'. allowSceneActivation={async.allowSceneActivation}, initialProgress={async.progress:F2}");
+                // Ensure activation is allowed. If some other code set allowSceneActivation = false,
+                // the load will stall at progress ~0.9. Explicitly set it to true and log it.
+                try
+                {
+                    async.allowSceneActivation = true;
+                    TBLog.Info($"TeleportManager: initiated LoadSceneAsync for '{sceneName}'. allowSceneActivation={async.allowSceneActivation}, initialProgress={async.progress:F2}");
+                }
+                catch (Exception exSet)
+                {
+                    TBLog.Warn($"TeleportManager: warning when setting allowSceneActivation on load op for '{sceneName}': {exSet}");
+                    TBLog.Info($"TeleportManager: initiated LoadSceneAsync for '{sceneName}'. initialProgress={async.progress:F2}");
+                }
             }
         }
         catch (Exception ex)
@@ -296,11 +414,19 @@ public partial class TeleportManager : MonoBehaviour
         float activateStart = Time.realtimeSinceStartup;
         while (!async.isDone)
         {
+            // If activation is taking too long, force allowSceneActivation and continue
             if (Time.realtimeSinceStartup - activateStart > activationTimeout)
             {
-                TBLog.Warn($"TeleportManager: scene activation for '{sceneName}' did not complete within {activationTimeout}s. Proceeding to checks anyway.");
-                break;
+                TBLog.Warn($"TeleportManager: scene activation for '{sceneName}' did not complete within {activationTimeout}s. Forcing allowSceneActivation=true and continuing to wait.");
+                try
+                {
+                    async.allowSceneActivation = true;
+                }
+                catch (Exception ex) { TBLog.Warn("TeleportManager: failed to set allowSceneActivation=true: " + ex); }
+                // Extend the timeout window so we don't spam this block repeatedly
+                activateStart = Time.realtimeSinceStartup;
             }
+
             yield return null;
         }
 
@@ -311,6 +437,8 @@ public partial class TeleportManager : MonoBehaviour
         TBLog.Info($"TeleportManager: LoadSceneCoroutine: requested='{sceneName}', loaded.name='{loadedScene.name}', isLoaded={sceneLoaded}, isActive={sceneActive}");
 
         onComplete(loadedScene, async, true);
+
+//        bool relocated = TravelButtonUI.AttemptTeleportToPositionSafe(coordsHint);
         yield break;
     }
 
