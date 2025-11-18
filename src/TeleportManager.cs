@@ -98,7 +98,7 @@ public partial class TeleportManager : MonoBehaviour
         _isSceneTransitionInProgress = true;
         bool teleported = false;
 
-        TBLog.Info($"TeleportManager: starting async load for scene '{sceneName}' (cost={cost}).");
+        TBLog.Info($"TeleportManager: starting async load for scene '{sceneName}' (cost={cost}). haveCoordsHint={haveCoordsHint}, coordsHint={coordsHint}");
 
         // Begin async load
         AsyncOperation async;
@@ -112,10 +112,12 @@ public partial class TeleportManager : MonoBehaviour
                 FinishTeleport(false);
                 yield break;
             }
+
+            TBLog.Info($"TeleportManager: initiated LoadSceneAsync for '{sceneName}'. allowSceneActivation={async.allowSceneActivation}, initialProgress={async.progress:F2}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("TeleportManager: exception while starting LoadSceneAsync: " + ex.Message);
+            TBLog.Warn("TeleportManager: exception while starting LoadSceneAsync: " + ex.ToString());
             TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not start scene load.");
             FinishTeleport(false);
             yield break;
@@ -161,6 +163,29 @@ public partial class TeleportManager : MonoBehaviour
         bool sceneActive = SceneManager.GetActiveScene().name == sceneName;
         TBLog.Info($"TeleportManager: requested='{sceneName}', loaded.name='{loadedScene.name}', isLoaded={sceneLoaded}, isActive={sceneActive}");
 
+        // Log root GameObjects for diagnostics
+        try
+        {
+            var roots = loadedScene.GetRootGameObjects();
+            TBLog.Info($"TeleportManager: scene '{sceneName}' root object count = {roots?.Length ?? 0}");
+            if (roots != null && roots.Length > 0)
+            {
+                var sb = new System.Text.StringBuilder();
+                int sample = Math.Min(12, roots.Length);
+                for (int i = 0; i < sample; i++)
+                {
+                    var r = roots[i];
+                    if (r != null) sb.Append(r.name).Append(", ");
+                }
+                if (roots.Length > sample) sb.Append("...");
+                TBLog.Info($"TeleportManager: scene roots sample: {sb}");
+            }
+        }
+        catch (Exception exRoot)
+        {
+            TBLog.Warn("TeleportManager: failed enumerating root GameObjects: " + exRoot.ToString());
+        }
+
         // Small grace period allowing Awake/Start
         float graceWait = 0.5f;
         float graceStart = Time.realtimeSinceStartup;
@@ -173,10 +198,10 @@ public partial class TeleportManager : MonoBehaviour
         GameObject anchor = null;
         if (!string.IsNullOrEmpty(targetGameObjectName))
         {
-            TBLog.Info($"TeleportManager: attempting to find anchor '{targetGameObjectName}' in scene.");
+            TBLog.Info($"TeleportManager: attempting to find anchor '{targetGameObjectName}' in scene (timeout {readyWaitMax}s).");
             while (Time.realtimeSinceStartup - readyStart < readyWaitMax)
             {
-                try { anchor = GameObject.Find(targetGameObjectName); } catch { anchor = null; }
+                try { anchor = GameObject.Find(targetGameObjectName); } catch (Exception exFind) { anchor = null; TBLog.Warn($"TeleportManager: GameObject.Find threw for '{targetGameObjectName}': {exFind.Message}"); }
                 if (anchor != null) break;
                 yield return null;
             }
@@ -191,6 +216,7 @@ public partial class TeleportManager : MonoBehaviour
         {
             finalPos = anchor.transform.position;
             haveFinalPos = true;
+            TBLog.Info($"TeleportManager: using anchor position {finalPos} as final target.");
         }
         else if (haveCoordsHint)
         {
@@ -215,7 +241,10 @@ public partial class TeleportManager : MonoBehaviour
                         break;
                     }
                 }
-                catch { }
+                catch (Exception exFind2)
+                {
+                    TBLog.Warn($"TeleportManager: exception finding spawn anchor '{s}': {exFind2}");
+                }
             }
 
             if (!haveFinalPos)
@@ -237,7 +266,10 @@ public partial class TeleportManager : MonoBehaviour
                         }
                     }
                 }
-                catch { }
+                catch (Exception exFallback)
+                {
+                    TBLog.Warn("TeleportManager: exception during root fallback search: " + exFallback.ToString());
+                }
             }
         }
 
@@ -249,76 +281,93 @@ public partial class TeleportManager : MonoBehaviour
             yield break;
         }
 
+        TBLog.Info($"TeleportManager: preliminary finalPos = {finalPos} (haveCoordsHint={haveCoordsHint})");
+
         // Ground probe attempt
         try
         {
-            // Prefer TravelButton.TryFindNearestNavMeshOrGround if available
-            if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 grounded, navSearchRadius: 15f, maxGroundRay: 400f))
+            bool grounded = false;
+            Vector3 groundedPos = Vector3.zero;
+            string groundingMethod = "<none>";
+
+            // Try TravelButtonUI.TryFindNearestNavMeshOrGround (safe usage)
+            try
             {
-                TBLog.Info($"TeleportManager: immediate probe grounded to {grounded} (raw {finalPos}). Using that as final target.");
-                // If we have an explicit coords hint, prefer to respect its Y exactly (skip ground probe),
-                // because some saved coordinates may already include correct Y for the playable spot.
-                if (!haveCoordsHint)
+                groundingMethod = "TravelButtonUI.TryFindNearestNavMeshOrGround";
+                if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 g, navSearchRadius: 15f, maxGroundRay: 400f))
                 {
-                    if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 groundedPos, navSearchRadius: 15f, maxGroundRay: 400f))
-                    {
-                        finalPos = groundedPos;
-                    }
+                    grounded = true;
+                    groundedPos = g;
+                    TBLog.Info($"TeleportManager: grounding helper returned grounded={grounded}, groundedPos={groundedPos}");
                 }
                 else
                 {
-                    TBLog.Info("[TeleportManager] haveCoordsHint=true: using coords hint as-is (skipping immediate ground probe).");
+                    TBLog.Info("TeleportManager: grounding helper did not find nearby NavMesh/ground.");
                 }
             }
-            else
+            catch (Exception exGroundCall)
             {
-                TBLog.Info($"TeleportManager: immediate probe did not find nearby NavMesh/ground for {finalPos}.");
+                TBLog.Warn("TeleportManager: grounding helper call threw: " + exGroundCall.ToString());
+            }
+
+            if (grounded)
+            {
+                // If have coords hint, respect Y from hint (skip replacing with groundedPos)
+                if (!haveCoordsHint)
+                {
+                    TBLog.Info($"TeleportManager: applying groundedPos={groundedPos} to finalPos (no coords hint).");
+                    finalPos = groundedPos;
+                }
+                else
+                {
+                    TBLog.Info("TeleportManager: haveCoordsHint=true - keeping coordsHint Y and not overriding with groundedPos.");
+                }
             }
         }
         catch (Exception exProbe)
         {
-            TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.Message);
+            TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.ToString());
         }
 
+        TBLog.Info($"TeleportManager: final chosen teleport target = {finalPos}");
+
         // NEW: Use TeleportService (strategy chooser) as first attempt for placing the player.
-        // TeleportService will prefer the configured strategy (New/Old/Auto) and may fallback internally.
         {
             TBLog.Info("[TeleportManager] preparing TeleportService call to attempt placement (strategy chooser).");
             bool serviceMoved = false;
             var host = TeleportHelpersBehaviour.GetOrCreateHost();
+            TBLog.Info($"TeleportManager: TeleportService host present? {(host != null ? "YES" : "NO")}");
 
-            // Create the enumerator outside of a yield-return try block
             IEnumerator serviceEnumerator = null;
             try
             {
-                // Instantiate the enumerator (this won't yield)
-                serviceEnumerator = TeleportService.Instance.PlacePlayer(finalPos, moved => { serviceMoved = moved; });
+                serviceEnumerator = TeleportService.Instance?.PlacePlayer(finalPos, moved => { serviceMoved = moved; });
+                TBLog.Info($"TeleportManager: TeleportService.Instance is {(TeleportService.Instance != null ? "AVAILABLE" : "NULL")}, enumerator={(serviceEnumerator != null ? "OK" : "null")}");
             }
             catch (Exception ex)
             {
-                TBLog.Warn("[TeleportManager] TeleportService instantiation threw: " + ex);
+                TBLog.Warn("[TeleportManager] TeleportService instantiation threw: " + ex.ToString());
                 serviceEnumerator = null;
             }
 
-            // Now yield (run) the enumerator outside of any enclosing try/catch/finally
             if (serviceEnumerator != null)
             {
+                float svcStart = Time.realtimeSinceStartup;
                 if (host != null)
                 {
                     yield return host.StartCoroutine(serviceEnumerator);
                 }
                 else
                 {
-                    // Fall back to this MonoBehaviour if no dedicated host exists
                     yield return StartCoroutine(serviceEnumerator);
                 }
+                float svcDur = Time.realtimeSinceStartup - svcStart;
+                TBLog.Info($"TeleportManager: TeleportService completed, serviceMoved={serviceMoved}, duration={svcDur:F2}s");
             }
             else
             {
                 TBLog.Warn("[TeleportManager] TeleportService enumerator is null; skipping service run.");
             }
-
-            TBLog.Info($"[TeleportManager] TeleportService returned moved={serviceMoved}.");
 
             if (serviceMoved)
             {
@@ -327,11 +376,11 @@ public partial class TeleportManager : MonoBehaviour
             }
             else
             {
-                TBLog.Warn("[TeleportManager] TeleportService did not report movement; falling back to existing SafePlacePlayerCoroutine retry loop.");
+                TBLog.Warn("[TeleportManager] TeleportService did not report movement; falling back to SafePlacePlayerCoroutine loop.");
             }
         }
 
-        // If TeleportService didn't succeed, continue with existing SafePlacePlayerCoroutine retry loop
+        // Fallback safe-placement loop
         if (!teleported)
         {
             const int maxTeleportAttempts = 3;
@@ -339,13 +388,17 @@ public partial class TeleportManager : MonoBehaviour
             while (attempt < maxTeleportAttempts && !teleported)
             {
                 attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using SafePlacePlayerCoroutine.");
+                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using PlacePlayerUsingSafeRoutine.");
 
                 bool placementSucceeded = false;
+                float callStart = Time.realtimeSinceStartup;
                 yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
                 {
                     placementSucceeded = moved;
                 }));
+                float callDur = Time.realtimeSinceStartup - callStart;
+
+                TBLog.Info($"TeleportManager: PlacePlayerUsingSafeRoutine returned placementSucceeded={placementSucceeded} (duration={callDur:F2}s)");
 
                 if (placementSucceeded)
                 {
@@ -368,33 +421,37 @@ public partial class TeleportManager : MonoBehaviour
             }
         }
 
-        // If all safe attempts failed, try minimal coords-first shim fallback when appropriate
+        // If all safe attempts failed, try coords-first shim fallback when appropriate
         if (!teleported)
         {
-            // Debug: what led to this state
             try
             {
-                TBLog.Info($"[TeleportManager] safe placement attempts exhausted. haveCoordsHint={haveCoordsHint}, anchorPresent={(anchor != null)}");
+                TBLog.Info($"TeleportManager: safe placement exhausted. haveCoordsHint={haveCoordsHint}, anchorPresent={(anchor != null)}");
             }
             catch { }
 
-            // Only attempt the shim fallback when we have an explicit coords hint OR no anchor was found
             if (haveCoordsHint || anchor == null)
             {
                 TBLog.Info("[TeleportManager] attempting coords-first fallback shim (TeleportCompatShims).");
                 Vector3 before = Vector3.zero;
                 Vector3 after = Vector3.zero;
-                try { before = GetPlayerPositionDebug(); TBLog.Info($"[TeleportManager] player position before shim: {before}"); } catch { }
+                try { before = GetPlayerPositionDebug(); TBLog.Info($"TeleportManager: player position before shim: {before}"); } catch { }
 
                 var host = TeleportHelpersBehaviour.GetOrCreateHost();
-                yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+                if (host != null)
+                {
+                    yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+                }
+                else
+                {
+                    yield return StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
+                }
 
-                try { after = GetPlayerPositionDebug(); TBLog.Info($"[TeleportManager] player position after shim: {after}"); } catch { }
+                try { after = GetPlayerPositionDebug(); TBLog.Info($"TeleportManager: player position after shim: {after}"); } catch { }
 
                 float movedDistance = Vector3.Distance(before, after);
-                TBLog.Info($"[TeleportManager] coords-first shim completed; player moved distance {movedDistance:F3}.");
+                TBLog.Info($"TeleportManager: coords-first shim completed; player moved distance {movedDistance:F3}.");
 
-                // Consider the teleport successful if player position changed noticeably
                 if (movedDistance > 0.05f)
                 {
                     teleported = true;
@@ -429,6 +486,18 @@ public partial class TeleportManager : MonoBehaviour
 
         // final cleanup and notify
         FinishTeleport(true);
+
+        // For diagnostics - report player position after FinishTeleport
+        try
+        {
+            var pos = GetPlayerPositionDebug();
+            TBLog.Info($"TeleportManager: player position after FinishTeleport = {pos}");
+        }
+        catch (Exception exPos)
+        {
+            TBLog.Warn("TeleportManager: error reading player position after FinishTeleport: " + exPos.ToString());
+        }
+
         yield break;
     }
 }

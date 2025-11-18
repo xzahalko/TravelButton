@@ -73,7 +73,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 1410.3f, 6.7f, 1665.6f },
+            coords = new float[] { 1410.3f, 9.7f, 1665.6f },
             targetGameObjectName = "Cierzo",
             sceneName = "CierzoNewTerrain",
             desc = "Cierzo - example description",
@@ -106,8 +106,8 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 1202.4f, -13f, 1378.8f },
-            targetGameObjectName = "xxx",
+            coords = new float[] { 1202.4f, -10f, 1378.8f },
+            targetGameObjectName = "Berg",
             sceneName = "Berg",
             desc = "Berg - example description",
             visited = false

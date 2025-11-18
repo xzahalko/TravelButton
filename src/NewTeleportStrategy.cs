@@ -29,4 +29,5 @@ public class NewTeleportStrategy : ITeleportStrategy
         if (tm == null) { TBLog.Warn("[NewTeleportStrategy] TeleportManager not available"); cb(false); yield break; }
         yield return tm.StartCoroutine(tm.PlacePlayerUsingSafeRoutineWrapper(finalPos, cb));
     }
+
 }

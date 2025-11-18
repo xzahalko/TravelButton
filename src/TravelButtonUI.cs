@@ -2376,7 +2376,7 @@ public partial class TravelButtonUI : MonoBehaviour
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
-        
+
         PrepareVisitedLookup();
 
         try
@@ -2396,11 +2396,11 @@ public partial class TravelButtonUI : MonoBehaviour
                     var p = playerRoot.transform.position;
                     TBLog.Info($"OpenTravelDialog: hrac pos ({p.x:F3}, {p.y:F3}, {p.z:F3})");
                 }
-                if (playerRoot != null) 
+                if (playerRoot != null)
                 {
                     Debug.Log("hrac exact start");
                     Debug.Log($"hrac exact world position: ({PlayerPositionExact.TryGetExactPlayerWorldPosition():F3})");
-                } 
+                }
                 InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
                 InventoryHelpers.SafeAddSilverToPlayer(100);
             }
@@ -2617,6 +2617,32 @@ public partial class TravelButtonUI : MonoBehaviour
                     var visited = HasPlayerVisited(city); // uses new authoritative HasPlayerVisited
                     TBLog.Info($"OpenTravelDialog: creating button for '{city.name}' visited={visited}");
 
+                    // Debug: nudge player position for quick manual testing:
+                    // - Cierzo -> move +5m on X
+                    // - Levant -> move +5m on Y
+                    // - Monsoon -> move +5m on Z
+                    try
+                    {
+                        if (string.Equals(city?.name, "Cierzo", StringComparison.OrdinalIgnoreCase))
+                        {
+                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on X for city 'Cierzo'");
+                            PlayerPositionHelpers.MovePlayerByX5(safeTeleportAfter: true);
+                        }
+                        else if (string.Equals(city?.name, "Levant", StringComparison.OrdinalIgnoreCase))
+                        {
+                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on Y for city 'Levant'");
+                            PlayerPositionHelpers.MovePlayerByY5(safeTeleportAfter: true);
+                        }
+                        else if (string.Equals(city?.name, "Monsoon", StringComparison.OrdinalIgnoreCase))
+                        {
+                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on Z for city 'Monsoon'");
+                            PlayerPositionHelpers.MovePlayerByZ5(safeTeleportAfter: true);
+                        }
+                    }
+                    catch (Exception exMove)
+                    {
+                        TBLog.Warn("OpenTravelDialog: player-move debug call threw: " + exMove);
+                    }
 
                     idx++;
                     TBLog.Info($"OpenTravelDialog: creating button #{idx} for '{city?.name}'");
@@ -2697,44 +2723,152 @@ public partial class TravelButtonUI : MonoBehaviour
                         // register and click handler
                         try { RegisterCityButton(city, bbtn); } catch (Exception ex) { TBLog.Warn("RegisterCityButton failed: " + ex.Message); }
 
+                        TBLog.Info("[OpenTravelDialog] Before bbtn.onClick.AddListener((): isTeleporting = " + isTeleporting);
                         var capturedCity = city;
+                        // --- replacement snippet: enhanced debug for city button listener ---
                         bbtn.onClick.AddListener(() =>
                         {
                             try
                             {
-                                if (isTeleporting) return;
+                                // Defensive local capture to avoid closure issues after UI rebuilds
+                                var cityLocal = capturedCity;
+                                string cityNameLocal = cityLocal?.name ?? "<null>";
 
-                                bool cfgEnabled = TravelButton.IsCityEnabled(capturedCity.name);
+                                // --- NEW: prevent teleport for specified debug-disabled cities ---
+                                if (string.Equals(cityNameLocal, "Cierzo", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(cityNameLocal, "Levant", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(cityNameLocal, "Monsoon", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    TBLog.Info($"City click: teleport disabled by debug rule for '{cityNameLocal}' - ignoring click.");
+                                    ShowInlineDialogMessage("Teleport disabled for this destination (debug).");
+                                    return;
+                                }
+                                // --- end debug-disabled guard ---
+
+                                int cityPriceLocal = cost;
+                                var timeNow = DateTime.UtcNow.ToString("o");
+
+                                TBLog.Info($"City button click (ENTER) time={timeNow} city='{cityNameLocal}' price={cityPriceLocal}");
+
+                                if (isTeleporting)
+                                {
+                                    TBLog.Info($"City click: ignored because isTeleporting==true (city='{cityNameLocal}')");
+                                    return;
+                                }
+
+                                bool cfgEnabled = false;
+                                try { cfgEnabled = TravelButton.IsCityEnabled(cityNameLocal); } catch (Exception exCfg) { TBLog.Warn($"City click: IsCityEnabled threw for '{cityNameLocal}': {exCfg}"); }
                                 bool visitedNowInHistory = false;
-                                try { visitedNowInHistory = TravelButton.HasPlayerVisited(capturedCity); } catch { visitedNowInHistory = false; }
+                                try { visitedNowInHistory = TravelButton.HasPlayerVisited(cityLocal); } catch (Exception exVisited) { TBLog.Warn($"City click: HasPlayerVisited threw for '{cityNameLocal}': {exVisited}"); visitedNowInHistory = false; }
                                 long pm = GetPlayerCurrencyAmountOrMinusOne();
 
-                                TBLog.Info($"City click: '{capturedCity.name}' cfgEnabled={cfgEnabled}, visitedNow={visitedNowInHistory}, playerMoney={pm}");
+                                TBLog.Info($"City click: '{cityNameLocal}' cfgEnabled={cfgEnabled}, visitedNow={visitedNowInHistory}, playerMoney={pm}");
 
-                                if (!cfgEnabled) { ShowInlineDialogMessage("Destination disabled by config"); return; }
-                                if (!visitedNowInHistory) { ShowInlineDialogMessage("Destination not discovered yet"); return; }
-                                if (pm < 0) { ShowInlineDialogMessage("Could not determine your currency amount; travel blocked"); return; }
-                                if (!CurrencyHelpers.AttemptDeductSilverDirect(cost, true)) { ShowInlineDialogMessage("not enough resources to travel"); return; }
+                                if (!cfgEnabled)
+                                {
+                                    TBLog.Info($"City click: blocked - disabled by config for '{cityNameLocal}'");
+                                    ShowInlineDialogMessage("Destination disabled by config");
+                                    return;
+                                }
 
-                                StopRefreshCoroutine();
+                                if (!visitedNowInHistory)
+                                {
+                                    TBLog.Info($"City click: blocked - not discovered yet for '{cityNameLocal}'");
+                                    ShowInlineDialogMessage("Destination not discovered yet");
+                                    return;
+                                }
+
+                                if (pm < 0)
+                                {
+                                    TBLog.Info($"City click: blocked - could not determine currency for '{cityNameLocal}'");
+                                    ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
+                                    return;
+                                }
+
+                                TBLog.Info($"City click: attempting to deduct cost={cityPriceLocal} for '{cityNameLocal}' (simulation real attempt follows)");
+                                bool deducted = false;
+                                try
+                                {
+                                    deducted = CurrencyHelpers.AttemptDeductSilverDirect(cityPriceLocal, true);
+                                }
+                                catch (Exception exDeduct)
+                                {
+                                    TBLog.Warn($"City click: AttemptDeductSilverDirect threw for '{cityNameLocal}': {exDeduct}");
+                                    deducted = false;
+                                }
+
+                                if (!deducted)
+                                {
+                                    TBLog.Info($"City click: blocked - not enough resources for '{cityNameLocal}' (cost={cityPriceLocal}, playerMoney={pm})");
+                                    ShowInlineDialogMessage("not enough resources to travel");
+                                    return;
+                                }
+
+                                // disable UI buttons to prevent duplicate clicks while teleport starts
                                 var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
                                 if (contentParent != null)
                                 {
+                                    int disabledCount = 0;
                                     for (int ci = 0; ci < contentParent.childCount; ci++)
                                     {
-                                        var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
-                                        if (childBtn != null) childBtn.interactable = false;
-                                        var cgChild = contentParent.GetChild(ci).GetComponent<CanvasGroup>();
-                                        if (cgChild != null) cgChild.blocksRaycasts = false;
+                                        try
+                                        {
+                                            var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
+                                            if (childBtn != null)
+                                            {
+                                                childBtn.interactable = false;
+                                                disabledCount++;
+                                            }
+                                            var cgChild = contentParent.GetChild(ci).GetComponent<CanvasGroup>();
+                                            if (cgChild != null) cgChild.blocksRaycasts = false;
+                                        }
+                                        catch (Exception exChild)
+                                        {
+                                            TBLog.Warn($"City click: failed disabling child index {ci} for '{cityNameLocal}': {exChild}");
+                                        }
                                     }
+                                    TBLog.Info($"City click: disabled {disabledCount} child buttons in dialog content before teleport for '{cityNameLocal}'");
+                                }
+                                else
+                                {
+                                    TBLog.Info($"City click: content parent not found; skipping disabling buttons for '{cityNameLocal}'");
                                 }
 
+                                // mark beginning of teleport flow
                                 isTeleporting = true;
-                                TryTeleportThenCharge(capturedCity, cost);
+                                TBLog.Info($"City click: invoking TryTeleportThenCharge for '{cityNameLocal}', cost={cityPriceLocal}, isTeleporting now={isTeleporting}");
+
+                                // call the teleport handler; keep it inside try so we can log exceptions
+                                try
+                                {
+                                    TryTeleportThenCharge(cityLocal, cityPriceLocal);
+                                    TBLog.Info($"City click: TryTeleportThenCharge invoked successfully for '{cityNameLocal}'");
+                                }
+                                catch (Exception exTeleport)
+                                {
+                                    TBLog.Warn($"City click: TryTeleportThenCharge threw for '{cityNameLocal}': {exTeleport}");
+                                    // ensure we clear flag and re-enable UI if teleport failed immediately
+                                    isTeleporting = false;
+                                    if (contentParent != null)
+                                    {
+                                        for (int ci = 0; ci < contentParent.childCount; ci++)
+                                        {
+                                            try
+                                            {
+                                                var childBtn = contentParent.GetChild(ci).GetComponent<Button>();
+                                                if (childBtn != null) childBtn.interactable = true;
+                                                var cgChild = contentParent.GetChild(ci).GetComponent<CanvasGroup>();
+                                                if (cgChild != null) cgChild.blocksRaycasts = true;
+                                            }
+                                            catch { }
+                                        }
+                                    }
+                                    ShowInlineDialogMessage("Teleport failed to start (see log).");
+                                }
                             }
                             catch (Exception ex)
                             {
-                                TBLog.Warn("City button click handler exception: " + ex);
+                                TBLog.Warn("City button click handler exception: " + ex.ToString());
                             }
                         });
                     }
@@ -2830,6 +2964,54 @@ public partial class TravelButtonUI : MonoBehaviour
         catch (Exception ex)
         {
             TravelButtonPlugin.LogError("OpenTravelDialog: unexpected exception: " + ex);
+        }
+    }
+
+    // Add to TravelButtonUI class (near other public helpers)
+    public void OnTeleportFinished_ClearUiState()
+    {
+        try
+        {
+            // Clear the flag so subsequent clicks are honored
+            isTeleporting = false;
+
+            // Re-enable dialog buttons if dialog is currently open
+            try
+            {
+                var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                if (contentParent != null)
+                {
+                    int enabledCount = 0;
+                    for (int ci = 0; ci < contentParent.childCount; ci++)
+                    {
+                        try
+                        {
+                            var childBtn = contentParent.GetChild(ci).GetComponent<UnityEngine.UI.Button>();
+                            if (childBtn != null)
+                            {
+                                childBtn.interactable = true;
+                                enabledCount++;
+                            }
+                            var cgChild = contentParent.GetChild(ci).GetComponent<UnityEngine.CanvasGroup>();
+                            if (cgChild != null) cgChild.blocksRaycasts = true;
+                        }
+                        catch { /* best-effort */ }
+                    }
+                    TBLog.Info($"OnTeleportFinished_ClearUiState: cleared isTeleporting and re-enabled {enabledCount} child buttons.");
+                }
+                else
+                {
+                    TBLog.Info("OnTeleportFinished_ClearUiState: dialogRoot/content not found; just cleared isTeleporting.");
+                }
+            }
+            catch (Exception exInner)
+            {
+                TBLog.Warn("OnTeleportFinished_ClearUiState: failed re-enabling buttons: " + exInner);
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OnTeleportFinished_ClearUiState: unexpected error: " + ex);
         }
     }
 

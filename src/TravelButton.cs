@@ -944,6 +944,43 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             TBLog.Info($"MarkCityVisitedByScene: enter sceneName='{sceneName}'");
+
+            // --- Debug: log player position at method entry (best-effort) ---
+            try
+            {
+                Vector3 beforePos = Vector3.zero;
+                bool foundBefore = false;
+                var pgo = GameObject.FindWithTag("Player");
+                if (pgo != null)
+                {
+                    beforePos = pgo.transform.position;
+                    foundBefore = true;
+                    TBLog.Info($"MarkCityVisitedByScene: player position (before) found by tag 'Player' = {beforePos}");
+                }
+                else
+                {
+                    int scanned = 0;
+                    foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+                    {
+                        scanned++;
+                        if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
+                        {
+                            beforePos = g.transform.position;
+                            foundBefore = true;
+                            TBLog.Info($"MarkCityVisitedByScene: player position (before) found by name '{g.name}' after scanning {scanned} objects = {beforePos}");
+                            break;
+                        }
+                    }
+                    if (!foundBefore)
+                        TBLog.Info($"MarkCityVisitedByScene: player position (before) not found after scanning {scanned} objects.");
+                }
+            }
+            catch (Exception exPlayerBefore)
+            {
+                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at entry: " + exPlayerBefore);
+            }
+            // --- end debug player-before ---
+
             if (TravelButton.Cities == null)
             {
                 TBLog.Info("MarkCityVisitedByScene: TravelButton.Cities == null; nothing to do.");
@@ -1092,6 +1129,42 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 TBLog.Info($"MarkCityVisitedByScene: no visited flags changed for scene '{sceneName}'");
             }
+
+            // --- Debug: log player position at method exit (best-effort) ---
+            try
+            {
+                Vector3 afterPos = Vector3.zero;
+                bool foundAfter = false;
+                var pgo2 = GameObject.FindWithTag("Player");
+                if (pgo2 != null)
+                {
+                    afterPos = pgo2.transform.position;
+                    foundAfter = true;
+                    TBLog.Info($"MarkCityVisitedByScene: player position (after) found by tag 'Player' = {afterPos}");
+                }
+                else
+                {
+                    int scanned2 = 0;
+                    foreach (var g2 in GameObject.FindObjectsOfType<GameObject>())
+                    {
+                        scanned2++;
+                        if (!string.IsNullOrEmpty(g2.name) && g2.name.StartsWith("PlayerChar"))
+                        {
+                            afterPos = g2.transform.position;
+                            foundAfter = true;
+                            TBLog.Info($"MarkCityVisitedByScene: player position (after) found by name '{g2.name}' after scanning {scanned2} objects = {afterPos}");
+                            break;
+                        }
+                    }
+                    if (!foundAfter)
+                        TBLog.Info($"MarkCityVisitedByScene: player position (after) not found after scanning {scanned2} objects.");
+                }
+            }
+            catch (Exception exPlayerAfter)
+            {
+                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at exit: " + exPlayerAfter);
+            }
+            // --- end debug player-after ---
         }
         catch (Exception ex)
         {

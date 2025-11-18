@@ -57,7 +57,7 @@ public class TravelButtonSceneLoader : MonoBehaviour
             yield break;
         }
 
-        TBLog.Info($"LoadSceneAndTeleportCoroutine: ENTER scene='{sceneName}', haveCoordsHint={haveCoordsHint}, coords={coordsHint}");
+        TBLog.Info($"LoadSceneAndTeleportCoroutine: ENTER scene='{sceneName}', haveCoordsHint={haveCoordsHint}, coords={coordsHint} (cityObj type={(cityObj?.GetType().FullName ?? "<null>")})");
 
         // Start async load
         AsyncOperation async;
@@ -70,10 +70,12 @@ public class TravelButtonSceneLoader : MonoBehaviour
                 TryNotifyPlayer("Teleport failed: could not load destination scene.");
                 yield break;
             }
+
+            TBLog.Info($"LoadSceneAndTeleportCoroutine: started LoadSceneAsync for '{sceneName}'. allowSceneActivation={async.allowSceneActivation}, initialProgress={async.progress:F2}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("LoadSceneAndTeleportCoroutine: exception while starting LoadSceneAsync: " + ex.Message);
+            TBLog.Warn("LoadSceneAndTeleportCoroutine: exception while starting LoadSceneAsync: " + ex.ToString());
             TryNotifyPlayer("Teleport failed: could not start scene load.");
             yield break;
         }
@@ -118,6 +120,30 @@ public class TravelButtonSceneLoader : MonoBehaviour
         bool sceneActive = SceneManager.GetActiveScene().name == sceneName;
         TBLog.Info($"LoadSceneAndTeleportCoroutine: requested='{sceneName}', loaded.name='{loadedScene.name}', isLoaded={sceneLoaded}, isActive={sceneActive}");
 
+        // Log root GameObjects for diagnostics (names & count)
+        try
+        {
+            var roots = loadedScene.GetRootGameObjects();
+            TBLog.Info($"LoadSceneAndTeleportCoroutine: scene '{sceneName}' root object count = {roots?.Length ?? 0}");
+            if (roots != null && roots.Length > 0)
+            {
+                var sb = new System.Text.StringBuilder();
+                int sample = Math.Min(10, roots.Length);
+                for (int i = 0; i < sample; i++)
+                {
+                    var r = roots[i];
+                    if (r != null) sb.Append(r.name).Append(", ");
+                }
+                if (roots.Length > sample) sb.Append("...");
+
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: scene roots sample: {sb}");
+            }
+        }
+        catch (Exception exRoot)
+        {
+            TBLog.Warn("LoadSceneAndTeleportCoroutine: failed enumerating root GameObjects: " + exRoot.ToString());
+        }
+
         // Small grace period allowing Awake/Start
         float graceWait = 0.5f;
         float graceStart = Time.realtimeSinceStartup;
@@ -154,7 +180,10 @@ public class TravelButtonSceneLoader : MonoBehaviour
                         break;
                     }
                 }
-                catch { }
+                catch (Exception exFind)
+                {
+                    TBLog.Warn($"LoadSceneAndTeleportCoroutine: exception while searching for spawn anchor '{s}': {exFind}");
+                }
             }
 
             if (!haveFinalPos)
@@ -176,7 +205,10 @@ public class TravelButtonSceneLoader : MonoBehaviour
                         }
                     }
                 }
-                catch { }
+                catch (Exception exRootFallback)
+                {
+                    TBLog.Warn("LoadSceneAndTeleportCoroutine: exception during root fallback search: " + exRootFallback.ToString());
+                }
             }
         }
 
@@ -187,20 +219,23 @@ public class TravelButtonSceneLoader : MonoBehaviour
             yield break;
         }
 
+        TBLog.Info($"LoadSceneAndTeleportCoroutine: preliminary finalPos = {finalPos} (haveCoordsHint={haveCoordsHint})");
+
         // Ground probe attempt (try to prefer nearby NavMesh/ground if helper exists).
         // If haveCoordsHint, we will clamp any grounded Y to coordsHint.y +/- COORDS_CLAMP_VERTICAL_RANGE
         try
         {
             bool grounded = false;
             Vector3 groundedPos = Vector3.zero;
+            string usedGrounding = "<none>";
 
             // Try TravelButtonUI.TryFindNearestNavMeshOrGround if present (reflection to be safe)
             var tbuiType = typeof(TravelButtonUI);
             var tryFindMethod = tbuiType.GetMethod("TryFindNearestNavMeshOrGround", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
             if (tryFindMethod != null)
             {
+                usedGrounding = "reflection.TryFindNearestNavMeshOrGround";
                 var methodParams = tryFindMethod.GetParameters();
-                // Support both signature patterns: either (Vector3, out Vector3, float, float) OR (Vector3, out Vector3)
                 try
                 {
                     if (methodParams.Length >= 2)
@@ -212,13 +247,21 @@ public class TravelButtonSceneLoader : MonoBehaviour
                             grounded = true;
                             groundedPos = (Vector3)outArgs[1];
                         }
+                        TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding via reflection returned ok={ok}, grounded={grounded}, groundedPos={groundedPos}");
+                    }
+                    else
+                    {
+                        TBLog.Info("LoadSceneAndTeleportCoroutine: TryFindNearestNavMeshOrGround reflection found but signature mismatch; skipping.");
                     }
                 }
-                catch { /* ignore reflection invocation failures */ }
+                catch (Exception exInvoke)
+                {
+                    TBLog.Warn("LoadSceneAndTeleportCoroutine: reflection invocation of TryFindNearestNavMeshOrGround threw: " + exInvoke.ToString());
+                }
             }
             else
             {
-                // Fallback: try to call public static method directly if available
+                usedGrounding = "direct.TryFindNearestNavMeshOrGround";
                 try
                 {
                     if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 g, navSearchRadius: GROUND_PROBE_NAV_RADIUS, maxGroundRay: GROUND_PROBE_MAX_RAY))
@@ -226,9 +269,15 @@ public class TravelButtonSceneLoader : MonoBehaviour
                         grounded = true;
                         groundedPos = g;
                     }
+                    TBLog.Info($"LoadSceneAndTeleportCoroutine: direct grounding call returned grounded={grounded}, groundedPos={groundedPos}");
                 }
-                catch { /* ignore */ }
+                catch (Exception exDirect)
+                {
+                    TBLog.Warn("LoadSceneAndTeleportCoroutine: direct call to TryFindNearestNavMeshOrGround threw: " + exDirect.ToString());
+                }
             }
+
+            TBLog.Info($"LoadSceneAndTeleportCoroutine: grounding helper used = {usedGrounding}, grounded={grounded}");
 
             if (grounded)
             {
@@ -271,8 +320,10 @@ public class TravelButtonSceneLoader : MonoBehaviour
         }
         catch (Exception exProbe)
         {
-            TBLog.Warn("LoadSceneAndTeleportCoroutine: grounding probe threw: " + exProbe.Message);
+            TBLog.Warn("LoadSceneAndTeleportCoroutine: grounding probe threw: " + exProbe.ToString());
         }
+
+        TBLog.Info($"LoadSceneAndTeleportCoroutine: final chosen teleport target = {finalPos}");
 
         // Teleport attempts with bounded retries using TeleportManager's safe placement if available
         const int maxTeleportAttempts = 3;
@@ -291,17 +342,22 @@ public class TravelButtonSceneLoader : MonoBehaviour
             try
             {
                 tmRef = TeleportManager.Instance;
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: TeleportManager.Instance = {(tmRef != null ? "FOUND" : "null")}");
             }
             catch (Exception ex)
             {
-                TBLog.Warn("LoadSceneAndTeleportCoroutine: error reading TeleportManager.Instance: " + ex.Message);
+                TBLog.Warn("LoadSceneAndTeleportCoroutine: error reading TeleportManager.Instance: " + ex.ToString());
                 tmRef = null;
             }
 
             if (tmRef != null)
             {
                 // Use the TeleportManager coroutine-based safe placement (will do physics suspension + overlap-raise)
+                float callStart = Time.realtimeSinceStartup;
+                TBLog.Info("LoadSceneAndTeleportCoroutine: invoking TeleportManager.PlacePlayerUsingSafeRoutine coroutine...");
                 yield return StartCoroutine(tmRef.PlacePlayerUsingSafeRoutine(finalPos, moved => placementSucceeded = moved));
+                float callDuration = Time.realtimeSinceStartup - callStart;
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: TeleportManager.PlacePlayerUsingSafeRoutine returned placementSucceeded={placementSucceeded} (duration={callDuration:F2}s)");
             }
             else
             {
@@ -313,8 +369,9 @@ public class TravelButtonSceneLoader : MonoBehaviour
                     {
                         legacyOk = TravelButtonUI.AttemptTeleportToPositionSafe(finalPos);
                     }
-                    catch
+                    catch (Exception exLegacyInner)
                     {
+                        TBLog.Warn("LoadSceneAndTeleportCoroutine: AttemptTeleportToPositionSafe inner threw: " + exLegacyInner.ToString());
                         legacyOk = false;
                     }
 
@@ -330,7 +387,7 @@ public class TravelButtonSceneLoader : MonoBehaviour
                 }
                 catch (Exception exLegacy)
                 {
-                    TBLog.Warn("LoadSceneAndTeleportCoroutine: legacy placement threw: " + exLegacy);
+                    TBLog.Warn("LoadSceneAndTeleportCoroutine: legacy placement threw: " + exLegacy.ToString());
                 }
             }
 
@@ -365,6 +422,24 @@ public class TravelButtonSceneLoader : MonoBehaviour
             yield return null;
 
         TBLog.Info("LoadSceneAndTeleportCoroutine: teleport completed and scene stabilized.");
+
+        // Extra debug: dump player transform and surrounding context
+        try
+        {
+            var player = GameObject.FindWithTag("Player") ?? GameObject.Find("PlayerChar 0"); // heuristic
+            if (player != null)
+            {
+                TBLog.Info($"LoadSceneAndTeleportCoroutine: post-teleport player position = {player.transform.position}, rotation = {player.transform.rotation.eulerAngles}");
+            }
+            else
+            {
+                TBLog.Info("LoadSceneAndTeleportCoroutine: post-teleport player GameObject not found by common heuristics.");
+            }
+        }
+        catch (Exception exPost)
+        {
+            TBLog.Warn("LoadSceneAndTeleportCoroutine: exception while reporting post-teleport debug info: " + exPost.ToString());
+        }
 
         yield break;
     }

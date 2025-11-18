@@ -50,6 +50,9 @@ public class TeleportHelpersBehaviour : MonoBehaviour
     /// Reflection-friendly coroutine that resolves a position and then attempts to teleport.
     /// Designed to avoid yields inside catch/finally blocks and to log progress to desktop.
     /// </summary>
+    // Enhanced debug versions of EnsureSceneAndTeleport and ReenableComponentsAfterDelay
+    // Replace existing implementations with these to get richer runtime diagnostics.
+
     public IEnumerator EnsureSceneAndTeleport(object cityLike, Vector3 coordsHint, bool haveCoordsHint, Action<bool> callback)
     {
         if (cityLike == null)
@@ -59,6 +62,8 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             yield break;
         }
 
+        TBLog.Info($"EnsureSceneAndTeleport: ENTER. cityLike type={(cityLike?.GetType().FullName ?? "<null>")}, haveCoordsHint={haveCoordsHint}, coordsHint={coordsHint}");
+
         string cityName = null;
         string targetName = null;
         float[] coordsArray = null;
@@ -67,37 +72,50 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         try
         {
             var t = cityLike.GetType();
+            TBLog.Info($"EnsureSceneAndTeleport: reflecting members of type {t.FullName}");
 
             var nameField = t.GetField("name", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (nameField != null)
+            {
                 cityName = nameField.GetValue(cityLike) as string;
+                TBLog.Info($"EnsureSceneAndTeleport: read field 'name' = '{cityName}'");
+            }
             else
             {
                 var nameProp = t.GetProperty("name", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (nameProp != null) cityName = nameProp.GetValue(cityLike) as string;
+                TBLog.Info($"EnsureSceneAndTeleport: read property 'name' = '{cityName}'");
             }
 
             var tgField = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (tgField != null)
+            {
                 targetName = tgField.GetValue(cityLike) as string;
+                TBLog.Info($"EnsureSceneAndTeleport: read field 'targetGameObjectName' = '{targetName}'");
+            }
             else
             {
                 var tgProp = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (tgProp != null) targetName = tgProp.GetValue(cityLike) as string;
+                TBLog.Info($"EnsureSceneAndTeleport: read property 'targetGameObjectName' = '{targetName}'");
             }
 
             var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (coordsField != null)
+            {
                 coordsArray = coordsField.GetValue(cityLike) as float[];
+                TBLog.Info($"EnsureSceneAndTeleport: read field 'coords' = {(coordsArray == null ? "<null>" : $"[{string.Join(", ", coordsArray)}]")}");
+            }
             else
             {
                 var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (coordsProp != null) coordsArray = coordsProp.GetValue(cityLike) as float[];
+                TBLog.Info($"EnsureSceneAndTeleport: read property 'coords' = {(coordsArray == null ? "<null>" : $"[{string.Join(", ", coordsArray)}]")}");
             }
         }
         catch (Exception ex)
         {
-            TBLog.Warn("EnsureSceneAndTeleport: reflection read failed: " + ex);
+            TBLog.Warn("EnsureSceneAndTeleport: reflection read failed: " + ex.ToString());
         }
 
         Vector3 targetPos = Vector3.zero;
@@ -110,15 +128,26 @@ public class TeleportHelpersBehaviour : MonoBehaviour
             const float poll = 0.1f;
             float waited = 0f;
             GameObject foundGO = null;
+            int pollCount = 0;
+
+            TBLog.Info($"EnsureSceneAndTeleport: attempting to resolve target GameObject by name '{targetName}' (timeout={timeout}s).");
 
             while (waited < timeout)
             {
                 try
                 {
                     foundGO = GameObject.Find(targetName);
-                    if (foundGO != null) break;
+                    pollCount++;
+                    if (foundGO != null)
+                    {
+                        TBLog.Info($"EnsureSceneAndTeleport: GameObject.Find returned a match on attempt #{pollCount} after {waited:F2}s.");
+                        break;
+                    }
                 }
-                catch { /* ignore */ }
+                catch (Exception exFind)
+                {
+                    TBLog.Warn($"EnsureSceneAndTeleport: GameObject.Find threw for '{targetName}' on attempt #{pollCount}: {exFind}");
+                }
 
                 waited += poll;
                 yield return new WaitForSeconds(poll);
@@ -126,13 +155,21 @@ public class TeleportHelpersBehaviour : MonoBehaviour
 
             if (foundGO != null)
             {
-                targetPos = foundGO.transform.position;
-                found = true;
-                TBLog.Info($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}'");
+                try
+                {
+                    targetPos = foundGO.transform.position;
+                    found = true;
+                    TBLog.Info($"EnsureSceneAndTeleport: found target '{targetName}' at {targetPos} for '{cityName}' after {pollCount} polls.");
+                }
+                catch (Exception exPos)
+                {
+                    TBLog.Warn("EnsureSceneAndTeleport: failed reading position from found GameObject: " + exPos);
+                    found = false;
+                }
             }
             else
             {
-                TBLog.Warn($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' - will try coords fallback.");
+                TBLog.Warn($"EnsureSceneAndTeleport: target '{targetName}' not found for '{cityName}' after {pollCount} polls - will try coords fallback.");
             }
         }
 
@@ -153,9 +190,11 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         // Fallback: search transforms
         if (!found)
         {
+            TBLog.Info("EnsureSceneAndTeleport: fallback transform search started (FindObjectsOfType<Transform>).");
             try
             {
                 var all = UnityEngine.Object.FindObjectsOfType<Transform>();
+                int matchCount = 0;
                 foreach (var tr in all)
                 {
                     if (tr == null || string.IsNullOrEmpty(tr.name)) continue;
@@ -163,14 +202,16 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     {
                         targetPos = tr.position;
                         found = true;
+                        matchCount++;
                         TBLog.Info($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
                         break;
                     }
                 }
+                TBLog.Info($"EnsureSceneAndTeleport: fallback transform search completed. matchesFound={matchCount}");
             }
             catch (Exception ex)
             {
-                TBLog.Warn("EnsureSceneAndTeleport: transform search failed: " + ex);
+                TBLog.Warn("EnsureSceneAndTeleport: transform search failed: " + ex.ToString());
             }
         }
 
@@ -184,32 +225,48 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         // Ground/clear the position (no yields)
         try
         {
+            var beforeGround = targetPos;
             targetPos = TeleportHelpers.GetGroundedPosition(targetPos);
+            TBLog.Info($"EnsureSceneAndTeleport: TeleportHelpers.GetGroundedPosition: before={beforeGround} after={targetPos}");
         }
-        catch
+        catch (Exception exGround)
         {
-            try { targetPos = TeleportHelpers.EnsureClearance(targetPos); } catch { }
+            TBLog.Warn("EnsureSceneAndTeleport: GetGroundedPosition threw: " + exGround.ToString());
+            try
+            {
+                var beforeClear = targetPos;
+                targetPos = TeleportHelpers.EnsureClearance(targetPos);
+                TBLog.Info($"EnsureSceneAndTeleport: TeleportHelpers.EnsureClearance: before={beforeClear} after={targetPos}");
+            }
+            catch (Exception exClear)
+            {
+                TBLog.Warn("EnsureSceneAndTeleport: EnsureClearance threw: " + exClear.ToString());
+            }
         }
 
         // yield one frame and attempt teleport using coroutine-based safe placement
         yield return null;
 
         bool relocated = false;
-        
+        double mgrCallStart = 0.0;
         // Try to use TeleportManager's safe placement routine if available
         TeleportManager mgr = null;
         try
         {
             mgr = TeleportManager.Instance;
+            TBLog.Info($"EnsureSceneAndTeleport: TeleportManager.Instance lookup returned {(mgr != null ? "FOUND" : "null")}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("EnsureSceneAndTeleport: TeleportManager.Instance threw: " + ex);
+            TBLog.Warn("EnsureSceneAndTeleport: TeleportManager.Instance threw: " + ex.ToString());
+            mgr = null;
         }
 
         if (mgr != null)
         {
             // Use coroutine-based placement
+            TBLog.Info($"EnsureSceneAndTeleport: invoking TeleportManager.PlacePlayerUsingSafeRoutine for targetPos={targetPos}");
+            mgrCallStart = Time.realtimeSinceStartup;
             yield return mgr.StartCoroutine(mgr.PlacePlayerUsingSafeRoutine(targetPos, moved =>
             {
                 relocated = moved;
@@ -222,30 +279,46 @@ public class TeleportHelpersBehaviour : MonoBehaviour
                     TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos}");
                 }
             }));
+            double mgrCallDur = Time.realtimeSinceStartup - mgrCallStart;
+            TBLog.Info($"EnsureSceneAndTeleport: TeleportManager.PlacePlayerUsingSafeRoutine completed in {mgrCallDur:F2}s, relocated={relocated}");
         }
         else
         {
+            TBLog.Info("EnsureSceneAndTeleport: TeleportManager not available; using TravelButtonUI.AttemptTeleportToPositionSafe fallback.");
             // Fallback: try to use TravelButtonUI.AttemptTeleportToPositionSafe if TeleportManager not available
             try
             {
+                var fallbackStart = Time.realtimeSinceStartup;
                 relocated = TravelButtonUI.AttemptTeleportToPositionSafe(targetPos);
+                var fallbackDur = Time.realtimeSinceStartup - fallbackStart;
                 if (relocated)
                 {
-                    TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos} (fallback)");
+                    TBLog.Info($"EnsureSceneAndTeleport: teleport to '{cityName}' succeeded at {targetPos} (fallback) in {fallbackDur:F2}s");
                 }
                 else
                 {
-                    TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos} (fallback)");
+                    TBLog.Warn($"EnsureSceneAndTeleport: teleport to '{cityName}' failed at {targetPos} (fallback) in {fallbackDur:F2}s");
                 }
             }
             catch (Exception ex)
             {
-                TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex);
+                TravelButtonPlugin.LogError("EnsureSceneAndTeleport: teleport exception: " + ex.ToString());
                 relocated = false;
             }
         }
 
-        callback?.Invoke(relocated);
+        try
+        {
+            TBLog.Info($"EnsureSceneAndTeleport: invoking callback with result={relocated} for '{cityName}'");
+            callback?.Invoke(relocated);
+        }
+        catch (Exception exCb)
+        {
+            TBLog.Warn("EnsureSceneAndTeleport: callback threw: " + exCb.ToString());
+        }
+
+        TBLog.Info("EnsureSceneAndTeleport: EXIT.");
+        yield break;
     }
 
     // Place this inside TeleportHelpersBehaviour (or add to an existing partial class).
@@ -256,30 +329,51 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         try
         {
             TeleportHelpers.ReenableInProgress = true;
+            TBLog.Info($"ReenableComponentsAfterDelay: starting. moved='{moved?.name}', disabledBehaviours={(disabledBehaviours?.Count ?? 0)}, changedRigidbodies={(changedRigidbodies?.Count ?? 0)}, delay={delay:F2}");
         }
-        catch { }
+        catch (Exception exFlag)
+        {
+            TBLog.Warn("ReenableComponentsAfterDelay: failed setting ReenableInProgress: " + exFlag.ToString());
+        }
 
         // Wait the configured delay (real time to avoid being paused)
         if (delay > 0f)
+        {
+            TBLog.Info($"ReenableComponentsAfterDelay: waiting realtime delay {delay:F2}s");
             yield return new WaitForSecondsRealtime(delay);
+        }
         else
+        {
             yield return null;
+        }
 
         // Re-enable behaviours (reverse order for safety)
         try
         {
             if (disabledBehaviours != null)
             {
+                TBLog.Info("ReenableComponentsAfterDelay: re-enabling behaviours...");
+                int reenabled = 0;
                 foreach (var b in disabledBehaviours)
                 {
                     if (b == null) continue;
                     try
                     {
+                        var goName = b.gameObject != null ? b.gameObject.name : "<unknown>";
                         b.enabled = true;
-                        //TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{b.gameObject.name}'.");
+                        reenabled++;
+                        TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {b.GetType().Name} on '{goName}'.");
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn($"ReenableComponentsAfterDelay: error re-enabling behaviour {b?.GetType().Name}: {ex}");
+                    }
                 }
+                TBLog.Info($"ReenableComponentsAfterDelay: re-enabled {reenabled}/{disabledBehaviours.Count} behaviours.");
+            }
+            else
+            {
+                TBLog.Info("ReenableComponentsAfterDelay: no disabled behaviours to re-enable.");
             }
         }
         catch (Exception ex)
@@ -292,18 +386,30 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         {
             if (changedRigidbodies != null)
             {
+                TBLog.Info("ReenableComponentsAfterDelay: restoring rigidbody flags...");
+                int restored = 0;
                 foreach (var tup in changedRigidbodies)
                 {
                     try
                     {
                         if (tup.rb != null)
                         {
+                            var goName = tup.rb.gameObject != null ? tup.rb.gameObject.name : "<unknown>";
                             tup.rb.isKinematic = tup.originalIsKinematic;
-                            //TBLog.Info($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{tup.rb.gameObject.name}'.");
+                            restored++;
+                            TBLog.Info($"ReenableComponentsAfterDelay: Restored Rigidbody.isKinematic={tup.originalIsKinematic} on '{goName}'.");
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("ReenableComponentsAfterDelay: error restoring a rigidbody: " + ex.ToString());
+                    }
                 }
+                TBLog.Info($"ReenableComponentsAfterDelay: restored {restored}/{changedRigidbodies.Count} rigidbodies.");
+            }
+            else
+            {
+                TBLog.Info("ReenableComponentsAfterDelay: no rigidbodies to restore.");
             }
         }
         catch (Exception ex)
@@ -314,8 +420,12 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         try
         {
             TeleportHelpers.ReenableInProgress = false;
+            TBLog.Info("ReenableComponentsAfterDelay: completed and TeleportHelpers.ReenableInProgress cleared.");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ReenableComponentsAfterDelay: failed clearing ReenableInProgress: " + ex.ToString());
+        }
 
         yield break;
     }
