@@ -87,6 +87,86 @@ public static class PlayerPositionHelpers
         }
     }
 
+    // Add this method to your existing PlayerPositionHelpers class (or replace MovePlayerBy usage where needed).
+    public static bool MovePlayerTo(Vector3 target, bool safeTeleportAfter)
+    {
+        try
+        {
+            var found = TryGetPlayerTransform();
+            if (found == null)
+            {
+                TBLog.Warn($"PlayerPositionHelpers: could not find player transform to move to {target}.");
+                return false;
+            }
+
+            var playerRoot = ResolvePlayerRoot(found) ?? found;
+
+            Vector3 before = playerRoot.position;
+            Vector3 after = target;
+
+            TBLog.Info($"PlayerPositionHelpers: moving player root '{playerRoot.name}' to {after} (before={before})");
+
+            try
+            {
+                playerRoot.position = after;
+                TBLog.Info($"PlayerPositionHelpers: move applied. currentPos={playerRoot.position}");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PlayerPositionHelpers: setting player position threw: " + ex.ToString());
+                return false;
+            }
+
+            if (!safeTeleportAfter) return true;
+
+            try
+            {
+                var tm = TeleportManager.Instance;
+                if (tm != null)
+                {
+                    TBLog.Info("PlayerPositionHelpers: invoking TeleportManager.PlacePlayerUsingSafeRoutine (via Instance).");
+                    tm.StartCoroutine(tm.PlacePlayerUsingSafeRoutine(after, moved =>
+                    {
+                        try { TBLog.Info($"PlayerPositionHelpers: TeleportManager.PlacePlayerUsingSafeRoutine completed moved={moved}"); } catch { }
+                    }));
+                    return true;
+                }
+
+                var tmObj = UnityEngine.Object.FindObjectOfType<TeleportManager>();
+                if (tmObj != null)
+                {
+                    TBLog.Info("PlayerPositionHelpers: invoking TeleportManager.PlacePlayerUsingSafeRoutine (via FindObjectOfType fallback).");
+                    tmObj.StartCoroutine(tmObj.PlacePlayerUsingSafeRoutine(after, moved =>
+                    {
+                        try { TBLog.Info($"PlayerPositionHelpers: TeleportManager (found) PlacePlayerUsingSafeRoutine completed moved={moved}"); } catch { }
+                    }));
+                    return true;
+                }
+
+                var host = TeleportHelpersBehaviour.GetOrCreateHost();
+                if (host != null)
+                {
+                    TBLog.Info("PlayerPositionHelpers: TeleportManager not found; starting internal fallback safe-placement on host targeting player root.");
+                    host.StartCoroutine(FallbackSafePlaceCoroutine(playerRoot, after));
+                    return true;
+                }
+
+                TBLog.Info("PlayerPositionHelpers: TeleportManager.Instance not found; skipping safe-teleport attempt.");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("PlayerPositionHelpers: failed to start safe-teleport coroutine: " + ex.ToString());
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PlayerPositionHelpers: exception while moving player: " + ex.ToString());
+            return false;
+        }
+    }
+
     // Attempt to find the most likely transform representing the player.
     private static Transform TryGetPlayerTransform()
     {
