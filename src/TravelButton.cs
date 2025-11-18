@@ -416,6 +416,115 @@ public class TravelButtonPlugin : BaseUnityPlugin
     // Insert this inside the TravelButton.City class (near other serializable fields)
     public bool visited = false; // persisted visited flag (default false)
 
+    private static bool PersistCitiesJsonSafely(string jsonPath, JObject rootFallback = null)
+    {
+        try
+        {
+            var dto = JsonTravelConfig.Default();
+            int dtoCount = dto?.cities?.Count ?? 0;
+            TBLog.Info($"PersistCitiesJsonSafely: JsonTravelConfig.Default produced {dtoCount} entries.");
+
+            if (dtoCount == 0)
+            {
+                TBLog.Warn("PersistCitiesJsonSafely: DTO has 0 entries; attempting fallback root if provided.");
+                if (rootFallback != null)
+                {
+                    try
+                    {
+                        var dir = Path.GetDirectoryName(jsonPath);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                            Directory.CreateDirectory(dir);
+
+                        File.WriteAllText(jsonPath, rootFallback.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+                        TBLog.Info($"PersistCitiesJsonSafely: wrote fallback JSON root to: {jsonPath}");
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("PersistCitiesJsonSafely: failed writing fallback root: " + ex);
+                        return false;
+                    }
+                }
+
+                TBLog.Warn("PersistCitiesJsonSafely: no fallback provided — skipping write to avoid empty JSON.");
+                return false;
+            }
+
+            // Merge runtime visited flags into DTO by name (case-insensitive)
+            try
+            {
+                var map = new Dictionary<string, JsonCityConfig>(StringComparer.OrdinalIgnoreCase);
+                foreach (var jc in dto.cities)
+                    if (jc?.name != null) map[jc.name] = jc;
+
+                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                if (citiesEnum != null)
+                {
+                    foreach (var c in citiesEnum)
+                    {
+                        if (c == null) continue;
+                        string name = null;
+                        bool? visited = null;
+                        try
+                        {
+                            var t = c.GetType();
+                            var pName = t.GetProperty("name", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (pName != null) name = pName.GetValue(c) as string;
+                            else
+                            {
+                                var fName = t.GetField("name", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                                if (fName != null) name = fName.GetValue(c) as string;
+                            }
+
+                            var pVisited = t.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)
+                                           ?? t.GetProperty("Visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (pVisited != null)
+                            {
+                                var v = pVisited.GetValue(c);
+                                if (v is bool b) visited = b;
+                            }
+                            else
+                            {
+                                var fVisited = t.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)
+                                               ?? t.GetField("Visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                                if (fVisited != null)
+                                {
+                                    var v = fVisited.GetValue(c);
+                                    if (v is bool b2) visited = b2;
+                                }
+                            }
+                        }
+                        catch { }
+
+                        if (!string.IsNullOrEmpty(name) && visited.HasValue && map.TryGetValue(name, out var entry))
+                            entry.visited = visited.Value;
+                    }
+                }
+            }
+            catch (Exception exMerge)
+            {
+                TBLog.Warn("PersistCitiesJsonSafely: merging visited flags failed: " + exMerge);
+            }
+
+            // Write DTO using SaveToJson (ensures cities array and header)
+            try
+            {
+                dto.SaveToJson(jsonPath);
+                TBLog.Info("PersistCitiesJsonSafely: wrote DTO to: " + jsonPath);
+                return true;
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn("PersistCitiesJsonSafely: failed saving DTO: " + exWrite);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PersistCitiesJsonSafely: unexpected error: " + ex);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Load TravelButton_Cities.json from candidate locations using TravelConfig.LoadFromFile.
@@ -511,29 +620,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 LInfo("No valid TravelButton_Cities.json found in candidate locations.");
             }
 
-            // If not found or parsing failed, create default file at preferred candidate path
-            if (loaded == null)
-            {
-                var defaults = TravelConfig.Default();
-                string writePath = candidatePaths.Count > 0 ? candidatePaths[0] : Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json");
-                try
-                {
-                    if (defaults.SaveToFile(writePath))
-                    {
-                        LInfo("Wrote default TravelButton_Cities.json to: " + writePath);
-                        loaded = defaults;
-                        foundPath = writePath;
-                    }
-                    else
-                    {
-                        LWarn("Failed to write default TravelButton_Cities.json to: " + writePath);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LWarn("Error writing default TravelButton_Cities.json: " + ex.Message);
-                }
-            }
+            TBLog.Info("TryLoadCitiesJsonIntoTravelButtonMod: skipping implicit write of default JSON (loader should not persist).");
 
             // Map CityConfig entries into TravelButtonMod.City instances (metadata only)
             if (loaded != null && loaded.cities != null)
@@ -3461,82 +3548,33 @@ public static class TravelButton
     // PersistCitiesToPluginFolder: writes canonical JSON next to the plugin DLL
     // By default (forceWrite = false) this writes only if the canonical JSON file is missing.
     // If you pass forceWrite = true it will overwrite existing JSON.
-    public static bool PersistCitiesToPluginFolder(bool forceWrite = false)
+    public static void PersistCitiesToPluginFolder(bool forceWrite = false)
     {
         try
         {
-            TBLog.Info("PersistCitiesToPluginFolder: begin");
-
-            if (TravelButton.Cities == null)
+            var path = TravelButtonPlugin.GetCitiesJsonPath();
+            if (!forceWrite && File.Exists(path))
             {
-                TBLog.Info("PersistCitiesToPluginFolder: TravelButton.Cities == null; nothing to persist.");
-                return false;
+                TBLog.Info($"PersistCitiesToPluginFolder: canonical JSON already exists at {path}; skipping write.");
+                return;
             }
 
-            var cityConfigs = new List<CityConfig>();
-            foreach (var c in TravelButton.Cities)
+            var dto = JsonTravelConfig.Default();
+            int count = dto?.cities?.Count ?? 0;
+            TBLog.Info($"PersistCitiesToPluginFolder: JsonTravelConfig.Default() produced {count} entries.");
+
+            if (count == 0)
             {
-                try
-                {
-                    var cc = new CityConfig
-                    {
-                        name = c?.name ?? string.Empty,
-                        price = (c?.price ?? -1),
-                        coords = (c?.coords != null && c.coords.Length >= 3) ? new float[] { c.coords[0], c.coords[1], c.coords[2] } : null,
-                        targetGameObjectName = c?.targetGameObjectName,
-                        sceneName = c?.sceneName,
-                        desc = GetStringMemberSafe(c, "desc", "description", "descText") ?? string.Empty,
-                        visited = (c != null) ? GetBoolMemberOrDefault(c, false, "visited", "Visited") : false
-                    };
-                    cityConfigs.Add(cc);
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"PersistCitiesToPluginFolder: failed mapping city '{c?.name ?? "(null)"}': {ex.Message}");
-                }
+                TBLog.Warn("PersistCitiesToPluginFolder: no entries to write; skipping write to avoid producing an empty JSON object.");
+                return;
             }
 
-            var wrapper = new { cities = cityConfigs };
-            string prettyJson = JsonConvert.SerializeObject(wrapper, Formatting.Indented);
-
-            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
-            TBLog.Info($"PersistCitiesToPluginFolder: prepared TravelButton_Cities.json ({prettyJson.Length} bytes) to write at: {jsonPath}");
-
-            try
-            {
-                var dir = Path.GetDirectoryName(jsonPath);
-                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("PersistCitiesToPluginFolder: could not ensure directory for jsonPath: " + ex);
-            }
-
-            if (!forceWrite && File.Exists(jsonPath))
-            {
-                TBLog.Info($"PersistCitiesToPluginFolder: skipping write because canonical JSON already exists at {jsonPath} (forceWrite=false).");
-                return false;
-            }
-
-            try
-            {
-                File.WriteAllText(jsonPath, prettyJson, System.Text.Encoding.UTF8);
-                TBLog.Info($"PersistCitiesToPluginFolder: wrote TravelButton_Cities.json to: {jsonPath}");
-                try { TBLog.Info($"PersistCitiesToPluginFolder: wrote {new FileInfo(jsonPath).Length} bytes to: {jsonPath}"); } catch { }
-                TBLog.Info("PersistCitiesToPluginFolder: end. success=True");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"PersistCitiesToPluginFolder: write failed for {jsonPath}: {ex.Message}");
-                return false;
-            }
+            dto.SaveToJson(path);
+            TBLog.Info($"PersistCitiesToPluginFolder: wrote {count} cities to: {path}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("PersistCitiesToPluginFolder: unexpected error: " + ex);
-            return false;
+            TBLog.Warn("PersistCitiesToPluginFolder failed: " + ex);
         }
     }
 
@@ -3627,15 +3665,121 @@ public static class TravelButton
             }
             catch { }
 
+            // Write back canonical JSON (indented)
             try
             {
-                File.WriteAllText(jsonPath, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
-                TBLog.Info($"PersistVisitedAndCoordsOnly: wrote updates to: {jsonPath}");
-                return true;
+                var jsonDto = JsonTravelConfig.Default();
+                int jsonDtoCount = jsonDto?.cities?.Count ?? 0;
+                TBLog.Info($"Persist default TravelButton_Cities.json: JsonTravelConfig.Default produced {jsonDtoCount} entries.");
+
+                if (jsonDtoCount == 0)
+                {
+                    TBLog.Warn("Persist default: JsonTravelConfig.Default produced 0 entries; attempting to write constructed JSON root instead.");
+
+                    // If we have entries in the citiesArray we built earlier, persist that root (contains visited flags)
+                    try
+                    {
+                        if (citiesArray != null && citiesArray.Count > 0)
+                        {
+                            var dir = Path.GetDirectoryName(jsonPath);
+                            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                                Directory.CreateDirectory(dir);
+
+                            File.WriteAllText(jsonPath, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+                            TBLog.Info($"PersistVisitedAndCoordsOnly: wrote constructed JSON root to: {jsonPath}");
+                            return true;
+                        }
+                        else
+                        {
+                            TBLog.Warn("Persist default: no cities to write (citiesArray empty) — skipping write.");
+                            return false;
+                        }
+                    }
+                    catch (Exception exWriteFallback)
+                    {
+                        TBLog.Warn("Persist default: failed writing constructed JSON root: " + exWriteFallback);
+                        return false;
+                    }
+                }
+                else
+                {
+                    // Merge runtime visited flags (and coords if you want) into DTO entries by name (case-insensitive)
+                    try
+                    {
+                        var map = new Dictionary<string, JsonCityConfig>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var j in jsonDto.cities)
+                        {
+                            if (j?.name != null) map[j.name] = j;
+                        }
+
+                        var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable ?? new List<object>();
+                        foreach (var c in citiesEnum)
+                        {
+                            if (c == null) continue;
+                            // attempt to read name and visited via reflection to support runtime types
+                            string name = null;
+                            bool? visited = null;
+                            try
+                            {
+                                var t = c.GetType();
+                                var pName = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (pName != null) name = pName.GetValue(c) as string;
+                                else
+                                {
+                                    var fName = t.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                    if (fName != null) name = fName.GetValue(c) as string;
+                                }
+                                var pVisited = t.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)
+                                               ?? t.GetProperty("Visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (pVisited != null)
+                                {
+                                    var v = pVisited.GetValue(c);
+                                    if (v is bool b) visited = b;
+                                }
+                                else
+                                {
+                                    var fVisited = t.GetField("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)
+                                                   ?? t.GetField("Visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                    if (fVisited != null)
+                                    {
+                                        var v = fVisited.GetValue(c);
+                                        if (v is bool b2) visited = b2;
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            if (!string.IsNullOrEmpty(name) && visited.HasValue)
+                            {
+                                if (map.TryGetValue(name, out var jc))
+                                {
+                                    jc.visited = visited.Value;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exMerge)
+                    {
+                        TBLog.Warn("Persist default: failed merging visited flags into DTO: " + exMerge);
+                    }
+
+                    // Finally write the DTO via its SaveToJson (includes header and ensures cities array)
+                    try
+                    {
+                        jsonDto.SaveToJson(jsonPath);
+                        TBLog.Info("Wrote default TravelButton_Cities.json to: " + jsonPath);
+                        return true;
+                    }
+                    catch (Exception exWrite)
+                    {
+                        TBLog.Warn("Failed to write default TravelButton_Cities.json: " + exWrite.Message);
+                        return false;
+                    }
+                }
             }
             catch (Exception ex)
             {
-                TBLog.Warn($"PersistVisitedAndCoordsOnly: write failed: {ex.Message}");
+                TBLog.Warn("Error while persisting default TravelButton_Cities.json: " + ex);
                 return false;
             }
         }

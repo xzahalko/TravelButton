@@ -4446,7 +4446,7 @@ public partial class TravelButtonUI : MonoBehaviour
 
             try
             {
-                File.WriteAllText(outPath, sb.ToString(), Encoding.UTF8);
+//                File.WriteAllText(outPath, sb.ToString(), Encoding.UTF8);
                 TBLog.Info($"DumpDetectedPositionsForActiveScene: wrote detected positions for scene '{scene.name}' to '{outPath}'");
             }
             catch (Exception exWrite)

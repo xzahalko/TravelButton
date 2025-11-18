@@ -699,6 +699,7 @@ public static class CityMappingHelpers
     /// Returns an object which is typically List&lt;TRuntimeCity&gt; — caller should assign to TravelButton.Cities.
     /// If conversion cannot be performed it returns the original parsed list as a fallback.
     /// </summary>
+    // Replace existing ConvertParsedCitiesToRuntime with this implementation.
     public static object ConvertParsedCitiesToRuntime(List<CityEntry> parsed)
     {
         if (parsed == null) return null;
@@ -722,9 +723,78 @@ public static class CityMappingHelpers
 
                     foreach (var src in parsed)
                     {
-                        var dst = Activator.CreateInstance(elementType);
-                        MapParsedCityToTarget(src, dst);
-                        listInstance.Add(dst);
+                        try
+                        {
+                            object dst = null;
+
+                            // First try: create instance with default ctor and map via reflection
+                            try
+                            {
+                                dst = Activator.CreateInstance(elementType);
+                                MapParsedCityToTarget(src, dst);
+                            }
+                            catch
+                            {
+                                dst = null;
+                            }
+
+                            // Second try: JSON roundtrip - serialize the parsed DTO and deserialize into the target element type.
+                            // This works even if the element type has no public default constructor (Json.NET uses constructors/non-public if possible).
+                            if (dst == null)
+                            {
+                                try
+                                {
+                                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(src);
+                                    dst = Newtonsoft.Json.JsonConvert.DeserializeObject(json, elementType);
+                                }
+                                catch (Exception jex)
+                                {
+                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: json roundtrip conversion failed for elementType={elementType}: {jex.Message}");
+                                    dst = null;
+                                }
+                            }
+
+                            // Third try: if still null, try to create an uninitialized object (no ctor) and map fields
+                            if (dst == null)
+                            {
+                                try
+                                {
+                                    var uninit = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(elementType);
+                                    if (uninit != null)
+                                    {
+                                        MapParsedCityToTarget(src, uninit);
+                                        dst = uninit;
+                                    }
+                                }
+                                catch (Exception uex)
+                                {
+                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: GetUninitializedObject failed for {elementType}: {uex.Message}");
+                                }
+                            }
+
+                            // If conversion succeeded, add to listInstance, otherwise fallback to mapping into a CityEntry instance (if elementType is CityEntry)
+                            if (dst != null)
+                            {
+                                listInstance.Add(dst);
+                            }
+                            else
+                            {
+                                // As last resort, try to map into a TravelButtonUI.CityEntry if that is the element type
+                                if (elementType.FullName == typeof(CityEntry).FullName)
+                                {
+                                    listInstance.Add(src);
+                                }
+                                else
+                                {
+                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: unable to convert parsed item to {elementType}; aborting conversion.");
+                                    return null;
+                                }
+                            }
+                        }
+                        catch (Exception exItem)
+                        {
+                            TBLog.Warn("ConvertParsedCitiesToRuntime: failed converting a parsed city entry: " + exItem);
+                        }
                     }
 
                     return listInstance;
@@ -904,14 +974,52 @@ public static class CityMappingHelpers
             // Write canonical JSON only if it does not exist
             try
             {
-                if (!File.Exists(jsonPath))
+                try
                 {
-                    TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON missing -> persisting initial JSON from defaults.");
-                    TravelButton.PersistCitiesToPluginFolder(forceWrite: true);
+                    // Build the JsonTravelConfig we expect to persist
+                    var jsonDefaults = JsonTravelConfig.Default();
+                    int mappedCount = jsonDefaults?.cities?.Count ?? 0;
+                    TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced {mappedCount} entries.");
+
+                    // Write a debug copy so we can inspect what's produced independent of canonical persistence
+                    try
+                    {
+                        var debugPath = Path.Combine(Application.dataPath ?? ".", "..", "TravelButton_Cities_debug.json");
+                        jsonDefaults.SaveToJson(Path.GetFullPath(debugPath));
+                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: wrote debug JSON to {Path.GetFullPath(debugPath)}");
+                    }
+                    catch (Exception dbgEx)
+                    {
+                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to write debug JSON: " + dbgEx);
+                    }
+
+                    // Persist canonical JSON only if mapping produced one or more cities
+                    if (mappedCount > 0)
+                    {
+                        if (!File.Exists(jsonPath))
+                        {
+                            TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON missing -> persisting initial JSON from defaults.");
+                            // Prefer to persist using JsonTravelConfig directly to avoid type/shape mismatches
+                            try
+                            {
+                                jsonDefaults.SaveToJson(jsonPath);
+                                TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: persisted canonical JSON from JsonTravelConfig.Default().");
+                            }
+                            catch (Exception pex)
+                            {
+                                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to persist canonical JSON: " + pex);
+                            }
+                        }
+                        else TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON already exists -> not overwriting.");
+                    }
+                    else
+                    {
+                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced 0 entries; skipping canonical JSON write.");
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON already exists -> not overwriting.");
+                    TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: error in guarded persist logic: " + ex);
                 }
             }
             catch (Exception ex)

@@ -375,35 +375,6 @@ public class TravelConfig
         return -1;
     }
 
-    /// <summary>
-    /// Save TravelConfig to a JSON file using UnityEngine.JsonUtility
-    /// Instance method used by callers.
-    /// </summary>
-    public bool SaveToFile(string filePath)
-    {
-        if (string.IsNullOrEmpty(filePath)) return false;
-
-        try
-        {
-            string dir = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            string json = JsonUtility.ToJson(this, true);
-            File.WriteAllText(filePath, json, System.Text.Encoding.UTF8);
-
-            Debug.Log($"[TravelButton] CityConfig saved to: {filePath}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError($"[TravelButton] CityConfig.SaveToFile failed: {ex.Message}");
-            return false;
-        }
-    }
-
     // Provide a default TravelConfig (seeded with user-provided defaults)
     // This implementation obtains canonical defaults from ConfigManager.Default() and maps them into this TravelConfig form.
     // If ConfigManager.Default() is unavailable or mapping fails, returns an empty TravelConfig.
