@@ -392,10 +392,18 @@ public partial class TeleportManager : MonoBehaviour
 
                 bool placementSucceeded = false;
                 float callStart = Time.realtimeSinceStartup;
-                yield return StartCoroutine(PlacePlayerUsingSafeRoutine(finalPos, moved =>
+                
+                // Use new integration with TeleportHelpersBehaviour.GetOrCreateHost() as preferred coroutine host
+                var safeHost = TeleportHelpersBehaviour.GetOrCreateHost();
+                if (safeHost != null)
                 {
-                    placementSucceeded = moved;
-                }));
+                    yield return safeHost.StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(safeHost, finalPos, moved => placementSucceeded = moved));
+                }
+                else
+                {
+                    yield return StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, finalPos, moved => placementSucceeded = moved));
+                }
+                
                 float callDur = Time.realtimeSinceStartup - callStart;
 
                 TBLog.Info($"TeleportManager: PlacePlayerUsingSafeRoutine returned placementSucceeded={placementSucceeded} (duration={callDur:F2}s)");
@@ -499,5 +507,23 @@ public partial class TeleportManager : MonoBehaviour
         }
 
         yield break;
+    }
+
+    /// <summary>
+    /// Public wrapper for backward compatibility with existing calls.
+    /// Delegates to the new static TeleportManagerSafePlace integration.
+    /// </summary>
+    public IEnumerator PlacePlayerUsingSafeRoutine(Vector3 requestedTarget, Action<bool> onComplete)
+    {
+        return TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, requestedTarget, onComplete);
+    }
+
+    /// <summary>
+    /// Public wrapper for backward compatibility with existing calls.
+    /// Delegates to the new static TeleportManagerSafePlace integration.
+    /// </summary>
+    public IEnumerator PlacePlayerUsingSafeRoutineWrapper(Vector3 requestedTarget, Action<bool> onComplete)
+    {
+        return TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, requestedTarget, onComplete);
     }
 }
