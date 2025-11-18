@@ -2373,6 +2373,9 @@ public partial class TravelButtonUI : MonoBehaviour
     // Robust, simplified OpenTravelDialog implementation.
     // Replace your current OpenTravelDialog body with this version (keep the same signature).
     // Defensive replacement of OpenTravelDialog: per-city try/catch and progress logs to avoid crashes and collect diagnostics.
+    // Robust, simplified OpenTravelDialog implementation.
+    // Replace your current OpenTravelDialog body with this version (keep the same signature).
+    // Defensive replacement of OpenTravelDialog: per-city try/catch and progress logs to avoid crashes and collect diagnostics.
     private void OpenTravelDialog()
     {
         TBLog.Info("OpenTravelDialog: invoked.");
@@ -2623,21 +2626,24 @@ public partial class TravelButtonUI : MonoBehaviour
                     // - Monsoon -> move +5m on Z
                     try
                     {
+                        // --- DEBUG: apply nudge on click for test destinations and then proceed normally ---
                         if (string.Equals(city?.name, "Cierzo", StringComparison.OrdinalIgnoreCase))
                         {
-                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on X for city 'Cierzo'");
+                            TBLog.Info("City click debug: moving player +5m on X for Cierzo (on click)");
+                            // true requests the safe-placement coroutine to run after direct transform change
                             PlayerPositionHelpers.MovePlayerByX5(safeTeleportAfter: true);
                         }
                         else if (string.Equals(city?.name, "Levant", StringComparison.OrdinalIgnoreCase))
                         {
-                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on Y for city 'Levant'");
+                            TBLog.Info("City click debug: moving player +5m on Y for Levant (on click)");
                             PlayerPositionHelpers.MovePlayerByY5(safeTeleportAfter: true);
                         }
                         else if (string.Equals(city?.name, "Monsoon", StringComparison.OrdinalIgnoreCase))
                         {
-                            TBLog.Info("OpenTravelDialog (debug): moving player +5m on Z for city 'Monsoon'");
+                            TBLog.Info("City click debug: moving player +5m on Z for Monsoon (on click)");
                             PlayerPositionHelpers.MovePlayerByZ5(safeTeleportAfter: true);
                         }
+                        // continue with the normal click flow (cfgEnabled, visited check, payment, UI disabling, and TryTeleportThenCharge)
                     }
                     catch (Exception exMove)
                     {
@@ -2734,17 +2740,191 @@ public partial class TravelButtonUI : MonoBehaviour
                                 var cityLocal = capturedCity;
                                 string cityNameLocal = cityLocal?.name ?? "<null>";
 
-                                // --- NEW: prevent teleport for specified debug-disabled cities ---
+                                TBLog.Info($"City button click (ENTER) city='{cityNameLocal}'");
+
+                                // --- SPECIAL CASE: debug nudges for these three cities ---
+                                // Behavior: do NOT perform travel to the configured scene/coords.
+                                // Instead: close/disable the dialog, apply a small world-space nudge,
+                                // request the safe-placement routine (if available) to stabilize the player,
+                                // restore UI state and exit without charging or teleporting.
                                 if (string.Equals(cityNameLocal, "Cierzo", StringComparison.OrdinalIgnoreCase)
                                     || string.Equals(cityNameLocal, "Levant", StringComparison.OrdinalIgnoreCase)
                                     || string.Equals(cityNameLocal, "Monsoon", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    TBLog.Info($"City click: teleport disabled by debug rule for '{cityNameLocal}' - ignoring click.");
-                                    ShowInlineDialogMessage("Teleport disabled for this destination (debug).");
-                                    return;
-                                }
-                                // --- end debug-disabled guard ---
+                                    TBLog.Info($"City click (debug-nudge): handling special nudge for '{cityNameLocal}' (no travel).");
 
+                                    // Disable dialog buttons immediately to prevent duplicate clicks
+                                    var contentParentForNudge = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
+                                    if (contentParentForNudge != null)
+                                    {
+                                        for (int ci = 0; ci < contentParentForNudge.childCount; ci++)
+                                        {
+                                            try
+                                            {
+                                                var childBtn = contentParentForNudge.GetChild(ci).GetComponent<Button>();
+                                                if (childBtn != null) childBtn.interactable = false;
+                                                var cgChild = contentParentForNudge.GetChild(ci).GetComponent<CanvasGroup>();
+                                                if (cgChild != null) cgChild.blocksRaycasts = false;
+                                            }
+                                            catch (Exception exChild) { TBLog.Warn($"City click (nudge): failed disabling child index {ci}: {exChild}"); }
+                                        }
+                                    }
+
+                                    // Hide the dialog to avoid camera/controller/UI interference while moving player
+                                    try
+                                    {
+                                        if (dialogRoot != null)
+                                        {
+                                            dialogRoot.SetActive(false);
+                                            TBLog.Info("City click (nudge): dialogRoot hidden.");
+                                        }
+                                    }
+                                    catch (Exception exHide)
+                                    {
+                                        TBLog.Warn("City click (nudge): failed to hide dialogRoot: " + exHide);
+                                    }
+
+                                    // Apply transform nudge (do not ask the helper to start its own coroutine here)
+                                    Vector3 nudge = Vector3.zero;
+                                    if (string.Equals(cityNameLocal, "Cierzo", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        TBLog.Info("City click (nudge): applying +5m X for Cierzo");
+                                        PlayerPositionHelpers.MovePlayerByX5(safeTeleportAfter: false);
+                                        nudge = new Vector3(5f, 0f, 0f);
+                                    }
+                                    else if (string.Equals(cityNameLocal, "Levant", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        TBLog.Info("City click (nudge): applying +5m Y for Levant");
+                                        PlayerPositionHelpers.MovePlayerByY5(safeTeleportAfter: false);
+                                        nudge = new Vector3(0f, 5f, 0f);
+                                    }
+                                    else // Monsoon
+                                    {
+                                        TBLog.Info("City click (nudge): applying +5m Z for Monsoon");
+                                        PlayerPositionHelpers.MovePlayerByZ5(safeTeleportAfter: false);
+                                        nudge = new Vector3(0f, 0f, 5f);
+                                    }
+
+                                    // Compute the target position to hand to the safe-placement routine (best-effort)
+                                    Vector3 targetPos = Vector3.zero;
+                                    try
+                                    {
+                                        if (!TryGetPlayerPosition(out targetPos))
+                                        {
+                                            TBLog.Warn("City click (nudge): TryGetPlayerPosition failed; falling back to Camera.main + nudge.");
+                                            var cam = Camera.main;
+                                            targetPos = (cam != null) ? cam.transform.position + nudge : nudge;
+                                        }
+                                        TBLog.Info($"City click (nudge): targetPos for safe-placement = {targetPos}");
+                                    }
+                                    catch (Exception exPos)
+                                    {
+                                        TBLog.Warn("City click (nudge): failed computing targetPos: " + exPos);
+                                        targetPos = nudge;
+                                    }
+
+                                    // Try to run TeleportManager safe-placement if available, otherwise rely on helper fallback
+                                    try
+                                    {
+                                        var tm = TeleportManager.Instance;
+                                        if (tm != null)
+                                        {
+                                            TBLog.Info("City click (nudge): TeleportManager found - using PlacePlayerUsingSafeRoutine to stabilize player.");
+                                            // Start coroutine and when completed restore UI; do NOT call TryTeleportThenCharge.
+                                            tm.StartCoroutine(tm.PlacePlayerUsingSafeRoutine(targetPos, moved =>
+                                            {
+                                                try
+                                                {
+                                                    TBLog.Info($"City click (nudge): PlacePlayerUsingSafeRoutine completed moved={moved} for '{cityNameLocal}'. Restoring UI.");
+                                                }
+                                                catch { }
+
+                                                // Restore dialog buttons (we keep dialog hidden; re-open it so UI is usable)
+                                                try
+                                                {
+                                                    if (dialogRoot != null) dialogRoot.SetActive(true);
+                                                    if (contentParentForNudge != null)
+                                                    {
+                                                        for (int ci = 0; ci < contentParentForNudge.childCount; ci++)
+                                                        {
+                                                            try
+                                                            {
+                                                                var childBtn = contentParentForNudge.GetChild(ci).GetComponent<Button>();
+                                                                if (childBtn != null) childBtn.interactable = true;
+                                                                var cgChild = contentParentForNudge.GetChild(ci).GetComponent<CanvasGroup>();
+                                                                if (cgChild != null) cgChild.blocksRaycasts = true;
+                                                            }
+                                                            catch { }
+                                                        }
+                                                    }
+                                                }
+                                                catch (Exception exRestore)
+                                                {
+                                                    TBLog.Warn("City click (nudge): failed restoring dialog UI after placement: " + exRestore);
+                                                }
+                                            }));
+                                        }
+                                        else
+                                        {
+                                            // TeleportManager not available: ask the helper to attempt its own safe-placement fallback (fire-and-forget)
+                                            TBLog.Info("City click (nudge): TeleportManager not found - invoking helper fallback safe-teleport (best-effort).");
+                                            // This will attempt to run its own safe-placement paths (fallback host/shim) where available.
+                                            PlayerPositionHelpers.MovePlayerBy(new Vector3(0f, 0f, 0f), safeTeleportAfter: true); // no nudge here; transform already moved
+                                                                                                                                  // Restore UI immediately — helper will run its own coroutine if possible
+                                            try
+                                            {
+                                                if (dialogRoot != null) dialogRoot.SetActive(true);
+                                                if (contentParentForNudge != null)
+                                                {
+                                                    for (int ci = 0; ci < contentParentForNudge.childCount; ci++)
+                                                    {
+                                                        try
+                                                        {
+                                                            var childBtn = contentParentForNudge.GetChild(ci).GetComponent<Button>();
+                                                            if (childBtn != null) childBtn.interactable = true;
+                                                            var cgChild = contentParentForNudge.GetChild(ci).GetComponent<CanvasGroup>();
+                                                            if (cgChild != null) cgChild.blocksRaycasts = true;
+                                                        }
+                                                        catch { }
+                                                    }
+                                                }
+                                            }
+                                            catch (Exception exRestore2)
+                                            {
+                                                TBLog.Warn("City click (nudge): failed restoring UI after helper fallback: " + exRestore2);
+                                            }
+                                        }
+                                    }
+                                    catch (Exception exStart)
+                                    {
+                                        TBLog.Warn("City click (nudge): error while starting safe-placement: " + exStart);
+                                        // attempt to restore UI
+                                        try
+                                        {
+                                            if (dialogRoot != null) dialogRoot.SetActive(true);
+                                            if (contentParentForNudge != null)
+                                            {
+                                                for (int ci = 0; ci < contentParentForNudge.childCount; ci++)
+                                                {
+                                                    try
+                                                    {
+                                                        var childBtn = contentParentForNudge.GetChild(ci).GetComponent<Button>();
+                                                        if (childBtn != null) childBtn.interactable = true;
+                                                        var cgChild = contentParentForNudge.GetChild(ci).GetComponent<CanvasGroup>();
+                                                        if (cgChild != null) cgChild.blocksRaycasts = true;
+                                                    }
+                                                    catch { }
+                                                }
+                                            }
+                                        }
+                                        catch { }
+                                    }
+
+                                    // Return early: do NOT charge or teleport for these debug-nudge cities.
+                                    return;
+                                } // end special-case nudge
+
+                                // --- Default path for all other cities (Berg, Harmattan, etc.) ---
                                 int cityPriceLocal = cost;
                                 var timeNow = DateTime.UtcNow.ToString("o");
 
