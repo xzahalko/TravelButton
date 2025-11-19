@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -7,7 +7,7 @@ using UnityEngine.UI;
 /// <summary>
 /// TravelDialog: lists configured cities and initiates teleport+post-charge flow.
 /// Behavior:
-///  - Shows all cities from ConfigManager.Config
+///  - Shows all cities from TravelButtonMod.Cities
 ///  - City button is interactable only when (visited OR enabled in config) AND coords/target exist
 ///  - On click: if detected player money is known and insufficient -> show "not enough resources to travel"
 ///            otherwise start teleport coroutine (TeleportHelpersBehaviour) and AFTER successful teleport attempt to deduct currency
@@ -118,12 +118,18 @@ public class TravelDialog : MonoBehaviour
         // clear previous
         foreach (Transform t in content) Destroy(t.gameObject);
 
-        var cfg = ConfigManager.Config;
-        // create one entry per configured city (dictionary preserves names)
-        foreach (var kv in cfg.cities)
+        var cities = TravelButton.Cities;
+        if (cities == null || cities.Count == 0)
         {
-            var cityName = kv.Key;
-            var cityCfg = kv.Value;
+            TBLog.Warn("TravelDialog.RefreshList: no cities available");
+            return;
+        }
+
+        // create one entry per configured city
+        foreach (var city in cities)
+        {
+            if (city == null) continue;
+            var cityName = city.name;
 
             var itemGO = new GameObject("CityItem_" + cityName);
             itemGO.transform.SetParent(content, false);
@@ -150,7 +156,7 @@ public class TravelDialog : MonoBehaviour
             var priceGO = new GameObject("Price");
             priceGO.transform.SetParent(itemGO.transform, false);
             var ptxt = priceGO.AddComponent<Text>();
-            var priceToShow = cityCfg.price ?? cfg.globalTeleportPrice;
+            var priceToShow = city.price ?? TravelButton.cfgTravelCost.Value;
             ptxt.text = priceToShow.ToString();
             ptxt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             ptxt.color = Color.black;
@@ -162,12 +168,12 @@ public class TravelDialog : MonoBehaviour
             pRect.offsetMax = new Vector2(-10, 0);
 
             bool visited = VisitedTracker.HasVisited(cityName);
-            bool allowedByConfig = cityCfg.enabled;
-            bool coordsAvailable = cityCfg.coords != null && cityCfg.coords.Length >= 3;
+            bool allowedByConfig = city.enabled;
+            bool coordsAvailable = city.coords != null && city.coords.Length >= 3;
             bool targetGOAvailable = false;
-            if (!coordsAvailable && !string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+            if (!coordsAvailable && !string.IsNullOrEmpty(city.targetGameObjectName))
             {
-                var tg = GameObject.Find(cityCfg.targetGameObjectName);
+                var tg = GameObject.Find(city.targetGameObjectName);
                 targetGOAvailable = tg != null;
             }
 
@@ -207,21 +213,25 @@ public class TravelDialog : MonoBehaviour
 
     private void OnCityClicked(string cityName)
     {
-        var cfg = ConfigManager.Config;
-        if (!cfg.cities.ContainsKey(cityName)) return;
-        var cityCfg = cfg.cities[cityName];
-        int price = cityCfg.price ?? cfg.globalTeleportPrice;
+        var city = TravelButton.Cities?.Find(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+        if (city == null)
+        {
+            ShowMessage($"City {cityName} not found.");
+            return;
+        }
+        
+        int price = city.price ?? TravelButton.cfgTravelCost.Value;
 
-        if ((cityCfg.coords == null || cityCfg.coords.Length < 3) && string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+        if ((city.coords == null || city.coords.Length < 3) && string.IsNullOrEmpty(city.targetGameObjectName))
         {
             ShowMessage($"Location for {cityName} is not configured.");
             return;
         }
 
-        if (!string.IsNullOrEmpty(cityCfg.targetGameObjectName))
+        if (!string.IsNullOrEmpty(city.targetGameObjectName))
         {
-            var tg = GameObject.Find(cityCfg.targetGameObjectName);
-            if (tg == null && (cityCfg.coords == null || cityCfg.coords.Length < 3))
+            var tg = GameObject.Find(city.targetGameObjectName);
+            if (tg == null && (city.coords == null || city.coords.Length < 3))
             {
                 ShowMessage($"Location for {cityName} is not configured.");
                 return;
@@ -229,7 +239,7 @@ public class TravelDialog : MonoBehaviour
         }
 
         // Check player's inventory/currency (best-effort). If known and insufficient -> message.
-        long pm = GetPlayerCurrencyAmountOrMinusOne();
+        long pm = CurrencyHelpers.GetPlayerCurrencyAmountOrMinusOne();
         if (pm >= 0 && pm < price)
         {
             ShowMessage("not enough resources to travel");
@@ -240,15 +250,15 @@ public class TravelDialog : MonoBehaviour
         var stub = new CityStub
         {
             name = cityName,
-            coords = cityCfg.coords,
-            targetGameObjectName = cityCfg.targetGameObjectName
+            coords = city.coords,
+            targetGameObjectName = city.targetGameObjectName
         };
 
         // Use TeleportHelpersBehaviour to perform the teleport coroutine (it accepts object and uses reflection)
         TeleportHelpersBehaviour host = TeleportHelpersBehaviour.GetOrCreateHost();
-        Vector3 hint = (cityCfg.coords != null && cityCfg.coords.Length >= 3) ? new Vector3(cityCfg.coords[0], cityCfg.coords[1], cityCfg.coords[2]) : Vector3.zero;
+        Vector3 hint = (city.coords != null && city.coords.Length >= 3) ? new Vector3(city.coords[0], city.coords[1], city.coords[2]) : Vector3.zero;
 
-        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, cityCfg.coords != null && cityCfg.coords.Length >= 3, success =>
+        host.StartCoroutine(host.EnsureSceneAndTeleport(stub, hint, city.coords != null && city.coords.Length >= 3, success =>
         {
             if (success)
             {
@@ -256,10 +266,11 @@ public class TravelDialog : MonoBehaviour
                 try { VisitedTracker.MarkVisited(cityName); } catch { }
 
                 // attempt to deduct using reflection heuristics and the configured currency item name
-                bool charged = AttemptDeductAfterTeleport(price, cfg.currencyItem);
+                string currencyItem = TravelButton.cfgCurrencyItem.Value;
+                bool charged = AttemptDeductAfterTeleport(price, currencyItem);
                 if (!charged)
                 {
-                    ShowMessage($"Teleported to {cityName} (failed to charge {price} {cfg.currencyItem})");
+                    ShowMessage($"Teleported to {cityName} (failed to charge {price} {currencyItem})");
                 }
                 else
                 {
@@ -282,8 +293,8 @@ public class TravelDialog : MonoBehaviour
     }
 
     // Attempt to deduct currency after a successful teleport.
-    // Uses reflection heuristics; `currencyItemName` is taken from ConfigManager.Config.currencyItem.
-    private bool AttemptDeductAfterTeleport(int amount, string currencyItemName)
+    // Uses reflection heuristics; `currencyItemName` is taken from TravelButtonMod.cfgCurrencyItem.Value.
+    public bool AttemptDeductAfterTeleport(int amount, string currencyItemName)
     {
         try
         {
@@ -390,88 +401,121 @@ public class TravelDialog : MonoBehaviour
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogWarning("AttemptDeductAfterTeleport exception: " + ex);
+            TBLog.Warn("AttemptDeductAfterTeleport exception: " + ex);
         }
 
         // Nothing found / deducted
         return false;
     }
 
-    // Best-effort currency amount detection used to show early "not enough resources"
-    private long GetPlayerCurrencyAmountOrMinusOne()
-    {
-        try
-        {
-            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-            foreach (var mb in allMono)
-            {
-                var t = mb.GetType();
-                string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
-                foreach (var pn in propNames)
-                {
-                    var pi = t.GetProperty(pn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                    if (pi != null && pi.CanRead)
-                    {
-                        try
-                        {
-                            var val = pi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
-                        }
-                        catch { }
-                    }
-                }
-
-                string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
-                foreach (var mn in methodNames)
-                {
-                    var mi = t.GetMethod(mn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-                    if (mi != null && mi.GetParameters().Length == 0)
-                    {
-                        try
-                        {
-                            var res = mi.Invoke(mb, null);
-                            if (res is int) return (int)res;
-                            if (res is long) return (long)res;
-                            if (res is float) return (long)((float)res);
-                            if (res is double) return (long)((double)res);
-                        }
-                        catch { }
-                    }
-                }
-
-                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
-                {
-                    var name = fi.Name.ToLower();
-                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
-                    {
-                        try
-                        {
-                            var val = fi.GetValue(mb);
-                            if (val is int) return (int)val;
-                            if (val is long) return (long)val;
-                            if (val is float) return (long)((float)val);
-                            if (val is double) return (long)((double)val);
-                        }
-                        catch { }
-                    }
-                }
-            }
-
-            TravelButtonPlugin.LogWarning("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
-            return -1;
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogWarning("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
-            return -1;
-        }
-    }
-
     private void ShowMessage(string msg)
     {
         Debug.Log("[TravelButton] " + msg);
+    }
+
+    /// <summary>
+    /// Simple full-screen fade helper that creates (once) a fullscreen black Image on a Canvas
+    /// and animates its alpha from fromAlpha to toAlpha over duration (seconds).
+    /// - fromAlpha / toAlpha in range [0,1]
+    /// - Uses unscaled time so fades continue even if Time.timeScale changes.
+    /// - This is a coroutine returning IEnumerator so callers can StartCoroutine(TeleportManager.ScreenFade(...))
+    /// </summary>
+    public static IEnumerator ScreenFade(float fromAlpha, float toAlpha, float duration)
+    {
+        // Ensure duration positive
+        if (duration <= 0f)
+        {
+            // instant set: create/ensure overlay and set target alpha then exit
+            var inst0 = EnsureFadeOverlay();
+            SetOverlayAlpha(inst0.canvasGroup, toAlpha);
+            yield break;
+        }
+
+        var inst = EnsureFadeOverlay();
+        var cg = inst.canvasGroup;
+        // initialize
+        SetOverlayAlpha(cg, fromAlpha);
+        inst.root.SetActive(true);
+
+        float t = 0f;
+        float start = Time.realtimeSinceStartup;
+        while (t < 1f)
+        {
+            float now = Time.realtimeSinceStartup;
+            t = Mathf.Clamp01((now - start) / duration);
+            float a = Mathf.Lerp(fromAlpha, toAlpha, t);
+            SetOverlayAlpha(cg, a);
+            yield return null;
+        }
+
+        SetOverlayAlpha(cg, toAlpha);
+
+        // if fully transparent, hide overlay to avoid blocking raycasts; if opaque keep visible.
+        if (toAlpha <= 0f + 1e-6f)
+        {
+            inst.root.SetActive(false);
+        }
+        else
+        {
+            inst.root.SetActive(true);
+        }
+        yield break;
+    }
+
+    // Internal helper types / methods for the fade overlay
+    private class FadeOverlayInstance
+    {
+        public GameObject root;
+        public Canvas canvas;
+        public CanvasGroup canvasGroup;
+        public Image image;
+    }
+
+    private static FadeOverlayInstance _fadeOverlayInstance;
+    private static FadeOverlayInstance EnsureFadeOverlay()
+    {
+        if (_fadeOverlayInstance != null) return _fadeOverlayInstance;
+
+        // Create a persistent fullscreen canvas with an Image child and CanvasGroup
+        var go = new GameObject("TeleportFadeOverlay");
+        GameObject.DontDestroyOnLoad(go);
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 10000; // ensure on top
+
+        var cg = go.AddComponent<CanvasGroup>();
+        cg.blocksRaycasts = true; // while visible block raycasts to prevent interactions
+
+        // Create full-screen Image
+        var imgGO = new GameObject("FadeImage");
+        imgGO.transform.SetParent(go.transform, false);
+        var img = imgGO.AddComponent<Image>();
+        img.color = Color.black;
+        // stretch to full screen
+        var rect = img.rectTransform;
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = Vector2.zero;
+        rect.offsetMax = Vector2.zero;
+
+        _fadeOverlayInstance = new FadeOverlayInstance
+        {
+            root = go,
+            canvas = canvas,
+            canvasGroup = cg,
+            image = img
+        };
+
+        // start hidden
+        go.SetActive(false);
+        SetOverlayAlpha(cg, 0f);
+
+        return _fadeOverlayInstance;
+    }
+
+    private static void SetOverlayAlpha(CanvasGroup cg, float alpha)
+    {
+        if (cg == null) return;
+        cg.alpha = Mathf.Clamp01(alpha);
     }
 }

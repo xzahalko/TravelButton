@@ -1,61 +1,58 @@
-{
-  "enabled": true,
-  "currencyItem": "Silver",
-  "globalTeleportPrice": 100,
-  "cities": {
-    "Cierzo": {
-      "enabled": true,
-      "price": 1,
-      "coords": [-120.3, 126.0, 1819.3],
-      "targetGameObjectName": "Cierzo_Location",
+﻿{
+  "cities": [
+    {
+      "name": "Cierzo",
+      "price": 200,
+      "coords": [1410.3, 6.7, 1665.6],
+      "targetGameObjectName": "Cierzo",
       "sceneName": "CierzoNewTerrain",
-      "desc": "Cierzo - example description",
-      "visited": false
+      "desc": "",
+      "visited": true
     },
-    "Levant": {
-      "enabled": true,
-      "price": 1,
-      "coords": [200.0, 2.0, 50.0],
+    {
+      "name": "Levant",
+      "price": 200,
+      "coords": [-55.2, 1.0, 79.3],
       "targetGameObjectName": "Levant_Location",
-      "sceneName": "LevantNewTerrain",
-      "desc": "Levant - example description",
-      "visited": false
+      "sceneName": "Levant",
+      "desc": "",
+      "visited": true
     },
-    "Monsoon": {
-      "enabled": true,
-      "price": 1,
-      "coords": [300.0, 1.0, -150.0],
+    {
+      "name": "Monsoon",
+      "price": 200,
+      "coords": [61.5, -3.7, 167.5],
       "targetGameObjectName": "Monsoon_Location",
-      "sceneName": "MonsoonNewTerrain",
-      "desc": "Monsoon - example description",
-      "visited": false
+      "sceneName": "Monsoon",
+      "desc": "",
+      "visited": true
     },
-    "Berg": {
-      "enabled": true,
-      "price": 1,
-      "coords": [400.0, 1.2, -10.0],
-      "targetGameObjectName": "Berg_Location",
-      "sceneName": "BergNewTerrain",
-      "desc": "Berg - example description",
-      "visited": false
+    {
+      "name": "Berg",
+      "price": 200,
+      "coords": [1202.4, 13.0, 1378.8],
+      "targetGameObjectName": "Berg",
+      "sceneName": "Berg",
+      "desc": "",
+      "visited": true
     },
-    "Harmattan": {
-      "enabled": true,
-      "price": 1,
-      "coords": [500.0, 3.0, 80.0],
+    {
+      "name": "Harmattan",
+      "price": 200,
+      "coords": [93.7, 65.4, 767.8],
       "targetGameObjectName": "Harmattan_Location",
-      "sceneName": "HarmattanNewTerrain",
-      "desc": "Harmattan - example description",
-      "visited": false
+      "sceneName": "Harmattan",
+      "desc": "",
+      "visited": true
     },
-    "Sirocco": {
-      "enabled": true,
-      "price": 1,
-      "coords": [600.0, 1.2, -300.0],
+    {
+      "name": "Sirocco",
+      "price": 200,
+      "coords": [62.5, 56.8, -54.0],
       "targetGameObjectName": "Sirocco_Location",
-      "sceneName": "SiroccoNewTerrain",
-      "desc": "Sirocco - example description",
+      "sceneName": "NewSirocco",
+      "desc": "",
       "visited": false
     }
-  }
+  ]
 }

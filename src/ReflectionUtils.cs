@@ -1,6 +1,8 @@
-using System;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using UnityEngine;
 
 /// <summary>
 /// Safe reflection helpers: never throw on missing types, and provide a best-effort resolution fallback.
@@ -70,7 +72,7 @@ public static class ReflectionUtils
                     // Use TravelButtonPlugin if available (it is safe), otherwise fallback to UnityEngine.Debug
                     try
                     {
-                        TravelButtonPlugin.LogWarning($"Reflection: could not resolve type '{assemblyQualifiedTypeName}'. Some optional features may be disabled.");
+                        TBLog.Warn($"Reflection: could not resolve type '{assemblyQualifiedTypeName}'. Some optional features may be disabled.");
                     }
                     catch
                     {

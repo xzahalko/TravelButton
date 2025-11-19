@@ -1,0 +1,9 @@
+{
+    "name": "TravelButton",
+    "version_number": "1.0.1",
+    "website_url": "https://discord.gg/rKGzYaH4",
+    "description": "Adds a small button to inventory which gives player possibility to teleport.",
+    "dependencies": [
+        "BepInEx-BepInExPack_Outward-5.4.19"
+    ]
+}
