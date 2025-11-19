@@ -1,57 +1,85 @@
-﻿{
+﻿// TravelButton_Cities.json
+// Schema: { "cities": [ { "name": "...", "coords": [x,y,z], "targetGameObjectName": "...", "sceneName": "...", "desc": "..." }, ... ] }
+// Note: 'enabled' and 'price' are managed by BepInEx config, not this file.
+
+{
   "cities": [
     {
       "name": "Cierzo",
       "price": 200,
-      "coords": [1410.3, 6.7, 1665.6],
+      "coords": [
+        1410.3,
+        6.7,
+        1665.6
+      ],
       "targetGameObjectName": "Cierzo",
       "sceneName": "CierzoNewTerrain",
-      "desc": "",
-      "visited": true
+      "desc": "Cierzo - example description",
+      "visited": false
     },
     {
       "name": "Levant",
       "price": 200,
-      "coords": [-55.2, 1.0, 79.3],
+      "coords": [
+        -55.2,
+        1.0,
+        79.3
+      ],
       "targetGameObjectName": "Levant_Location",
       "sceneName": "Levant",
-      "desc": "",
-      "visited": true
+      "desc": "Levant - example description",
+      "visited": false
     },
     {
       "name": "Monsoon",
       "price": 200,
-      "coords": [61.5, -3.7, 167.5],
+      "coords": [
+		56.893, 
+		-4.853, 
+		114.147
+      ],
       "targetGameObjectName": "Monsoon_Location",
       "sceneName": "Monsoon",
-      "desc": "",
-      "visited": true
+      "desc": "Monsoon - example description",
+      "visited": false
     },
     {
       "name": "Berg",
       "price": 200,
-      "coords": [1202.4, 13.0, 1378.8],
+      "coords": [
+		1203.700, 
+		-10.097, 
+		1376.038
+      ],
       "targetGameObjectName": "Berg",
       "sceneName": "Berg",
-      "desc": "",
-      "visited": true
+      "desc": "Berg - example description",
+      "visited": false
     },
     {
       "name": "Harmattan",
       "price": 200,
-      "coords": [93.7, 65.4, 767.8],
+      "coords": [
+        93.7,
+        65.4,
+        767.8
+      ],
       "targetGameObjectName": "Harmattan_Location",
       "sceneName": "Harmattan",
-      "desc": "",
-      "visited": true
+      "desc": "Harmattan - example description",
+      "visited": false
     },
     {
       "name": "Sirocco",
       "price": 200,
-      "coords": [62.5, 56.8, -54.0],
+      "coords": [
+        62.5,
+        56.8,
+        -54.0
+      ],
       "targetGameObjectName": "Sirocco_Location",
       "sceneName": "NewSirocco",
-      "desc": "",
+      "desc": "Sirocco - example description",
       "visited": false
     }
   ]
