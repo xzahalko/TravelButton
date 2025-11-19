@@ -123,9 +123,9 @@ public static class TeleportManagerSafePlace
         // to complete any delayed changes (e.g. reparenting, rigidbody resets) before we
         // set the player's transform for the first time.
 
-//        const float preEnforcementDelay = 10.0f; // seconds (tuneable)
-//        TBLog.Info($"TeleportManagerSafePlace: waiting {preEnforcementDelay:F3}s before first enforcement attempt to let scene/physics stabilize");
-//        yield return new WaitForSecondsRealtime(preEnforcementDelay);
+        //        const float preEnforcementDelay = 10.0f; // seconds (tuneable)
+        //        TBLog.Info($"TeleportManagerSafePlace: waiting {preEnforcementDelay:F3}s before first enforcement attempt to let scene/physics stabilize");
+        //        yield return new WaitForSecondsRealtime(preEnforcementDelay);
 
         /*
                 if (CoordsConvertor.TryConvertToVector3(requestedTarget, out Vector3 destCords))
@@ -284,7 +284,7 @@ public static class TeleportManagerSafePlace
             {
                 groundedPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
                 groundedByRaycast = true;
-                            string colliderName = hit.collider != null ? hit.collider.name : "<none>";
+                string colliderName = hit.collider != null ? hit.collider.name : "<none>";
                 string colliderTag = hit.collider != null ? hit.collider.tag : "<none>";
                 int layer = hit.collider != null ? hit.collider.gameObject.layer : -1;
                 TBLog.Info($"TeleportManagerSafePlace: raycast hit at point={hit.point}, normal={hit.normal}, distance={hit.distance:F3}, collider='{colliderName}', colliderTag={colliderTag}, layer={layer} => groundedPos={groundedPos}");
@@ -300,91 +300,91 @@ public static class TeleportManagerSafePlace
         }
 
         float tAfterRay = Time.realtimeSinceStartup;
-TBLog.Info($"TeleportManagerSafePlace: raycast stage finished (t={tAfterRay:F3}, dt={(tAfterRay - tGroundStart):F3}s, groundedByRaycast={groundedByRaycast})");
+        TBLog.Info($"TeleportManagerSafePlace: raycast stage finished (t={tAfterRay:F3}, dt={(tAfterRay - tGroundStart):F3}s, groundedByRaycast={groundedByRaycast})");
 
-if (!groundedByRaycast)
-{
-    try
-    {
-        const float NAV_RADIUS = 6.0f;
-        NavMeshHit navHit;
-        TBLog.Info($"TeleportManagerSafePlace: attempting NavMesh.SamplePosition around {requestedTarget} radius={NAV_RADIUS}");
-        if (NavMesh.SamplePosition(requestedTarget, out navHit, NAV_RADIUS, NavMesh.AllAreas))
+        if (!groundedByRaycast)
         {
-            groundedPos = navHit.position;
-            TBLog.Info($"TeleportManagerSafePlace: NavMesh.SamplePosition success pos={navHit.position}, distance={navHit.distance:F3}");
-        }
-        else
-        {
-            TBLog.Info("TeleportManagerSafePlace: NavMesh.SamplePosition failed to find a nearby nav position.");
-        }
-    }
-    catch (Exception ex)
-    {
-        TBLog.Warn("TeleportManagerSafePlace: NavMesh.SamplePosition threw: " + ex.ToString());
-    }
-}
-
-float tAfterNav = Time.realtimeSinceStartup;
-TBLog.Info($"TeleportManagerSafePlace: nav stage finished (t={tAfterNav:F3}, dt={(tAfterNav - tAfterRay):F3}s), groundedPos={groundedPos}");
-
-if (!groundedByRaycast)
-{
-    try
-    {
-        TBLog.Info("TeleportManagerSafePlace: attempting overlap/raise fallback to find non-overlapping placement.");
-        const float STEP = 0.25f;
-        const float MAX_RAISE = 2.0f;
-        const float RADIUS = 0.5f;
-        bool fixedUp = false;
-        int maxSteps = Mathf.CeilToInt(MAX_RAISE / STEP);
-        for (int i = 0; i <= maxSteps; i++)
-        {
-            Vector3 checkPos = requestedTarget + Vector3.up * (i * STEP);
-            Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, RADIUS, ~0, QueryTriggerInteraction.Ignore);
-            bool overlapping = false;
-            if (hits != null && hits.Length > 0)
+            try
             {
-                var hitNames = new StringBuilder();
-                for (int hi = 0; hi < hits.Length; hi++)
+                const float NAV_RADIUS = 6.0f;
+                NavMeshHit navHit;
+                TBLog.Info($"TeleportManagerSafePlace: attempting NavMesh.SamplePosition around {requestedTarget} radius={NAV_RADIUS}");
+                if (NavMesh.SamplePosition(requestedTarget, out navHit, NAV_RADIUS, NavMesh.AllAreas))
                 {
-                    var h = hits[hi];
-                    if (h == null || h.transform == null) continue;
-                    hitNames.Append(h.name).Append(",");
-                    if (playerRoot != null && h.transform.IsChildOf(playerRoot)) continue;
-                    overlapping = true;
+                    groundedPos = navHit.position;
+                    TBLog.Info($"TeleportManagerSafePlace: NavMesh.SamplePosition success pos={navHit.position}, distance={navHit.distance:F3}");
                 }
-                TBLog.Info($"TeleportManagerSafePlace: overlap step {i} - totalHits={hits.Length} hitNames=[{hitNames}] overlapping={overlapping} checkPos={checkPos}");
+                else
+                {
+                    TBLog.Info("TeleportManagerSafePlace: NavMesh.SamplePosition failed to find a nearby nav position.");
+                }
             }
-            else
+            catch (Exception ex)
             {
-                TBLog.Info($"TeleportManagerSafePlace: overlap step {i} - no hits at checkPos={checkPos}");
-            }
-
-            if (!overlapping)
-            {
-                groundedPos = checkPos;
-                fixedUp = true;
-                TBLog.Info($"TeleportManagerSafePlace: overlap fallback selected groundedPos={groundedPos} at step {i}");
-                break;
+                TBLog.Warn("TeleportManagerSafePlace: NavMesh.SamplePosition threw: " + ex.ToString());
             }
         }
 
-        if (!fixedUp)
+        float tAfterNav = Time.realtimeSinceStartup;
+        TBLog.Info($"TeleportManagerSafePlace: nav stage finished (t={tAfterNav:F3}, dt={(tAfterNav - tAfterRay):F3}s), groundedPos={groundedPos}");
+
+        if (!groundedByRaycast)
         {
-            TBLog.Warn("TeleportManagerSafePlace: overlap fallback could not find free spot; using requestedTarget for groundedPos");
-            groundedPos = requestedTarget;
-        }
-    }
-    catch (Exception ex)
-    {
-        TBLog.Warn("TeleportManagerSafePlace: overlap fallback threw: " + ex.ToString());
-        groundedPos = requestedTarget;
-    }
-}
+            try
+            {
+                TBLog.Info("TeleportManagerSafePlace: attempting overlap/raise fallback to find non-overlapping placement.");
+                const float STEP = 0.25f;
+                const float MAX_RAISE = 2.0f;
+                const float RADIUS = 0.5f;
+                bool fixedUp = false;
+                int maxSteps = Mathf.CeilToInt(MAX_RAISE / STEP);
+                for (int i = 0; i <= maxSteps; i++)
+                {
+                    Vector3 checkPos = requestedTarget + Vector3.up * (i * STEP);
+                    Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                    bool overlapping = false;
+                    if (hits != null && hits.Length > 0)
+                    {
+                        var hitNames = new StringBuilder();
+                        for (int hi = 0; hi < hits.Length; hi++)
+                        {
+                            var h = hits[hi];
+                            if (h == null || h.transform == null) continue;
+                            hitNames.Append(h.name).Append(",");
+                            if (playerRoot != null && h.transform.IsChildOf(playerRoot)) continue;
+                            overlapping = true;
+                        }
+                        TBLog.Info($"TeleportManagerSafePlace: overlap step {i} - totalHits={hits.Length} hitNames=[{hitNames}] overlapping={overlapping} checkPos={checkPos}");
+                    }
+                    else
+                    {
+                        TBLog.Info($"TeleportManagerSafePlace: overlap step {i} - no hits at checkPos={checkPos}");
+                    }
 
-// 3) Decide finalPos, respecting preserveRequestedY when requested.
-TBLog.Info($"TeleportManagerSafePlace: Enforcement preview: AdjustForOverlapLikeFallback ad3, currentPlayerPos={(playerRoot != null ? playerRoot.position.ToString() : "<none>")}");
+                    if (!overlapping)
+                    {
+                        groundedPos = checkPos;
+                        fixedUp = true;
+                        TBLog.Info($"TeleportManagerSafePlace: overlap fallback selected groundedPos={groundedPos} at step {i}");
+                        break;
+                    }
+                }
+
+                if (!fixedUp)
+                {
+                    TBLog.Warn("TeleportManagerSafePlace: overlap fallback could not find free spot; using requestedTarget for groundedPos");
+                    groundedPos = requestedTarget;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("TeleportManagerSafePlace: overlap fallback threw: " + ex.ToString());
+                groundedPos = requestedTarget;
+            }
+        }
+
+        // 3) Decide finalPos, respecting preserveRequestedY when requested.
+        TBLog.Info($"TeleportManagerSafePlace: Enforcement preview: AdjustForOverlapLikeFallback ad3, currentPlayerPos={(playerRoot != null ? playerRoot.position.ToString() : "<none>")}");
 
         Vector3 finalPos;
         bool requestedOverlaps = false;
@@ -630,7 +630,7 @@ TBLog.Info($"TeleportManagerSafePlace: Enforcement preview: AdjustForOverlapLike
                 continue;
             }
 
-            /*
+
             // If we got here, we achieved target; now monitor for a short period for external overrides
             float monitorStart = Time.realtimeSinceStartup;
             bool wasOverridden = false;
@@ -661,7 +661,6 @@ TBLog.Info($"TeleportManagerSafePlace: Enforcement preview: AdjustForOverlapLike
                 overallSuccess = true;
                 break;
             }
-            */
 
         } // end enforcement loop
 
@@ -685,6 +684,269 @@ TBLog.Info($"TeleportManagerSafePlace: Enforcement preview: AdjustForOverlapLike
         onComplete?.Invoke(overallSuccess);
         yield break;
     }
+
+    // Insert into existing TeleportManagerSafePlace class (near other helpers).
+    // Synchronous "compute-only" variant: does NOT move the player. Returns true if computation succeeded and
+    // correctedCoords contains suggested placement; returns false on failure and correctedCoords will be requestedTarget.
+    //
+    // Usage:
+    //   Vector3 corrected;
+    //   bool ok = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, requestedTarget, true, out corrected);
+    //   if (ok) { /* use corrected */ } else { /* fallback */ }
+    public static bool ComputeSafePlacementCoords(MonoBehaviour host, Vector3 requestedTarget, bool preserveRequestedY, out Vector3 correctedCoords)
+    {
+        correctedCoords = requestedTarget;
+        float entryTime = Time.realtimeSinceStartup;
+        TBLog.Info($"ComputeSafePlacementCoords: Enter (t={entryTime:F3}) requestedTarget={requestedTarget}, preserveRequestedY={preserveRequestedY}, host={(host != null ? host.name : "<null>")}");
+
+        if (host == null)
+        {
+            TBLog.Warn("ComputeSafePlacementCoords: host is null; returning requestedTarget");
+            correctedCoords = requestedTarget;
+            return false;
+        }
+
+        // Helper: attempt a non-blocking resolve of player root/CC/rb for overlap filtering.
+        // We do a single scan (no waiting) to avoid blocking main thread.
+        Transform playerRoot = null;
+        CharacterController cc = null;
+        Rigidbody rb = null;
+        try
+        {
+            cc = UnityEngine.Object.FindObjectOfType<CharacterController>();
+            if (cc != null)
+            {
+                playerRoot = cc.transform;
+                var rbs = playerRoot.GetComponentsInChildren<Rigidbody>(true);
+                if (rbs != null && rbs.Length > 0) rb = rbs[0];
+                TBLog.Info($"ComputeSafePlacementCoords: ResolveCC immediate found CC on '{GetTransformPath(playerRoot)}' pos={playerRoot.position}");
+            }
+            else
+            {
+                var go = GameObject.FindWithTag("Player");
+                if (go != null)
+                {
+                    playerRoot = go.transform;
+                    cc = go.GetComponentInChildren<CharacterController>(true);
+                    var rbs2 = go.GetComponentsInChildren<Rigidbody>(true);
+                    if (rbs2 != null && rbs2.Length > 0) rb = rbs2[0];
+                    TBLog.Info($"ComputeSafePlacementCoords: ResolveCC immediate found GameObject.tag='Player' -> '{GetTransformPath(playerRoot)}' pos={playerRoot.position}");
+                }
+                else
+                {
+                    // heuristic scan (single pass)
+                    var all = GameObject.FindObjectsOfType<GameObject>();
+                    foreach (var g in all)
+                    {
+                        if (g == null || string.IsNullOrEmpty(g.name)) continue;
+                        if (!g.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (g.name.IndexOf("Cam", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                        var cc2 = g.GetComponentInChildren<CharacterController>(true);
+                        if (cc2 != null) cc = cc2;
+                        var rbs3 = g.GetComponentsInChildren<Rigidbody>(true);
+                        if (rbs3 != null && rbs3.Length > 0) rb = rbs3[0];
+                        playerRoot = g.transform;
+                        TBLog.Info($"ComputeSafePlacementCoords: ResolveCC heuristic found '{GetTransformPath(playerRoot)}' pos={playerRoot.position}");
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ComputeSafePlacementCoords: ResolveCC threw: " + ex);
+        }
+
+        if (playerRoot == null)
+        {
+            TBLog.Info("ComputeSafePlacementCoords: playerRoot not found on immediate scan; proceeding without playerRoot for overlap filtering.");
+        }
+
+        // STEP A: Raycast grounding
+        Vector3 groundedPos = requestedTarget;
+        bool groundedByRaycast = false;
+        try
+        {
+            const float RAY_UP = 4.0f;
+            const float RAY_DOWN = 20.0f;
+            Vector3 rayStart = requestedTarget + Vector3.up * RAY_UP;
+            RaycastHit hit;
+            float rayLen = RAY_UP + RAY_DOWN;
+            TBLog.Info($"ComputeSafePlacementCoords: performing Raycast from {rayStart} down {rayLen}");
+            if (Physics.Raycast(rayStart, Vector3.down, out hit, rayLen, ~0, QueryTriggerInteraction.Ignore))
+            {
+                groundedPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
+                groundedByRaycast = true;
+                string colliderName = hit.collider != null ? hit.collider.name : "<none>";
+                TBLog.Info($"ComputeSafePlacementCoords: raycast hit point={hit.point}, normal={hit.normal}, collider='{colliderName}' => groundedPos={groundedPos}");
+            }
+            else
+            {
+                TBLog.Info("ComputeSafePlacementCoords: raycast found no ground under requestedTarget.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ComputeSafePlacementCoords: raycast threw: " + ex);
+        }
+
+        // STEP B: NavMesh fallback if raycast not used
+        if (!groundedByRaycast)
+        {
+            try
+            {
+                const float NAV_RADIUS = 6.0f;
+                NavMeshHit navHit;
+                TBLog.Info($"ComputeSafePlacementCoords: attempting NavMesh.SamplePosition around {requestedTarget} radius={NAV_RADIUS}");
+                if (NavMesh.SamplePosition(requestedTarget, out navHit, NAV_RADIUS, NavMesh.AllAreas))
+                {
+                    groundedPos = navHit.position;
+                    TBLog.Info($"ComputeSafePlacementCoords: NavMesh.SamplePosition success pos={navHit.position}, distance={navHit.distance:F3}");
+                }
+                else
+                {
+                    TBLog.Info("ComputeSafePlacementCoords: NavMesh.SamplePosition failed to find a nearby nav position.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("ComputeSafePlacementCoords: NavMesh.SamplePosition threw: " + ex);
+            }
+        }
+
+        // STEP C: overlap/raise fallback if still not raycast-grounded
+        if (!groundedByRaycast)
+        {
+            try
+            {
+                TBLog.Info("ComputeSafePlacementCoords: attempting overlap/raise fallback to find non-overlapping placement.");
+                const float STEP = 0.25f;
+                const float MAX_RAISE = 2.0f;
+                const float RADIUS = 0.5f;
+                int maxSteps = Mathf.CeilToInt(MAX_RAISE / STEP);
+                bool fixedUp = false;
+                for (int i = 0; i <= maxSteps; i++)
+                {
+                    Vector3 checkPos = requestedTarget + Vector3.up * (i * STEP);
+                    Collider[] hits = Physics.OverlapSphere(checkPos + Vector3.up * 0.5f, RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                    bool overlapping = false;
+                    if (hits != null && hits.Length > 0)
+                    {
+                        var names = new StringBuilder();
+                        for (int hi = 0; hi < hits.Length; hi++)
+                        {
+                            var h = hits[hi];
+                            if (h == null || h.transform == null) continue;
+                            names.Append(h.name).Append(",");
+                            if (playerRoot != null && h.transform.IsChildOf(playerRoot)) continue;
+                            overlapping = true;
+                        }
+                        TBLog.Info($"ComputeSafePlacementCoords: overlap step {i} - hits={hits.Length}, names=[{names}], overlapping={overlapping} checkPos={checkPos}");
+                    }
+                    else
+                    {
+                        TBLog.Info($"ComputeSafePlacementCoords: overlap step {i} - no hits at checkPos={checkPos}");
+                    }
+
+                    if (!overlapping)
+                    {
+                        groundedPos = checkPos;
+                        fixedUp = true;
+                        TBLog.Info($"ComputeSafePlacementCoords: overlap fallback selected groundedPos={groundedPos} at step {i}");
+                        break;
+                    }
+                }
+
+                if (!fixedUp)
+                {
+                    TBLog.Warn("ComputeSafePlacementCoords: overlap fallback could not find free spot; using requestedTarget for groundedPos");
+                    groundedPos = requestedTarget;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("ComputeSafePlacementCoords: overlap fallback threw: " + ex);
+                groundedPos = requestedTarget;
+            }
+        }
+
+        // STEP D: decide finalPos respecting preserveRequestedY
+        Vector3 finalPos = groundedPos;
+        try
+        {
+            if (preserveRequestedY)
+            {
+                finalPos = requestedTarget;
+                const float CHECK_RADIUS = 0.5f;
+                Vector3 overlapCheckPos = finalPos + Vector3.up * 0.5f;
+                Collider[] overlapHits = Physics.OverlapSphere(overlapCheckPos, CHECK_RADIUS, ~0, QueryTriggerInteraction.Ignore);
+                bool requestedOverlaps = false;
+                if (overlapHits != null && overlapHits.Length > 0)
+                {
+                    var names = new StringBuilder();
+                    foreach (var h in overlapHits)
+                    {
+                        if (h == null || h.transform == null) continue;
+                        names.Append(h.name).Append(",");
+                        if (playerRoot != null && h.transform.IsChildOf(playerRoot)) continue;
+                        requestedOverlaps = true;
+                        break;
+                    }
+                    TBLog.Info($"ComputeSafePlacementCoords: preserveRequestedY overlap hits [{names}] requestedOverlaps={requestedOverlaps}");
+                }
+                TBLog.Info($"ComputeSafePlacementCoords: preserveRequestedY={preserveRequestedY}, requestedOverlaps={(finalPos == requestedTarget ? "check_done" : "n/a")}, requestedTarget={requestedTarget}, groundedPos={groundedPos}");
+                if (overlapHits != null && overlapHits.Length > 0)
+                {
+                    bool anyNonSelf = false;
+                    foreach (var h in overlapHits)
+                    {
+                        if (h == null || h.transform == null) continue;
+                        if (playerRoot != null && h.transform.IsChildOf(playerRoot)) continue;
+                        anyNonSelf = true;
+                        break;
+                    }
+                    if (anyNonSelf)
+                    {
+                        TBLog.Warn("ComputeSafePlacementCoords: requestedTarget overlaps geometry -> falling back to groundedPos");
+                        finalPos = groundedPos;
+                    }
+                }
+            }
+            else
+            {
+                finalPos = groundedPos;
+            }
+
+            TBLog.Info($"ComputeSafePlacementCoords: chosen finalPos={finalPos} (preserveRequestedY={preserveRequestedY})");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ComputeSafePlacementCoords: deciding finalPos threw: " + ex);
+            finalPos = groundedPos;
+        }
+
+        // STEP E: apply AdjustForOverlapLikeFallback to attempt small raises (reuse existing helper)
+        try
+        {
+            float raised;
+            Vector3 adjusted = AdjustForOverlapLikeFallback(finalPos, playerRoot, out raised);
+            if (Mathf.Abs(raised) > 0.0001f)
+            {
+                TBLog.Info($"ComputeSafePlacementCoords: finalPos adjusted by fallback-like overlap fix: original={finalPos}, adjusted={adjusted}, raisedBy={raised:F2}");
+            }
+            finalPos = adjusted;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ComputeSafePlacementCoords: AdjustForOverlapLikeFallback threw: " + ex);
+        }
+
+        // Done
+        correctedCoords = finalPos;
+        TBLog.Info($"ComputeSafePlacementCoords: completed - correctedCoords={correctedCoords}");
+        return true;
+    }
+
     // Insert near top of file (helper fade)
     private static IEnumerator ScreenFade(float fromAlpha, float toAlpha, float duration)
     {

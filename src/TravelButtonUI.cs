@@ -3560,12 +3560,29 @@ public partial class TravelButtonUI : MonoBehaviour
 
             bool finishedLoad = false;
             bool loadSuccess = false;
-            Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+            // compute grounded coords as before
+            //Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+
+            // compute a corrected placement coordinate synchronously
+            Vector3 correctedCoords;
+            bool coordsOk = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, coordsHint, true, out correctedCoords);
+            if (!coordsOk)
+            {
+                // fallback to grounded coords if compute failed
+                correctedCoords = coordsHint;
+                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={coordsHint}");
+            }
+            else
+            {
+                TBLog.Info($"ComputeSafePlacementCoords: ok -> correctedCoords={correctedCoords}");
+            }
+
+            // use correctedCoords from here on when starting the teleport/placement
 
             bool acceptedLoad = false;
             try
             {
-                acceptedLoad = tm.StartSceneLoad(city.sceneName, groundedCoords, (loadedScene, asyncOp, ok) =>
+                acceptedLoad = tm.StartSceneLoad(city.sceneName, correctedCoords, (loadedScene, asyncOp, ok) =>
                 {
                     loadSuccess = ok;
                     finishedLoad = true;
@@ -3612,7 +3629,7 @@ public partial class TravelButtonUI : MonoBehaviour
             }
 
             bool placed = false;
-            try { placed = TravelButtonUI.AttemptTeleportToPositionSafe(groundedCoords); } catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
+            try { placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoords); } catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
 
             if (!placed)
             {
