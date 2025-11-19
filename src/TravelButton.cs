@@ -407,6 +407,19 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             string sceneName = scene.name ?? "";
             if (string.IsNullOrEmpty(sceneName)) return;
+            
+            // Attempt to store the newly visited scene to JSON
+            try
+            {
+                Vector3? playerPos = GetPlayerPositionFromScene();
+                string detectedTarget = DetectTargetGameObjectName(sceneName);
+                StoreVisitedSceneToJson(sceneName, playerPos, detectedTarget, null);
+            }
+            catch (Exception exStore)
+            {
+                TBLog.Warn($"OnSceneLoaded: StoreVisitedSceneToJson failed for '{sceneName}': {exStore.Message}");
+            }
+            
             MarkCityVisitedByScene(sceneName);
             LogActiveSceneInfo();
         }
@@ -6082,6 +6095,294 @@ public static class TravelButton
         catch (Exception ex)
         {
             TBLog.Warn("NotifyVisitedFlagsChanged: unexpected error: " + ex);
+        }
+    }
+
+    /// <summary>
+    /// Helper method to get player position from the current scene.
+    /// Returns null if player cannot be found.
+    /// </summary>
+    public static Vector3? GetPlayerPositionFromScene()
+    {
+        try
+        {
+            // Try finding by tag first (most reliable)
+            var playerObj = GameObject.FindWithTag("Player");
+            if (playerObj != null)
+            {
+                return playerObj.transform.position;
+            }
+
+            // Fallback: scan for PlayerChar* objects
+            foreach (var go in GameObject.FindObjectsOfType<GameObject>())
+            {
+                if (!string.IsNullOrEmpty(go.name) && go.name.StartsWith("PlayerChar"))
+                {
+                    return go.transform.position;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"GetPlayerPositionFromScene: failed to get player position: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Best-effort detection of target GameObject name in the scene.
+    /// Tries common patterns like sceneName + "_Location", just sceneName, etc.
+    /// Returns null if no suitable target is found.
+    /// </summary>
+    public static string DetectTargetGameObjectName(string sceneName)
+    {
+        if (string.IsNullOrEmpty(sceneName))
+            return null;
+
+        try
+        {
+            // Common patterns to try
+            var candidateNames = new[]
+            {
+                sceneName,
+                sceneName + "_Location",
+                sceneName + "Location",
+                sceneName + "_location"
+            };
+
+            foreach (var candidate in candidateNames)
+            {
+                var obj = GameObject.Find(candidate);
+                if (obj != null)
+                {
+                    TBLog.Info($"DetectTargetGameObjectName: found '{candidate}' in scene '{sceneName}'");
+                    return candidate;
+                }
+            }
+
+            TBLog.Info($"DetectTargetGameObjectName: no suitable target found in scene '{sceneName}'");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"DetectTargetGameObjectName: error detecting target for scene '{sceneName}': {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Store a newly visited scene to the canonical TravelButton_Cities.json file.
+    /// Creates a timestamped backup before modifying the file.
+    /// Validates the JSON structure after writing and restores from backup on failure.
+    /// This method is idempotent - it will not create duplicates for the same scene.
+    /// </summary>
+    /// <param name="newSceneName">The name of the scene to record</param>
+    /// <param name="playerPos">Optional player position (will be detected if not provided)</param>
+    /// <param name="detectedTarget">Optional target GameObject name (will be detected if not provided)</param>
+    /// <param name="sceneDesc">Optional scene description</param>
+    public static void StoreVisitedSceneToJson(string newSceneName, Vector3? playerPos = null, string detectedTarget = null, string sceneDesc = null)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(newSceneName))
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: newSceneName is null or empty, skipping");
+                return;
+            }
+
+            TBLog.Info($"StoreVisitedSceneToJson: begin for scene '{newSceneName}'");
+
+            // Get the canonical JSON path
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: could not determine JSON path, aborting");
+                return;
+            }
+
+            TBLog.Info($"StoreVisitedSceneToJson: canonical JSON path = '{jsonPath}'");
+
+            // Create timestamped backup if the file exists
+            string backupPath = null;
+            if (File.Exists(jsonPath))
+            {
+                try
+                {
+                    var timestamp = DateTime.Now.ToString("yyyyMMddHHmmss");
+                    backupPath = jsonPath + ".bak_" + timestamp;
+                    File.Copy(jsonPath, backupPath, overwrite: true);
+                    TBLog.Info($"StoreVisitedSceneToJson: created backup at '{backupPath}'");
+                }
+                catch (Exception exBackup)
+                {
+                    TBLog.Warn($"StoreVisitedSceneToJson: failed to create backup: {exBackup.Message}");
+                    // Continue anyway - backup failure shouldn't prevent updates
+                }
+            }
+            else
+            {
+                TBLog.Info("StoreVisitedSceneToJson: JSON file does not exist yet, will create new");
+            }
+
+            // Load or create JSON structure
+            JObject root;
+            if (File.Exists(jsonPath))
+            {
+                try
+                {
+                    string jsonText = File.ReadAllText(jsonPath, System.Text.Encoding.UTF8);
+                    root = string.IsNullOrWhiteSpace(jsonText) ? new JObject() : JObject.Parse(jsonText);
+                    TBLog.Info("StoreVisitedSceneToJson: loaded existing JSON");
+                }
+                catch (Exception exParse)
+                {
+                    TBLog.Warn($"StoreVisitedSceneToJson: failed to parse existing JSON: {exParse.Message}, creating new structure");
+                    root = new JObject();
+                }
+            }
+            else
+            {
+                root = new JObject();
+            }
+
+            // Ensure cities array exists
+            if (!(root["cities"] is JArray citiesArray))
+            {
+                citiesArray = new JArray();
+                root["cities"] = citiesArray;
+                TBLog.Info("StoreVisitedSceneToJson: created new cities array");
+            }
+            else
+            {
+                TBLog.Info($"StoreVisitedSceneToJson: existing cities array has {citiesArray.Count} entries");
+            }
+
+            // Check for duplicates by sceneName
+            bool alreadyExists = false;
+            foreach (var token in citiesArray.Children())
+            {
+                if (token is JObject jo)
+                {
+                    var existingSceneName = jo.Value<string>("sceneName");
+                    if (!string.IsNullOrEmpty(existingSceneName) && 
+                        string.Equals(existingSceneName, newSceneName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        alreadyExists = true;
+                        TBLog.Info($"StoreVisitedSceneToJson: scene '{newSceneName}' already exists in JSON (name: '{jo.Value<string>("name")}'), skipping");
+                        break;
+                    }
+                }
+            }
+
+            if (alreadyExists)
+            {
+                return; // Nothing to do
+            }
+
+            // Collect scene metadata
+            Vector3 position = playerPos ?? GetPlayerPositionFromScene() ?? Vector3.zero;
+            string targetGameObjectName = detectedTarget ?? DetectTargetGameObjectName(newSceneName) ?? (newSceneName + "_Location");
+            
+            // Create new city entry
+            var newCity = new JObject
+            {
+                ["name"] = newSceneName, // Use scene name as city name by default
+                ["price"] = 200, // Default price
+                ["coords"] = new JArray(position.x, position.y, position.z),
+                ["targetGameObjectName"] = targetGameObjectName,
+                ["sceneName"] = newSceneName,
+                ["desc"] = sceneDesc ?? (newSceneName + " - discovered location"),
+                ["visited"] = true
+            };
+
+            citiesArray.Add(newCity);
+            TBLog.Info($"StoreVisitedSceneToJson: added new city entry for scene '{newSceneName}' at coords [{position.x:F3}, {position.y:F3}, {position.z:F3}]");
+
+            // Write updated JSON back to disk
+            try
+            {
+                var dir = Path.GetDirectoryName(jsonPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                string jsonOutput = root.ToString(Formatting.Indented);
+                File.WriteAllText(jsonPath, jsonOutput, System.Text.Encoding.UTF8);
+                TBLog.Info($"StoreVisitedSceneToJson: wrote updated JSON with {citiesArray.Count} total cities to '{jsonPath}'");
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn($"StoreVisitedSceneToJson: failed to write JSON: {exWrite.Message}");
+                
+                // Try to restore from backup
+                if (!string.IsNullOrEmpty(backupPath) && File.Exists(backupPath))
+                {
+                    try
+                    {
+                        File.Copy(backupPath, jsonPath, overwrite: true);
+                        TBLog.Warn($"StoreVisitedSceneToJson: restored JSON from backup after write failure");
+                    }
+                    catch (Exception exRestore)
+                    {
+                        TBLog.Warn($"StoreVisitedSceneToJson: failed to restore from backup: {exRestore.Message}");
+                    }
+                }
+                return;
+            }
+
+            // Validate the written JSON structure
+            try
+            {
+                string validationText = File.ReadAllText(jsonPath, System.Text.Encoding.UTF8);
+                var validationRoot = JObject.Parse(validationText);
+                
+                // Check for required structure
+                if (!(validationRoot["cities"] is JArray validationArray))
+                {
+                    throw new Exception("Validation failed: 'cities' array not found in written JSON");
+                }
+
+                // Check that all entries have name and sceneName
+                foreach (var token in validationArray.Children())
+                {
+                    if (token is JObject validationCity)
+                    {
+                        var name = validationCity.Value<string>("name");
+                        var sceneName = validationCity.Value<string>("sceneName");
+                        
+                        if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(sceneName))
+                        {
+                            throw new Exception($"Validation failed: city entry missing name or sceneName");
+                        }
+                    }
+                }
+
+                TBLog.Info($"StoreVisitedSceneToJson: validation passed for {validationArray.Count} cities");
+            }
+            catch (Exception exValidation)
+            {
+                TBLog.Warn($"StoreVisitedSceneToJson: JSON validation failed: {exValidation.Message}");
+                
+                // Restore from backup
+                if (!string.IsNullOrEmpty(backupPath) && File.Exists(backupPath))
+                {
+                    try
+                    {
+                        File.Copy(backupPath, jsonPath, overwrite: true);
+                        TBLog.Warn($"StoreVisitedSceneToJson: restored JSON from backup after validation failure");
+                    }
+                    catch (Exception exRestore)
+                    {
+                        TBLog.Warn($"StoreVisitedSceneToJson: failed to restore from backup: {exRestore.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"StoreVisitedSceneToJson: unexpected error for scene '{newSceneName}': {ex}");
         }
     }
 
