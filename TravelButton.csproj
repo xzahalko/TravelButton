@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net472</TargetFramework>
     <OutputType>Library</OutputType>
-    <AssemblyName>TravelButtonMod</AssemblyName>
+    <AssemblyName>TravelButton</AssemblyName>
     <RootNamespace>TravelButtonMod</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Deterministic>true</Deterministic>
