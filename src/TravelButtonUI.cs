@@ -86,6 +86,16 @@ public partial class TravelButtonUI : MonoBehaviour
     private static bool _lastAttemptedTeleportSucceeded = true;
     public static bool LastAttemptedTeleportSucceeded => _lastAttemptedTeleportSucceeded;
 
+    //close dialog and open variables
+    private GameObject _tb_savedMenuManagerGO = null;
+    private CanvasGroup _tb_savedMenuManagerCanvasGroup = null;
+    private float _tb_savedCanvasAlpha = 1f;
+    private bool _tb_savedCanvasInteractable = true;
+    private bool _tb_savedCanvasBlocksRaycasts = true;
+    private bool _tb_savedMenuManagerActive = true;
+    private bool _tb_menuManagerHiddenByPlugin = false;
+    private bool _tb_menuManagerClosedByMethod = false;
+
     // Example: City data model you already have when parsing JSON. Adapt to your actual class.
     // If you already have a City class, use that instead of this sample.
     [Serializable]
@@ -121,57 +131,7 @@ public partial class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private IEnumerator MonitorInventoryContainerVisibilityCoroutine(float pollInterval = 0.12f)
-    {
-        if (buttonObject == null) yield break;
-
-        TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: started; monitoring " +
-                                  (inventoryVisibilityTarget != null ? inventoryVisibilityTarget.name : "null"));
-
-        while (buttonObject != null)
-        {
-            bool shouldShow = true;
-
-            if (inventoryVisibilityTarget != null)
-            {
-                var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
-                if (cg != null)
-                {
-                    // Use alpha primarily: show if alpha above threshold. Use OR with interactable to be permissive.
-                    shouldShow = (cg.alpha > 0.05f) || cg.interactable;
-                    TBLog.Info($"Monitor: target '{inventoryVisibilityTarget.name}' CanvasGroup alpha={cg.alpha} interactable={cg.interactable} => shouldShow={shouldShow}");
-                }
-                else
-                {
-                    shouldShow = inventoryVisibilityTarget.gameObject.activeInHierarchy;
-                    TBLog.Info($"Monitor: target '{inventoryVisibilityTarget.name}' no CanvasGroup => activeInHierarchy={shouldShow}");
-                }
-            }
-            else
-            {
-                // No explicit target � keep button visible (safer default)
-                shouldShow = true;
-                TBLog.Info("Monitor: no inventoryVisibilityTarget => default shouldShow=true");
-            }
-
-            try
-            {
-                if (buttonObject.activeSelf != shouldShow)
-                {
-                    buttonObject.SetActive(shouldShow);
-                    TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: set button active=" + shouldShow);
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: SetActive failed: " + ex);
-            }
-
-            yield return new WaitForSeconds(pollInterval);
-        }
-
-        TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: ended.");
-    }
+    bool _tb_lastInventoryShouldShow = false;
 
     // Example 2: Wiring with Unity Editor (Inspector)
     // If you have a Button in scene and want to wire via Inspector:
@@ -182,602 +142,6 @@ public partial class TravelButtonUI : MonoBehaviour
         StartCoroutine(TryTeleportThenChargeExplicit(sceneName, targetName, coords, haveCoords, price));
     }
 
-    private object SafeFindInstanceOfType(Type t)
-    {
-        if (t == null) return null;
-        try
-        {
-            // Volat FindObjectOfType pouze pokud typ d�d� z UnityEngine.Object
-            if (!typeof(UnityEngine.Object).IsAssignableFrom(t))
-            {
-                TBLog.Info($"DBG-TRAVEL: manager probe skipping type '{t.FullName}' because it is not a UnityEngine.Object.");
-                return null;
-            }
-
-            try
-            {
-                var inst = UnityEngine.Object.FindObjectOfType(t);
-                return inst;
-            }
-            catch (Exception exFind)
-            {
-                TBLog.Warn($"DBG-TRAVEL: FindObjectOfType for '{t.FullName}' threw: {exFind.Message}");
-                return null;
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn($"DBG-TRAVEL: SafeFindInstanceOfType unexpected exception for '{t?.FullName ?? "(null)"}': {ex}");
-            return null;
-        }
-    }
-
-    // Insert into TravelButtonUI (same class or partial)
-    private void DumpTravelRelevantState(string tag = "")
-    {
-        try
-        {
-            TBLog.Info($"DBG-TRAVEL: DumpTravelRelevantState START {tag}");
-
-            // 1) CityDiscovery / Travel manager instances
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-            string[] managerNames = new[] { "CityDiscovery", "TravelButtonVisitedManager", "VisitedManager", "TravelManager", "FastTravelMenu" };
-
-            foreach (var mn in managerNames)
-            {
-                try
-                {
-                    var t = assemblies.Select(a => a.GetType(mn, false)).FirstOrDefault(tt => tt != null);
-                    if (t == null) continue;
-                    var inst = SafeFindInstanceOfType(t) as object;
-                    TBLog.Info($"DBG-TRAVEL: managerType='{mn}' typeFound={(t != null)} instanceFound={(inst != null)}");
-                    if (inst != null)
-                    {
-                        // Dump boolean fields/properties and any enumerable fields with city names
-                        var members = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-                        foreach (var m in members)
-                        {
-                            try
-                            {
-                                // bool field/property
-                                if (m is FieldInfo fi && fi.FieldType == typeof(bool))
-                                {
-                                    var v = fi.GetValue(inst);
-                                    TBLog.Info($"DBG-TRAVEL: {mn}.{fi.Name} (bool) = {v}");
-                                }
-                                else if (m is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
-                                {
-                                    var v = pi.GetValue(inst, null);
-                                    TBLog.Info($"DBG-TRAVEL: {mn}.{pi.Name} (bool) = {v}");
-                                }
-
-                                // IEnumerable field (list/dict) - show up to 200 items
-                                if (m is FieldInfo ffi && typeof(System.Collections.IEnumerable).IsAssignableFrom(ffi.FieldType) && ffi.FieldType != typeof(string))
-                                {
-                                    var val = ffi.GetValue(inst) as System.Collections.IEnumerable;
-                                    if (val != null)
-                                    {
-                                        int i = 0;
-                                        TBLog.Info($"DBG-TRAVEL: {mn}.{ffi.Name} enumerable begin");
-                                        foreach (var it in val)
-                                        {
-                                            TBLog.Info($"DBG-TRAVEL:   [{i}] {it}");
-                                            if (++i > 200) { TBLog.Info("DBG-TRAVEL:   ... truncated"); break; }
-                                        }
-                                        TBLog.Info($"DBG-TRAVEL: {mn}.{ffi.Name} enumerable end (count shown {i})");
-                                    }
-                                }
-                            }
-                            catch (Exception exMem) { TBLog.Warn($"DBG-TRAVEL: error reading member {mn}.{m.Name}: " + exMem); }
-                        }
-                    }
-                }
-                catch (Exception exType) { TBLog.Warn("DBG-TRAVEL: manager probe failed for " + mn + " : " + exType); }
-            }
-
-            // 2) If there's a visible FastTravel UI component, dump its state
-            try
-            {
-                var ftType = assemblies.Select(a => a.GetType("FastTravelMenu", false)).FirstOrDefault(tt => tt != null);
-                if (ftType != null)
-                {
-                    var ftInst = FindObjectOfType(ftType) as object;
-                    if (ftInst != null)
-                    {
-                        TBLog.Info($"DBG-TRAVEL: FastTravelMenu instance found on GO '{(ftInst as MonoBehaviour)?.gameObject?.name}'");
-                        DumpObjectFieldsAndProperties(ftInst, "FastTravelMenu");
-                    }
-                }
-            }
-            catch { /* ignore */ }
-
-            // 3) City components: find components whose type/name contains "city" or "destination" and log visited booleans
-            try
-            {
-                var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
-                var cityLike = comps.Where(c =>
-                {
-                    var n = c.GetType().Name.ToLowerInvariant();
-                    return n.Contains("city") || n.Contains("destination") || n.Contains("fasttravel") || n.Contains("travel");
-                }).ToArray();
-
-                TBLog.Info($"DBG-TRAVEL: Found {cityLike.Length} city-like components");
-                foreach (var c in cityLike)
-                {
-                    TryLogVisitedishMembers(c, c.GetType().Name);
-                }
-            }
-            catch { /* ignore */ }
-
-            TBLog.Info($"DBG-TRAVEL: DumpTravelRelevantState END {tag}");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG-TRAVEL: DumpTravelRelevantState failed: " + ex);
-        }
-    }
-
-    private void TryLogVisitedishMembers(object instance, string label)
-    {
-        try
-        {
-            var t = instance.GetType();
-            TBLog.Info($"DBG-TRAVEL: Inspecting {label} ({t.FullName}) on GO '{(instance as MonoBehaviour)?.gameObject?.name}'");
-
-            // prefer direct bools/properties named like visited/enabled/available
-            var bools = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .Where(m =>
-                {
-                    string mn = m.Name.ToLowerInvariant();
-                    return mn.Contains("visited") || mn.Contains("isvisited") || mn.Contains("enabled") || mn.Contains("available") || mn.Contains("locked") || mn.Contains("discovered");
-                });
-
-            foreach (var m in bools)
-            {
-                try
-                {
-                    if (m is FieldInfo fi && fi.FieldType == typeof(bool))
-                    {
-                        TBLog.Info($"DBG-TRAVEL:  - Field {fi.Name} = {fi.GetValue(instance)}");
-                    }
-                    else if (m is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
-                    {
-                        TBLog.Info($"DBG-TRAVEL:  - Prop {pi.Name} = {pi.GetValue(instance, null)}");
-                    }
-                }
-                catch { }
-            }
-
-            // lists and dictionaries also
-            var lists = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                .Where(f => typeof(System.Collections.IEnumerable).IsAssignableFrom(f.FieldType) && f.FieldType != typeof(string));
-
-            foreach (var f in lists)
-            {
-                try
-                {
-                    var val = f.GetValue(instance) as System.Collections.IEnumerable;
-                    if (val == null) continue;
-                    int i = 0;
-                    TBLog.Info($"DBG-TRAVEL:  - Enumerable {f.Name} begin");
-                    foreach (var it in val)
-                    {
-                        TBLog.Info($"DBG-TRAVEL:      [{i}] {it}");
-                        if (++i > 100) { TBLog.Info("DBG-TRAVEL:      ... truncated"); break; }
-                    }
-                    TBLog.Info($"DBG-TRAVEL:  - Enumerable {f.Name} end (count shown {i})");
-                }
-                catch { }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG-TRAVEL: TryLogVisitedishMembers failed: " + ex);
-        }
-    }
-
-    // Temporary: force the travel button visible and stop visibility monitor
-    private void Debug_ForceShowButton()
-    {
-        try
-        {
-            StopInventoryVisibilityMonitor(); // make sure monitor won't immediately toggle it
-        }
-        catch { }
-
-        if (buttonObject != null && !buttonObject.activeSelf)
-        {
-            try { buttonObject.SetActive(true); } catch { }
-        }
-        TBLog.Info("DEBUG: Forced Travel button visible and stopped visibility monitor.");
-    }
-
-    /// <summary>
-    /// Dump debugging information relevant to travel/teleport availability:
-    /// - city/destination components and visited/enabled flags
-    /// - travel/visited manager fields
-    /// - player money-like fields
-    /// - config/settings flags that mention cities
-    /// Safe to call on button click or after teleport success.
-    /// </summary>
-    public void DumpTravelDebugInfo()
-    {
-        try
-        {
-            TBLog.Info("DBG: ---- Travel debug dump start ----");
-            DumpVisitedManagers();
-            DumpCityComponents();
-            DumpPlayerMoneyCandidates();
-            DumpConfigFlags();
-            TBLog.Info("DBG: ---- Travel debug dump end ----");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpTravelDebugInfo failed: " + ex);
-        }
-    }
-
-    private void DumpVisitedManagers()
-    {
-        try
-        {
-            // Try to find known manager types first, then fallback to heuristics
-            string[] managerTypeNames = new[] { "TravelButtonVisitedManager", "VisitedManager", "CityDiscovery", "TravelManager", "VisitedList" };
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-
-            foreach (var name in managerTypeNames)
-            {
-                var t = assemblies.Select(a => a.GetType(name, false)).FirstOrDefault(tt => tt != null);
-                if (t != null)
-                {
-                    // Try find an instance in scene
-                    var instance = FindObjectOfType(t) as object;
-                    if (instance == null)
-                    {
-                        // Try static Instance property
-                        instance = t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)?.GetValue(null);
-                    }
-
-                    TBLog.Info($"DBG: Found manager type {name}: type={t.FullName}, instance={(instance != null ? "yes" : "no")}");
-                    if (instance != null)
-                    {
-                        DumpObjectFieldsAndProperties(instance, "manager");
-                    }
-                }
-            }
-
-            // Fallback: attempt to locate any type in assemblies with "Visited" or "CityDiscovery" in name
-            var fallbackTypes = assemblies.SelectMany(a =>
-            {
-                try { return a.GetTypes(); } catch { return new Type[0]; }
-            })
-            .Where(tt => tt.Name.IndexOf("Visited", StringComparison.OrdinalIgnoreCase) >= 0
-                      || tt.Name.IndexOf("CityDiscovery", StringComparison.OrdinalIgnoreCase) >= 0)
-            .Distinct();
-
-            foreach (var ft in fallbackTypes)
-            {
-                var instance = FindObjectOfType(ft) as object;
-                if (instance != null)
-                {
-                    TBLog.Info($"DBG: Fallback manager instance found: {ft.FullName} on GameObject {(instance as MonoBehaviour)?.gameObject.name}");
-                    DumpObjectFieldsAndProperties(instance, "manager-fallback");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpVisitedManagers exception: " + ex);
-        }
-    }
-
-    private void DumpCityComponents()
-    {
-        try
-        {
-            // Get all MonoBehaviours (including inactive) and filter by type name
-            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
-            var interesting = comps.Where(c =>
-            {
-                var n = c.GetType().Name.ToLowerInvariant();
-                return n.Contains("city") || n.Contains("destination") || n.Contains("travel") || n.Contains("town");
-            }).ToArray();
-
-            TBLog.Info($"DBG: Found {interesting.Length} city-like components in scene.");
-            foreach (var comp in interesting)
-            {
-                var t = comp.GetType();
-                string goName = comp.gameObject != null ? comp.gameObject.name : "(no-go)";
-                TBLog.Info($"DBG: Component: {t.FullName} on GO '{goName}'");
-
-                // Basic name / display field attempts
-                var nameField = t.GetField("Name", BindingFlags.Public | BindingFlags.Instance)
-                             ?? t.GetField("name", BindingFlags.Public | BindingFlags.Instance);
-                if (nameField != null)
-                {
-                    try { TBLog.Info($"DBG:  - Name field: {nameField.GetValue(comp)}"); } catch { }
-                }
-
-                // Look for visited/enabled boolean fields and properties
-                var boolMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                                   .Where(m =>
-                                   {
-                                       string mn = m.Name.ToLowerInvariant();
-                                       return mn.Contains("visited") || mn.Contains("isvisited") || mn.Contains("visitedflag")
-                                           || mn.Contains("enabled") || mn.Contains("isenabled") || mn.Contains("available") || mn.Contains("locked");
-                                   });
-
-                foreach (var mem in boolMembers)
-                {
-                    try
-                    {
-                        if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
-                        {
-                            var val = fi.GetValue(comp);
-                            TBLog.Info($"DBG:  - Field {fi.Name} (bool) = {val}");
-                        }
-                        else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
-                        {
-                            var val = pi.GetValue(comp, null);
-                            TBLog.Info($"DBG:  - Prop {pi.Name} (bool) = {val}");
-                        }
-                    }
-                    catch { /* ignore per-field errors */ }
-                }
-
-                // Look for cost/price numeric fields
-                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                                  .Where(m =>
-                                  {
-                                      string mn = m.Name.ToLowerInvariant();
-                                      return mn.Contains("cost") || mn.Contains("price") || mn.Contains("fee") || mn.Contains("gold") || mn.Contains("coins");
-                                  });
-
-                foreach (var mem in numMembers)
-                {
-                    try
-                    {
-                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double)))
-                        {
-                            var val = fi.GetValue(comp);
-                            TBLog.Info($"DBG:  - Field {fi.Name} (num) = {val}");
-                        }
-                        else if (mem is PropertyInfo pi && (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double))
-                                 && pi.GetIndexParameters().Length == 0)
-                        {
-                            var val = pi.GetValue(comp, null);
-                            TBLog.Info($"DBG:  - Prop {pi.Name} (num) = {val}");
-                        }
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpCityComponents exception: " + ex);
-        }
-    }
-
-    private void DumpPlayerMoneyCandidates()
-    {
-        try
-        {
-            // Find MonoBehaviours with "Player" or "Character" in the type name
-            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
-            var players = comps.Where(c =>
-            {
-                var n = c.GetType().Name.ToLowerInvariant();
-                return n.Contains("player") || n.Contains("character") || n.Contains("wallet") || n.Contains("account");
-            }).ToArray();
-
-            TBLog.Info($"DBG: Found {players.Length} player-like components.");
-
-            foreach (var p in players)
-            {
-                TBLog.Info($"DBG: Player-like component: {p.GetType().FullName} on GO '{p.gameObject.name}'");
-                var t = p.GetType();
-
-                // Numeric candidate fields/properties that might represent money
-                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                                  .Where(m =>
-                                  {
-                                      string mn = m.Name.ToLowerInvariant();
-                                      return mn.Contains("money") || mn.Contains("gold") || mn.Contains("coins") || mn.Contains("silver") || mn.Contains("balance") || mn.Contains("wallet");
-                                  });
-
-                foreach (var mem in numMembers)
-                {
-                    try
-                    {
-                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double) || fi.FieldType == typeof(long)))
-                        {
-                            var val = fi.GetValue(p);
-                            TBLog.Info($"DBG:  - Field {fi.Name} = {val}");
-                        }
-                        else if (mem is PropertyInfo pi && pi.GetIndexParameters().Length == 0 &&
-                                 (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double) || pi.PropertyType == typeof(long)))
-                        {
-                            var val = pi.GetValue(p, null);
-                            TBLog.Info($"DBG:  - Prop {pi.Name} = {val}");
-                        }
-                    }
-                    catch { }
-                }
-            }
-
-            // Also try to find a global GameManager-like type that might hold currency
-            var allTypes = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
-            var gmTypes = allTypes.Where(tt => tt.Name.IndexOf("GameManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                               tt.Name.IndexOf("Economy", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                               tt.Name.IndexOf("Currency", StringComparison.OrdinalIgnoreCase) >= 0);
-            foreach (var gt in gmTypes)
-            {
-                TBLog.Info($"DBG: Found manager type candidate: {gt.FullName}");
-                // try static properties/fields
-                var props = gt.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                foreach (var pi in props.Where(p => (p.PropertyType == typeof(int) || p.PropertyType == typeof(float) || p.PropertyType == typeof(double) || p.PropertyType == typeof(long)) && p.GetIndexParameters().Length == 0))
-                {
-                    try
-                    {
-                        var val = pi.GetValue(null, null);
-                        TBLog.Info($"DBG:  - Static Prop {gt.Name}.{pi.Name} = {val}");
-                    }
-                    catch { }
-                }
-
-                var fields = gt.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
-                foreach (var fi in fields.Where(f => f.FieldType == typeof(int) || f.FieldType == typeof(float) || f.FieldType == typeof(double) || f.FieldType == typeof(long)))
-                {
-                    try
-                    {
-                        var val = fi.GetValue(null);
-                        TBLog.Info($"DBG:  - Static Field {gt.Name}.{fi.Name} = {val}");
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpPlayerMoneyCandidates exception: " + ex);
-        }
-    }
-
-    private void DumpConfigFlags()
-    {
-        try
-        {
-            var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
-
-            // look for types that look like config/settings
-            var configTypes = types.Where(t => t.Name.IndexOf("Config", StringComparison.OrdinalIgnoreCase) >= 0
-                                           || t.Name.IndexOf("Settings", StringComparison.OrdinalIgnoreCase) >= 0
-                                           || t.Name.IndexOf("Options", StringComparison.OrdinalIgnoreCase) >= 0);
-
-            foreach (var ct in configTypes)
-            {
-                try
-                {
-                    // look for static instance or static fields/properties with booleans mentioning cities
-                    object instance = null;
-                    var instProp = ct.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
-                    if (instProp != null)
-                    {
-                        try { instance = instProp.GetValue(null); } catch { }
-                    }
-
-                    // log static boolean fields and properties that reference city or enable
-                    var staticBools = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-                                        .Where(m =>
-                                        {
-                                            string mn = m.Name.ToLowerInvariant();
-                                            return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
-                                        });
-
-                    TBLog.Info($"DBG: Config/Settings candidate: {ct.FullName}, instance={(instance != null ? "yes" : "no")}");
-                    foreach (var mem in staticBools)
-                    {
-                        try
-                        {
-                            if (mem is FieldInfo sfi && sfi.FieldType == typeof(bool))
-                            {
-                                TBLog.Info($"DBG:  - Static Field {ct.Name}.{sfi.Name} = {sfi.GetValue(null)}");
-                            }
-                            else if (mem is PropertyInfo spi && spi.PropertyType == typeof(bool) && spi.GetIndexParameters().Length == 0)
-                            {
-                                TBLog.Info($"DBG:  - Static Prop {ct.Name}.{spi.Name} = {spi.GetValue(null)}");
-                            }
-                        }
-                        catch { }
-                    }
-
-                    // If instance exists, log instance bool fields/properties that mention city/enable
-                    if (instance != null)
-                    {
-                        var instMembers = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                                           .Where(m =>
-                                           {
-                                               string mn = m.Name.ToLowerInvariant();
-                                               return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
-                                           });
-
-                        foreach (var mem in instMembers)
-                        {
-                            try
-                            {
-                                if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
-                                {
-                                    TBLog.Info($"DBG:  - Instance Field {ct.Name}.{fi.Name} = {fi.GetValue(instance)}");
-                                }
-                                else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
-                                {
-                                    TBLog.Info($"DBG:  - Instance Prop {ct.Name}.{pi.Name} = {pi.GetValue(instance)}");
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                }
-                catch { }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpConfigFlags exception: " + ex);
-        }
-    }
-
-    private void DumpObjectFieldsAndProperties(object obj, string prefix = "")
-    {
-        if (obj == null) return;
-        try
-        {
-            var t = obj.GetType();
-            TBLog.Info($"DBG: Dumping fields/properties for {t.FullName} ({prefix})");
-
-            // boolean members
-            var boolFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
-                              .Where(f => f.FieldType == typeof(bool));
-            foreach (var f in boolFields)
-            {
-                try { TBLog.Info($"DBG:  - Field {f.Name} = {f.GetValue(obj)}"); } catch { }
-            }
-
-            var boolProps = t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
-                             .Where(p => p.PropertyType == typeof(bool) && p.GetIndexParameters().Length == 0);
-            foreach (var p in boolProps)
-            {
-                try { TBLog.Info($"DBG:  - Prop {p.Name} = {p.GetValue(obj, null)}"); } catch { }
-            }
-
-            // list-like visited containers (IEnumerable of strings or bools or objects)
-            var listFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
-                              .Where(f => typeof(System.Collections.IEnumerable).IsAssignableFrom(f.FieldType) && f.FieldType != typeof(string));
-            foreach (var f in listFields)
-            {
-                try
-                {
-                    var val = f.GetValue(obj) as System.Collections.IEnumerable;
-                    if (val == null) continue;
-                    TBLog.Info($"DBG:  - Enumerable Field {f.Name}:");
-                    int i = 0;
-                    foreach (var item in val)
-                    {
-                        TBLog.Info($"DBG:     [{i}] {item}");
-                        i++;
-                        if (i > 50) { TBLog.Info("DBG:     ... truncated after 50 items"); break; }
-                    }
-                }
-                catch { }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("DBG: DumpObjectFieldsAndProperties failed: " + ex);
-        }
-    }
-
     void Start()
     {
         TBLog.Info("TravelButtonUI.Start called.");
@@ -785,6 +149,7 @@ public partial class TravelButtonUI : MonoBehaviour
         EnsureInputSystems();
         // start polling for inventory container (will reparent once found)
         StartCoroutine(PollForInventoryParentImpl());
+
     }
 
     // debug helper: press F9 in-game to dump Travel button state
@@ -825,6 +190,121 @@ public partial class TravelButtonUI : MonoBehaviour
     {
         StopRefreshCoroutine();
         StopInventoryVisibilityMonitor();
+    }
+
+
+    private IEnumerator MonitorInventoryContainerVisibilityCoroutine(float pollInterval = 0.12f)
+    {
+        if (buttonObject == null) yield break;
+
+        TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: started; monitoring " +
+                   (inventoryVisibilityTarget != null ? inventoryVisibilityTarget.name : "null"));
+
+        // Ensure the last-state field exists on the class:
+        // private bool _tb_lastInventoryShouldShow = false;
+        // Also respects plugin-driven hides:
+        // private bool _tb_menuManagerHiddenByPlugin = false;
+
+        while (buttonObject != null)
+        {
+            bool shouldShow = true;
+
+            if (inventoryVisibilityTarget != null)
+            {
+                var cg = inventoryVisibilityTarget.GetComponent<CanvasGroup>();
+                if (cg != null)
+                {
+                    // Use alpha primarily: show if alpha above threshold. Use OR with interactable to be permissive.
+                    shouldShow = (cg.alpha > 0.05f) || cg.interactable;
+                    TBLog.Info($"Monitor: target '{inventoryVisibilityTarget.name}' CanvasGroup alpha={cg.alpha} interactable={cg.interactable} => shouldShow={shouldShow}");
+                }
+                else
+                {
+                    shouldShow = inventoryVisibilityTarget.gameObject.activeInHierarchy;
+                    TBLog.Info($"Monitor: target '{inventoryVisibilityTarget.name}' no CanvasGroup => activeInHierarchy={shouldShow}");
+                }
+            }
+            else
+            {
+                // No explicit target — keep button visible (safer default)
+                shouldShow = true;
+                TBLog.Info("Monitor: no inventoryVisibilityTarget => default shouldShow=true");
+            }
+
+            try
+            {
+                // If the visibility changed, update the button active state
+                if (buttonObject.activeSelf != shouldShow)
+                {
+                    buttonObject.SetActive(shouldShow);
+                    TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: set button active=" + shouldShow);
+                }
+
+                // Detect transition: inventory was visible and now closed by player (visible -> not visible)
+                // Only auto-close dialog when the plugin did NOT intentionally hide the MenuManager.
+                if (_tb_lastInventoryShouldShow && !shouldShow && !_tb_menuManagerHiddenByPlugin)
+                {
+                    // Auto-close the travel dialog (only the plugin's dialogRoot)
+                    try
+                    {
+                        if (dialogRoot != null)
+                        {
+                            TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: detected inventory closed by player -> auto-closing travel dialog");
+                            try { UnityEngine.Object.Destroy(dialogRoot); }
+                            catch (Exception ex)
+                            {
+                                TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: Destroy(dialogRoot) threw: " + ex);
+                                try { dialogRoot.SetActive(false); } catch { }
+                            }
+                            dialogRoot = null;
+                        }
+
+                        // Clear EventSystem selection so input focus returns to gameplay
+                        try
+                        {
+                            var es = UnityEngine.EventSystems.EventSystem.current;
+                            if (es != null)
+                            {
+                                es.SetSelectedGameObject(null);
+                                TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: cleared EventSystem selected GameObject");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: clearing EventSystem selected GameObject threw: " + ex);
+                        }
+
+                        // Restore cursor/camera input to gameplay mode
+                        try
+                        {
+                            Cursor.lockState = CursorLockMode.Locked;
+                            Cursor.visible = false;
+                            TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: restored cursor to gameplay");
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: restoring cursor threw: " + ex);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: auto-close dialog flow threw: " + ex);
+                    }
+                }
+
+                // Save last state for next iteration
+                _tb_lastInventoryShouldShow = shouldShow;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("MonitorInventoryContainerVisibilityCoroutine: SetActive/transition handling failed: " + ex);
+            }
+
+            // Poll after the requested interval
+            yield return new WaitForSeconds(pollInterval);
+        }
+
+        TBLog.Info("MonitorInventoryContainerVisibilityCoroutine: ended.");
     }
 
     // Place buttonObject under sectionsRt so it participates in the toolbar layout.
@@ -2405,8 +1885,8 @@ public partial class TravelButtonUI : MonoBehaviour
                     Debug.Log("hrac exact start");
                     Debug.Log($"hrac exact world position: ({PlayerPositionExact.TryGetExactPlayerWorldPosition():F3})");
                 }
-                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
-                InventoryHelpers.SafeAddSilverToPlayer(100);
+//                InventoryHelpers.SafeAddItemByIdToPlayer(4100550, 2);
+//                InventoryHelpers.SafeAddSilverToPlayer(100);
             }
             catch (Exception ex)
             {
@@ -3300,7 +2780,9 @@ public partial class TravelButtonUI : MonoBehaviour
     // Call StartCoroutine(TryTeleportThenCharge(city, cost)) where needed.
     private IEnumerator TryTeleportThenCharge(TravelButton.City city, int cost)
     {
+        float entryTime = Time.realtimeSinceStartup;
         LogCityConfig(city?.name);
+        TBLog.Info($"TryTeleportThenCharge: Enter (t={entryTime:F3}) city='{city?.name ?? "<null>"}' cost={cost}");
 
         if (city == null)
         {
@@ -3319,6 +2801,7 @@ public partial class TravelButtonUI : MonoBehaviour
         try
         {
             bool canPay = CurrencyHelpers.CheckChargePossibleAndRefund(cost);
+            TBLog.Info($"TryTeleportThenCharge: CheckChargePossibleAndRefund returned {canPay} for cost={cost}");
             if (!canPay)
             {
                 TBLog.Info($"TryTeleportThenCharge: player cannot pay {cost} silver for '{city.name}'. Aborting.");
@@ -3336,6 +2819,7 @@ public partial class TravelButtonUI : MonoBehaviour
         }
 
         isTeleporting = true;
+        TBLog.Info("TryTeleportThenCharge: isTeleporting set = true");
 
         // Debug logging (no yields)
         try
@@ -3354,7 +2838,7 @@ public partial class TravelButtonUI : MonoBehaviour
             Vector3 playerPos;
             bool havePlayerPos = TryGetPlayerPosition(out playerPos);
 
-            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedInHistory={visitedInHistory}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}");
+            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedInHistory={visitedInHistory}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}, currentMoney={currentMoney}");
         }
         catch (Exception ex)
         {
@@ -3366,7 +2850,7 @@ public partial class TravelButtonUI : MonoBehaviour
         bool haveCoordsHint = false;
         bool haveTargetGameObject = false;
         bool targetGameObjectFound = false;
-
+        bool isFaded = false;
         try
         {
             if (!string.IsNullOrEmpty(city.targetGameObjectName))
@@ -3413,6 +2897,10 @@ public partial class TravelButtonUI : MonoBehaviour
                     TBLog.Info($"TryTeleportThenCharge: guessed sceneName='{guessed}' from build settings for city '{city.name}'");
                     city.sceneName = guessed;
                 }
+                else
+                {
+                    TBLog.Info("TryTeleportThenCharge: GuessSceneNameFromBuildSettings returned empty");
+                }
             }
             catch (Exception ex)
             {
@@ -3420,31 +2908,49 @@ public partial class TravelButtonUI : MonoBehaviour
             }
         }
 
-        TBLog.Info($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}, sceneName='{city.sceneName}'");
+        TBLog.Info($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}, coordsHint={coordsHint}, sceneName='{city.sceneName}'");
 
         var activeScene2 = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         bool targetSceneSpecified2 = !string.IsNullOrEmpty(city.sceneName);
         bool sceneMatches = !targetSceneSpecified2 || string.Equals(city.sceneName, activeScene2.name, StringComparison.OrdinalIgnoreCase);
+        const float blackHoldSeconds = 1.5f;
+
+        TBLog.Info($"TryTeleportThenCharge: activeScene='{activeScene2.name}', targetSceneSpecified={targetSceneSpecified2}, sceneMatches={sceneMatches}");
 
         // ---------- Fast path: same-scene StartTeleport ----------
         if (haveCoordsHint && sceneMatches)
         {
-            try { DisableDialogButtons(); } catch { }
+            TBLog.Info("TryTeleportThenCharge: taking FAST same-scene teleport path");
+            try { DisableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons disabled (fast path)"); } catch (Exception ex) { TBLog.Warn("DisableDialogButtons threw: " + ex); }
 
             // Fade out (yield - outside any try/catch)
+            TBLog.Info("TryTeleportThenCharge: starting screen fade out (fast path)");
             yield return TravelDialog.ScreenFade(0f, 1f, 0.35f);
+            isFaded = true;
+            TBLog.Info("TryTeleportThenCharge: screen faded out (fast path)");
 
             // Prefer EnsureInstance and then use tm consistently
             TeleportManager tm = null;
-            try { tm = TeleportManager.EnsureInstance(); }
+            try { tm = TeleportManager.EnsureInstance(); TBLog.Info("TryTeleportThenCharge: TeleportManager.EnsureInstance() called"); }
             catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: EnsureInstance threw: " + ex); tm = TeleportManager.Instance; }
+
+            TBLog.Info($"TryTeleportThenCharge: tm resolved: {(tm != null ? "non-null" : "null")}");
+            if (tm != null)
+            {
+                try { TBLog.Info($"TryTeleportThenCharge: tm info - instance? {(TeleportManager.Instance != null ? "Instance exists" : "Instance null")}"); } catch { }
+            }
 
             if (tm == null)
             {
                 TBLog.Warn("TryTeleportThenCharge: TeleportManager not available; aborting and restoring UI.");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (fast abort)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
+                // close dialog & inventory on abort
+                CloseDialogAndInventory_Safe();
                 yield break;
             }
 
@@ -3452,12 +2958,22 @@ public partial class TravelButtonUI : MonoBehaviour
             bool subscribeOk = false;
             bool finished2 = false;
             bool success2 = false;
-            Action<bool> onFinished = (s) => { success2 = s; finished2 = true; };
+            Action<bool> onFinished = (s) =>
+            {
+                try
+                {
+                    TBLog.Info($"TryTeleportThenCharge: OnTeleportFinished callback invoked (fast path) success={s}");
+                }
+                catch { }
+                success2 = s;
+                finished2 = true;
+            };
 
             try
             {
                 tm.OnTeleportFinished += onFinished;
                 subscribeOk = true;
+                TBLog.Info("TryTeleportThenCharge: subscribed to tm.OnTeleportFinished (fast path)");
             }
             catch (Exception ex)
             {
@@ -3467,9 +2983,14 @@ public partial class TravelButtonUI : MonoBehaviour
 
             if (!subscribeOk)
             {
+                TBLog.Warn("TryTeleportThenCharge: subscription failed; restoring UI (fast path)");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (subscribe fail)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
+                CloseDialogAndInventory_Safe();
                 yield break;
             }
 
@@ -3478,7 +2999,9 @@ public partial class TravelButtonUI : MonoBehaviour
             try
             {
                 Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+                TBLog.Info($"TryTeleportThenCharge: calling tm.StartTeleport(activeScene='{activeScene2.name}', target='{city.targetGameObjectName}', groundedCoords={groundedCoords}, haveCoordsHint={haveCoordsHint}, cost={cost})");
                 accepted = tm.StartTeleport(activeScene2.name, city.targetGameObjectName, groundedCoords, haveCoordsHint, cost);
+                TBLog.Info($"TryTeleportThenCharge: tm.StartTeleport returned accepted={accepted}");
             }
             catch (Exception ex)
             {
@@ -3489,24 +3012,33 @@ public partial class TravelButtonUI : MonoBehaviour
             if (!accepted)
             {
                 TBLog.Warn("TryTeleportThenCharge: StartTeleport rejected the request.");
-                try { if (tm != null) tm.OnTeleportFinished -= onFinished; } catch { }
+                try { if (tm != null) tm.OnTeleportFinished -= onFinished; TBLog.Info("TryTeleportThenCharge: unsubscribed OnTeleportFinished after StartTeleport rejection"); } catch { }
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (start rejected)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
+                CloseDialogAndInventory_Safe();
                 yield break;
             }
 
             // WAIT FOR COMPLETION (yield outside try/catch)
+            TBLog.Info("TryTeleportThenCharge: waiting for OnTeleportFinished callback (fast path)");
+            float waitStartFast = Time.realtimeSinceStartup;
             while (!finished2) yield return null;
+            float waitEndFast = Time.realtimeSinceStartup;
+            TBLog.Info($"TryTeleportThenCharge: OnTeleportFinished detected (fast path) after {(waitEndFast - waitStartFast):F3}s, success={success2}");
 
             // Unsubscribe using tm
-            try { if (tm != null) tm.OnTeleportFinished -= onFinished; } catch { }
+            try { if (tm != null) tm.OnTeleportFinished -= onFinished; TBLog.Info("TryTeleportThenCharge: unsubscribed tm.OnTeleportFinished (fast path)"); } catch (Exception ex) { TBLog.Warn("Unsubscribe OnTeleportFinished threw: " + ex); }
 
             if (success2)
             {
                 try
                 {
                     bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                    TBLog.Info($"TryTeleportThenCharge: AttemptDeductSilverDirect returned {charged} (fast path)");
                     if (!charged)
                     {
                         TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -3523,54 +3055,69 @@ public partial class TravelButtonUI : MonoBehaviour
                     ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
                 }
 
-                try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
-                try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception ex) { TBLog.Warn("Persist after teleport failed: " + ex); }
+                try { TravelButton.OnSuccessfulTeleport(city.name); TBLog.Info("TryTeleportThenCharge: OnSuccessfulTeleport invoked (fast path)"); } catch { }
+                try { TravelButton.PersistCitiesToPluginFolder(); TBLog.Info("TryTeleportThenCharge: PersistCitiesToPluginFolder invoked (fast path)"); } catch (Exception ex) { TBLog.Warn("Persist after teleport failed: " + ex); }
             }
             else
             {
-                TBLog.Warn($"TryTeleportThenCharge: teleport to '{city.name}' failed (TeleportManager).");
+                TBLog.Warn($"TryTeleportThenCharge: teleport to '{city.name}' failed (TeleportManager fast path).");
                 ShowInlineDialogMessage("Teleport failed");
             }
 
-            yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            try { EnableDialogButtons(); } catch { }
+            // Restore UI; close dialog & inventory now that teleport finished (success or fail)
+            try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (fast path end)"); } catch { }
+            CloseDialogAndInventory_Safe();
+
             isTeleporting = false;
+            isFaded = false;
+            yield return new WaitForSecondsRealtime(blackHoldSeconds);
+            yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
+            // immediately restore UI/menu state + input focus
+            try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
 
         // ---------- Scene-load path ----------
         if (targetSceneSpecified2 && !sceneMatches)
         {
-            try { DisableDialogButtons(); } catch { }
+            TBLog.Info("TryTeleportThenCharge: taking SCENE-LOAD path");
+            try { DisableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons disabled (scene-load path)"); } catch (Exception ex) { TBLog.Warn("DisableDialogButtons threw: " + ex); }
 
+            TBLog.Info("TryTeleportThenCharge: starting screen fade out (scene-load)");
             yield return TravelDialog.ScreenFade(0f, 1f, 0.35f);
+            isFaded = true;
+            TBLog.Info("TryTeleportThenCharge: screen faded out (scene-load)");
 
             TeleportManager tm = null;
-            try { tm = TeleportManager.EnsureInstance(); }
+            try { tm = TeleportManager.EnsureInstance(); TBLog.Info("TryTeleportThenCharge: TeleportManager.EnsureInstance() called (scene-load)"); }
             catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: EnsureInstance threw: " + ex); tm = TeleportManager.Instance; }
 
+            TBLog.Info($"TryTeleportThenCharge: tm resolved (scene-load): {(tm != null ? "non-null" : "null")}");
             if (tm == null)
             {
                 TBLog.Warn("TryTeleportThenCharge: TeleportManager not available for scene-load; aborting.");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (tm null)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
+                CloseDialogAndInventory_Safe();
                 yield break;
             }
 
             bool finishedLoad = false;
             bool loadSuccess = false;
-            // compute grounded coords as before
-            //Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
 
             // compute a corrected placement coordinate synchronously
             Vector3 correctedCoords;
+            TBLog.Info($"TryTeleportThenCharge: computing safe placement coords based on coordsHint={coordsHint}");
             bool coordsOk = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, coordsHint, true, out correctedCoords);
             if (!coordsOk)
             {
                 // fallback to grounded coords if compute failed
-                correctedCoords = coordsHint;
-                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={coordsHint}");
+                correctedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={correctedCoords}");
             }
             else
             {
@@ -3578,16 +3125,18 @@ public partial class TravelButtonUI : MonoBehaviour
             }
 
             // use correctedCoords from here on when starting the teleport/placement
-
+            TBLog.Info($"TryTeleportThenCharge: calling tm.StartSceneLoad(scene='{city.sceneName}', correctedCoords={correctedCoords})");
             bool acceptedLoad = false;
             try
             {
                 acceptedLoad = tm.StartSceneLoad(city.sceneName, correctedCoords, (loadedScene, asyncOp, ok) =>
                 {
+                    try { TBLog.Info($"TryTeleportThenCharge: StartSceneLoad callback invoked for scene='{city.sceneName}' ok={ok}, loadedScene.name={(loadedScene != null ? loadedScene.name : "<null>")}"); } catch { }
                     loadSuccess = ok;
                     finishedLoad = true;
                     if (!ok) TBLog.Warn($"TryTeleportThenCharge: scene '{city.sceneName}' failed to load.");
                 });
+                TBLog.Info($"TryTeleportThenCharge: tm.StartSceneLoad returned acceptedLoad={acceptedLoad}");
             }
             catch (Exception ex)
             {
@@ -3599,22 +3148,37 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("TryTeleportThenCharge: StartSceneLoad rejected the request.");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (start load rejected)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
+                CloseDialogAndInventory_Safe();
                 yield break;
             }
 
-            float deadline = Time.realtimeSinceStartup + 30f;
+            // Wait for load completion (yield here, outside the try/catch that started the load)
+            float loadWaitStart = Time.realtimeSinceStartup;
+            float deadline = loadWaitStart + 30f;
+            TBLog.Info($"TryTeleportThenCharge: waiting up to 30s for scene load callback (tstart={loadWaitStart:F3})");
             while (!finishedLoad && Time.realtimeSinceStartup < deadline)
                 yield return null;
+            float loadWaitEnd = Time.realtimeSinceStartup;
+            TBLog.Info($"TryTeleportThenCharge: scene load wait finished (elapsed={(loadWaitEnd - loadWaitStart):F3}s) finishedLoad={finishedLoad} loadSuccess={loadSuccess}");
 
             if (!finishedLoad)
             {
                 TBLog.Warn("TryTeleportThenCharge: scene load timed out.");
                 ShowInlineDialogMessage("Teleport failed (timeout)");
+                // keep screen black for a short hold so user sees the failure state
+                yield return new WaitForSecondsRealtime(blackHoldSeconds);
+                CloseDialogAndInventory_Safe();
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (load timeout)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
                 yield break;
             }
 
@@ -3622,28 +3186,46 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("TryTeleportThenCharge: scene load reported failure.");
                 ShowInlineDialogMessage("Teleport failed");
+                yield return new WaitForSecondsRealtime(blackHoldSeconds);
+                CloseDialogAndInventory_Safe();
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (load failed)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
                 yield break;
             }
 
+            TBLog.Info("TryTeleportThenCharge: scene loaded successfully - performing placement attempt using AttemptTeleportToPositionSafe");
+
             bool placed = false;
-            try { placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoords); } catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
+            try
+            {
+                placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoords);
+                TBLog.Info($"TryTeleportThenCharge: AttemptTeleportToPositionSafe returned placed={placed} for correctedCoords={correctedCoords}");
+            }
+            catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
 
             if (!placed)
             {
                 TBLog.Warn("TryTeleportThenCharge: placement after load failed.");
                 ShowInlineDialogMessage("Teleport failed");
+                yield return new WaitForSecondsRealtime(blackHoldSeconds);
+                CloseDialogAndInventory_Safe();
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                try { EnableDialogButtons(); } catch { }
+                // immediately restore UI/menu state + input focus
+                try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+                try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (placement failed)"); } catch { }
                 isTeleporting = false;
+                isFaded = false;
                 yield break;
             }
 
             try
             {
                 bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                TBLog.Info($"TryTeleportThenCharge: AttemptDeductSilverDirect returned {charged} (scene-load path)");
                 if (!charged)
                 {
                     TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -3660,16 +3242,24 @@ public partial class TravelButtonUI : MonoBehaviour
                 ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
             }
 
-            try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
-            try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception ex) { TBLog.Warn("Persist after scene-load teleport failed: " + ex); }
+            try { TravelButton.OnSuccessfulTeleport(city.name); TBLog.Info("TryTeleportThenCharge: OnSuccessfulTeleport invoked (scene-load path)"); } catch { }
+            try { TravelButton.PersistCitiesToPluginFolder(); TBLog.Info("TryTeleportThenCharge: PersistCitiesToPluginFolder invoked (scene-load path)"); } catch (Exception ex) { TBLog.Warn("Persist after scene-load teleport failed: " + ex); }
 
-            yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            try { EnableDialogButtons(); } catch { }
+            // close dialog & inventory on success
+            CloseDialogAndInventory_Safe();
+
+            try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (scene-load path end)"); } catch { }
             isTeleporting = false;
+            isFaded = false;
+            yield return new WaitForSecondsRealtime(blackHoldSeconds);
+            yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
+            // immediately restore UI/menu state + input focus
+            try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
 
         // ---------- Fallback helper ----------
+        TBLog.Info("TryTeleportThenCharge: taking FALLBACK helper path");
         bool finished = false;
         bool success = false;
         bool startHelperFailed = false;
@@ -3682,13 +3272,20 @@ public partial class TravelButtonUI : MonoBehaviour
                 var go = new GameObject("TeleportHelpersHost");
                 UnityEngine.Object.DontDestroyOnLoad(go);
                 helper = go.AddComponent<TeleportHelpersBehaviour>();
+                TBLog.Info("TryTeleportThenCharge: TeleportHelpersBehaviour created for fallback helper");
+            }
+            else
+            {
+                TBLog.Info("TryTeleportThenCharge: TeleportHelpersBehaviour found for fallback helper: " + helper.name);
             }
 
             helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, ok =>
             {
+                try { TBLog.Info($"TryTeleportThenCharge: helper.EnsureSceneAndTeleport callback invoked ok={ok}"); } catch { }
                 success = ok;
                 finished = true;
             }));
+            TBLog.Info("TryTeleportThenCharge: helper.EnsureSceneAndTeleport coroutine started");
         }
         catch (Exception ex)
         {
@@ -3700,30 +3297,48 @@ public partial class TravelButtonUI : MonoBehaviour
 
         if (startHelperFailed)
         {
+            try { EnableDialogButtons(); } catch { }
+            isTeleporting = false;
+            isFaded = false;
+            TBLog.Info($"TryTeleportThenCharge: holding black screen for {blackHoldSeconds:F3}s before fade-in (helper failed start)");
+            yield return new WaitForSecondsRealtime(blackHoldSeconds);
+            CloseDialogAndInventory_Safe();
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
+            // immediately restore UI/menu state + input focus
+            try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
 
-        float helperDeadline = Time.realtimeSinceStartup + 30f;
+        float helperStartTime = Time.realtimeSinceStartup;
+        float helperDeadline = helperStartTime + 30f;
+        TBLog.Info($"TryTeleportThenCharge: waiting up to 30s for helper to finish (tstart={helperStartTime:F3})");
         while (!finished && Time.realtimeSinceStartup < helperDeadline)
             yield return null;
+        TBLog.Info($"TryTeleportThenCharge: helper wait ended after {(Time.realtimeSinceStartup - helperStartTime):F3}s finished={finished} success={success}");
 
         if (!finished)
         {
             TBLog.Warn("TryTeleportThenCharge: helper timed out.");
             ShowInlineDialogMessage("Teleport failed (timeout)");
+            yield return new WaitForSecondsRealtime(blackHoldSeconds);
+            CloseDialogAndInventory_Safe();
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            try { EnableDialogButtons(); } catch { }
+            // immediately restore UI/menu state + input focus
+            try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
+            try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (helper timeout)"); } catch { }
             isTeleporting = false;
+            isFaded = false;
             yield break;
         }
 
         if (success)
         {
-            try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
+            TBLog.Info("TryTeleportThenCharge: helper reported success - performing post-success actions");
+            try { TravelButton.OnSuccessfulTeleport(city.name); TBLog.Info("TryTeleportThenCharge: OnSuccessfulTeleport invoked (helper)"); } catch { }
             try
             {
                 bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                TBLog.Info($"TryTeleportThenCharge: AttemptDeductSilverDirect returned {charged} (helper path)");
                 if (!charged)
                 {
                     TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
@@ -3740,195 +3355,28 @@ public partial class TravelButtonUI : MonoBehaviour
                 ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
             }
 
-            try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
+            try { TravelButton.PersistCitiesToPluginFolder(); TBLog.Info("TryTeleportThenCharge: PersistCitiesToPluginFolder invoked (helper)"); } catch { }
+
+            // close dialog & inventory on success
+            CloseDialogAndInventory_Safe();
         }
         else
         {
             TBLog.Warn($"TryTeleportThenCharge: teleport to '{city.name}' failed (helper).");
             ShowInlineDialogMessage("Teleport failed");
+            // close dialog & inventory on failure
+            CloseDialogAndInventory_Safe();
         }
 
-        yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-        try { EnableDialogButtons(); } catch { }
+        try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (fallback end)"); } catch { }
         isTeleporting = false;
+        isFaded = false;
+        TBLog.Info("TryTeleportThenCharge: finishing and fading in UI");
+        yield return new WaitForSecondsRealtime(blackHoldSeconds);
+        yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
+        // immediately restore UI/menu state + input focus
+        try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
         yield break;
-    }
-
-    // Tries to read a sceneName/target/price/coords directly from the passed cityObj using common property names.
-    private string TryExtractSceneName(object cityObj, out string outTargetName, out int outPrice, out Vector3 outCoords, out bool outHaveCoords)
-    {
-        outTargetName = null;
-        outPrice = 0;
-        outCoords = Vector3.zero;
-        outHaveCoords = false;
-
-        if (cityObj == null) return null;
-
-        try
-        {
-            var t = cityObj.GetType();
-
-            // sceneName
-            try
-            {
-                var sceneProp = t.GetProperty("sceneName", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                             ?? t.GetProperty("SceneName", BindingFlags.Public | BindingFlags.Instance);
-                if (sceneProp != null) return sceneProp.GetValue(cityObj) as string;
-            }
-            catch { /* ignore */ }
-
-            // targetGameObjectName (optional)
-            try
-            {
-                var tgtProp = t.GetProperty("targetGameObjectName", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                            ?? t.GetProperty("TargetGameObjectName", BindingFlags.Public | BindingFlags.Instance)
-                            ?? t.GetProperty("target", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
-                if (tgtProp != null) outTargetName = tgtProp.GetValue(cityObj) as string;
-            }
-            catch { }
-
-            // price
-            try
-            {
-                var priceProp = t.GetProperty("price", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                             ?? t.GetProperty("Price", BindingFlags.Public | BindingFlags.Instance);
-                if (priceProp != null)
-                {
-                    var v = priceProp.GetValue(cityObj);
-                    if (v != null) outPrice = Convert.ToInt32(v);
-                }
-            }
-            catch { }
-
-            // coords
-            try
-            {
-                var coordsProp = t.GetProperty("coords", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                              ?? t.GetProperty("Coords", BindingFlags.Public | BindingFlags.Instance)
-                              ?? t.GetProperty("position", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                              ?? t.GetProperty("Position", BindingFlags.Public | BindingFlags.Instance);
-
-                if (coordsProp != null)
-                {
-                    var val = coordsProp.GetValue(cityObj);
-                    if (val is float[] fa && fa.Length >= 3) { outCoords = new Vector3(fa[0], fa[1], fa[2]); outHaveCoords = true; }
-                    else if (val is double[] da && da.Length >= 3) { outCoords = new Vector3((float)da[0], (float)da[1], (float)da[2]); outHaveCoords = true; }
-                    else if (val is IList<object> listObj && listObj.Count >= 3)
-                    {
-                        try { outCoords = new Vector3(Convert.ToSingle(listObj[0]), Convert.ToSingle(listObj[1]), Convert.ToSingle(listObj[2])); outHaveCoords = true; } catch { }
-                    }
-                }
-            }
-            catch { }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryExtractSceneName: reflection failed: " + ex);
-        }
-
-        return null;
-    }
-
-    // Try lookup: if the passed object is a city name string or has a name property, match it against TravelButton.Cities.
-    private string TryLookupSceneNameByCityObject(object cityObj, out string outTargetName, out Vector3 outCoords, out bool outHaveCoords, out int outPrice)
-    {
-        outTargetName = null;
-        outCoords = Vector3.zero;
-        outHaveCoords = false;
-        outPrice = 0;
-
-        string candidateName = null;
-        try
-        {
-            if (cityObj is string s) candidateName = s;
-            else if (cityObj != null)
-            {
-                var np = cityObj.GetType().GetProperty("name", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                         ?? cityObj.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
-                if (np != null) candidateName = np.GetValue(cityObj) as string;
-            }
-        }
-        catch { /* ignore */ }
-
-        if (string.IsNullOrEmpty(candidateName))
-        {
-            // Also try cityObj.ToString() as a last resort
-            try { candidateName = cityObj?.ToString(); } catch { }
-        }
-
-        if (string.IsNullOrEmpty(candidateName)) return null;
-
-        try
-        {
-            // Try to read TravelButton.Cities (static collection)
-            Type travelType = typeof(TravelButton);
-            object citiesObj = null;
-            var prop = travelType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            if (prop != null) citiesObj = prop.GetValue(null);
-            else
-            {
-                var field = travelType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
-                         ?? travelType.GetField("cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                if (field != null) citiesObj = field.GetValue(null);
-            }
-
-            if (citiesObj is System.Collections.IEnumerable en)
-            {
-                foreach (var entry in en)
-                {
-                    if (entry == null) continue;
-                    string entryName = null;
-                    try
-                    {
-                        var np = entry.GetType().GetProperty("name", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                                 ?? entry.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
-                        if (np != null) entryName = np.GetValue(entry) as string;
-                    }
-                    catch { }
-
-                    if (string.IsNullOrEmpty(entryName)) continue;
-                    if (!string.Equals(entryName, candidateName, StringComparison.OrdinalIgnoreCase)) continue;
-
-                    // found: read sceneName/target/coords/price
-                    try { outTargetName = (entry.GetType().GetProperty("targetGameObjectName", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ?? entry.GetType().GetProperty("TargetGameObjectName"))?.GetValue(entry) as string; } catch { }
-                    try
-                    {
-                        var snp = entry.GetType().GetProperty("sceneName", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance)
-                                  ?? entry.GetType().GetProperty("SceneName", BindingFlags.Public | BindingFlags.Instance);
-                        if (snp != null) { var v = snp.GetValue(entry) as string; if (!string.IsNullOrEmpty(v)) return v; }
-                    }
-                    catch { }
-
-                    try
-                    {
-                        var coordsP = entry.GetType().GetProperty("coords", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ?? entry.GetType().GetProperty("Coords");
-                        if (coordsP != null)
-                        {
-                            var v = coordsP.GetValue(entry);
-                            if (v is float[] fa && fa.Length >= 3) { outCoords = new Vector3(fa[0], fa[1], fa[2]); outHaveCoords = true; }
-                        }
-                    }
-                    catch { }
-
-                    try
-                    {
-                        var priceP = entry.GetType().GetProperty("price", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ?? entry.GetType().GetProperty("Price");
-                        if (priceP != null)
-                        {
-                            var v = priceP.GetValue(entry);
-                            if (v != null) outPrice = Convert.ToInt32(v);
-                        }
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryLookupSceneNameByCityObject: lookup failed: " + ex);
-        }
-
-        return null;
     }
 
     /// <summary>
@@ -4494,160 +3942,7 @@ public partial class TravelButtonUI : MonoBehaviour
         }
         return null;
     }
-
-    private static float[] TryGetFloatArrayFieldOrProp(object obj, string[] candidateNames)
-    {
-        if (obj == null) return null;
-        Type t = obj.GetType();
-        foreach (var n in candidateNames)
-        {
-            try
-            {
-                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (f != null)
-                {
-                    var v = f.GetValue(obj);
-                    if (v is float[] fa) return fa;
-                    if (v is Vector3 vv) return new float[] { vv.x, vv.y, vv.z };
-                }
-                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (p != null && p.CanRead)
-                {
-                    var v = p.GetValue(obj, null);
-                    if (v is float[] pa) return pa;
-                    if (v is Vector3 pv) return new float[] { pv.x, pv.y, pv.z };
-                }
-            }
-            catch { }
-        }
-        return null;
-    }
-
-    private static bool TrySetFloatArrayFieldOrProp(object obj, string[] candidateNames, float[] value)
-    {
-        if (obj == null || value == null || value.Length < 3) return false;
-        Type t = obj.GetType();
-        foreach (var n in candidateNames)
-        {
-            try
-            {
-                var f = t.GetField(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (f != null && f.FieldType == typeof(float[]))
-                {
-                    f.SetValue(obj, new float[] { value[0], value[1], value[2] });
-                    return true;
-                }
-                if (f != null && f.FieldType == typeof(Vector3))
-                {
-                    f.SetValue(obj, new Vector3(value[0], value[1], value[2]));
-                    return true;
-                }
-                var p = t.GetProperty(n, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (p != null && p.CanWrite)
-                {
-                    if (p.PropertyType == typeof(float[]))
-                    {
-                        p.SetValue(obj, new float[] { value[0], value[1], value[2] }, null);
-                        return true;
-                    }
-                    if (p.PropertyType == typeof(Vector3))
-                    {
-                        p.SetValue(obj, new Vector3(value[0], value[1], value[2]), null);
-                        return true;
-                    }
-                }
-            }
-            catch { }
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Try to find a safe grounded position near 'pos'.
-    /// Strategy:
-    ///  - use TeleportHelpers.GetGroundedPosition(pos) (may use game-specific grounding)
-    ///  - if that fails, do a downward Physics.Raycast from high above pos
-    ///  - if that fails, perform a spiral search on XZ plane, raycasting down at each candidate
-    /// Returns true and sets 'outPos' when a candidate ground is found.
-    /// </summary>
-    private bool TryFindSafePosition(Vector3 pos, out Vector3 outPos)
-    {
-        outPos = Vector3.zero;
-        try
-        {
-            // 1) TeleportHelpers grounding (existing helper)
-            try
-            {
-                var gp = TeleportHelpers.GetGroundedPosition(pos);
-                // treat any returned value as candidate; but verify ground by a short downward raycast if possible
-                // We'll accept gp if a raycast from gp+0.5 down hits within small distance or gp.y is not 0 with reasonable check.
-                RaycastHit hit;
-                Vector3 rayStart = gp + Vector3.up * TeleportHelpers.TeleportGroundClearance;
-                if (Physics.Raycast(rayStart, Vector3.down, out hit, 5f, Physics.DefaultRaycastLayers))
-                {
-                    outPos = hit.point;
-                    TBLog.Info($"TryFindSafePosition: TeleportHelpers returned grounded pos {outPos} (via raycast verification).");
-                    return true;
-                }
-                else
-                {
-                    // Accept gp if it's not exactly zero and not obviously invalid
-                    if (!Mathf.Approximately(gp.sqrMagnitude, 0f))
-                    {
-                        outPos = gp;
-                        TBLog.Info($"TryFindSafePosition: TeleportHelpers returned pos {gp} (no raycast hit but accepting).");
-                        return true;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("TryFindSafePosition: TeleportHelpers.GetGroundedPosition threw: " + ex);
-            }
-
-            // 2) Downward raycast from high above pos
-            {
-                float startY = pos.y + 50f;
-                Vector3 start = new Vector3(pos.x, startY, pos.z);
-                RaycastHit hit;
-                if (Physics.Raycast(start, Vector3.down, out hit, 200f, Physics.DefaultRaycastLayers))
-                {
-                    outPos = hit.point;
-                    TBLog.Info($"TryFindSafePosition: downward raycast hit at {outPos} (startY={startY}).");
-                    return true;
-                }
-            }
-
-            // 3) Spiral search on XZ plane
-            int maxRadius = 20; // meters
-            float step = 1.0f; // meter steps
-            for (int r = 1; r <= maxRadius; r++)
-            {
-                // sample a full circle at this radius with a few steps
-                int steps = Mathf.Max(8, (int)(6 * r));
-                for (int s = 0; s < steps; s++)
-                {
-                    float angle = (s / (float)steps) * Mathf.PI * 2f;
-                    var candidate = new Vector3(pos.x + Mathf.Cos(angle) * r, pos.y + 50f, pos.z + Mathf.Sin(angle) * r);
-                    RaycastHit hit;
-                    if (Physics.Raycast(candidate, Vector3.down, out hit, 200f, Physics.DefaultRaycastLayers))
-                    {
-                        outPos = hit.point;
-                        TBLog.Info($"TryFindSafePosition: spiral raycast hit at {outPos} (radius={r}, step={s}).");
-                        return true;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryFindSafePosition unexpected error: " + ex);
-        }
-
-        // Give up
-        return false;
-    }
-
+    
     /// <summary>
     /// Heuristic to decide whether a GameObject is part of UI (RectTransform, Canvas parent, or UI layer).
     /// This keeps TravelButtonUI self-contained and avoids referencing TravelButtonMod.IsUiGameObject.
@@ -4951,87 +4246,6 @@ public partial class TravelButtonUI : MonoBehaviour
         return false;
     }
 
-    // Called when you discover IsCityVisitedFallback(city) returned true
-    private static void MarkCityVisitedFromFallback(TravelButton.City city)
-    {
-        if (city == null) return;
-        try
-        {
-            // If your City type exposes a 'visited' bool field/property, set it directly:
-            // e.g., if TravelButton.City has public bool visited;
-            if (!city.visited) // use direct member if it exists
-            {
-                city.visited = true;
-                TravelButton.PersistCitiesToPluginFolder();
-                TBLog.Info($"Marked and persisted visited for '{city.name}' (simple).");
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("MarkCityVisitedFromFallback_Simple exception: " + ex.Message);
-        }
-    }
-
-    // Try to determine target position for a city without moving anything.
-    // Returns true and sets out position when found (coords or GameObject), false otherwise.
-    private bool TryGetTargetPosition(TravelButton.City city, out Vector3 pos)
-    {
-        pos = Vector3.zero;
-        try
-        {
-            // 1) explicit target GameObject name
-            if (!string.IsNullOrEmpty(city.targetGameObjectName))
-            {
-                var go = GameObject.Find(city.targetGameObjectName);
-                if (go != null)
-                {
-                    pos = go.transform.position;
-                    TBLog.Info($"TryGetTargetPosition: found GameObject '{city.targetGameObjectName}' at {pos}");
-                    return true;
-                }
-                else
-                {
-                    TBLog.Warn($"TryGetTargetPosition: target GameObject '{city.targetGameObjectName}' not found in scene for city '{city.name}'.");
-                }
-            }
-
-            // 2) explicit coords from config / visited metadata
-            if (city.coords != null && city.coords.Length >= 3)
-            {
-                pos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-                TBLog.Info($"TryGetTargetPosition: using explicit coords {pos} for city '{city.name}'");
-                return true;
-            }
-
-            // 3) heuristic: find any scene object with the city name in it (useful when scene or objects include the region name)
-            try
-            {
-                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-                foreach (var tr in allTransforms)
-                {
-                    if (tr == null) continue;
-                    if (tr.name.IndexOf(city.name ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        pos = tr.position;
-                        TBLog.Info($"TryGetTargetPosition: heuristic found scene object '{tr.name}' for city '{city.name}' at {pos}");
-                        return true;
-                    }
-                }
-            }
-            catch { }
-
-            // not found
-            TBLog.Info($"TryGetTargetPosition: no explicit position found for city '{city.name}'.");
-            return false;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryGetTargetPosition exception: " + ex);
-            pos = Vector3.zero;
-            return false;
-        }
-    }
-
     // Sanity-check coords to detect obviously wrong positions (helpful to spot placeholder coords).
     // This is intentionally conservative: it only flags extremely large NaN/inf coordinates.
     private bool IsCoordsReasonable(Vector3 v)
@@ -5044,174 +4258,6 @@ public partial class TravelButtonUI : MonoBehaviour
         if (Mathf.Abs(v.x) > MAX_REASONABLE || Mathf.Abs(v.y) > MAX_REASONABLE || Mathf.Abs(v.z) > MAX_REASONABLE) return false;
 
         return true;
-    }
-
-    // Teleport player to a specific world position. Returns true on success.
-    private bool AttemptTeleportToPosition(Vector3 targetPos)
-    {
-        try
-        {
-            Transform playerTransform = null;
-            var tagged = GameObject.FindWithTag("Player");
-            if (tagged != null)
-            {
-                playerTransform = tagged.transform;
-                TBLog.Info("AttemptTeleportToPosition: found player by tag 'Player'.");
-            }
-
-            if (playerTransform == null)
-            {
-                string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player" };
-                foreach (var tname in playerTypeCandidates)
-                {
-                    var t = ReflectionUtils.SafeGetType(tname + ", Assembly-CSharp");
-                    if (t != null)
-                    {
-                        var objs = UnityEngine.Object.FindObjectsOfType(t);
-                        if (objs != null && objs.Length > 0)
-                        {
-                            var comp = objs[0] as Component;
-                            if (comp != null)
-                            {
-                                playerTransform = comp.transform;
-                                TBLog.Info($"AttemptTeleportToPosition: found player via type {tname}.");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (playerTransform == null)
-            {
-                var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-                foreach (var tr in allTransforms)
-                {
-                    if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        playerTransform = tr;
-                        TBLog.Info($"AttemptTeleportToPosition: found player by name heuristic: {tr.name}");
-                        break;
-                    }
-                }
-            }
-
-            if (playerTransform == null)
-            {
-                TravelButtonPlugin.LogError("AttemptTeleportToPosition: could not locate player transform. Aborting.");
-                return false;
-            }
-
-            playerTransform.position = targetPos;
-            var rb = playerTransform.GetComponent<Rigidbody>();
-            if (rb != null)
-            {
-                rb.velocity = Vector3.zero;
-                rb.angularVelocity = Vector3.zero;
-            }
-            TBLog.Info($"AttemptTeleportToPosition: teleported player to {targetPos}.");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogError("AttemptTeleportToPosition: teleport failed: " + ex);
-            return false;
-        }
-    }
-
-    // Best-effort refund by trying to call common Add/Give methods or incrementing detected money fields/properties.
-    // Returns true if a refund action was performed successfully.
-    private bool AttemptRefundSilver(int amount)
-    {
-        TBLog.Info($"AttemptRefundSilver: trying to refund {amount} silver.");
-
-        var allMonoBehaviours = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
-        foreach (var mb in allMonoBehaviours)
-        {
-            var t = mb.GetType();
-
-            // Try methods that add money
-            string[] addMethodNames = new string[] { "AddMoney", "GrantMoney", "GiveMoney", "AddSilver", "GiveSilver", "GrantSilver", "AddCoins" };
-            foreach (var mn in addMethodNames)
-            {
-                var mi = t.GetMethod(mn, new Type[] { typeof(int) });
-                if (mi != null)
-                {
-                    try
-                    {
-                        mi.Invoke(mb, new object[] { amount });
-                        TBLog.Info($"AttemptRefundSilver: called {t.FullName}.{mn}({amount})");
-                        return true;
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn($"AttemptRefundSilver: calling {t.FullName}.{mn} threw: {ex}");
-                    }
-                }
-            }
-
-            // Try to increment fields/properties that look like currency
-            foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-            {
-                var name = fi.Name.ToLower();
-                if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency"))
-                {
-                    try
-                    {
-                        if (fi.FieldType == typeof(int))
-                        {
-                            int cur = (int)fi.GetValue(mb);
-                            fi.SetValue(mb, cur + amount);
-                            TBLog.Info($"AttemptRefundSilver: added {amount} to {t.FullName}.{fi.Name} (int). New value {cur + amount}.");
-                            return true;
-                        }
-                        else if (fi.FieldType == typeof(long))
-                        {
-                            long cur = (long)fi.GetValue(mb);
-                            fi.SetValue(mb, cur + amount);
-                            TBLog.Info($"AttemptRefundSilver: added {amount} to {t.FullName}.{fi.Name} (long). New value {cur + amount}.");
-                            return true;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn($"AttemptRefundSilver: field access {t.FullName}.{fi.Name} threw: {ex}");
-                    }
-                }
-            }
-
-            foreach (var pi in t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-            {
-                var name = pi.Name.ToLower();
-                if ((name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coins") || name.Contains("currency")) && pi.CanRead && pi.CanWrite)
-                {
-                    try
-                    {
-                        if (pi.PropertyType == typeof(int))
-                        {
-                            int cur = (int)pi.GetValue(mb);
-                            pi.SetValue(mb, cur + amount);
-                            TBLog.Info($"AttemptRefundSilver: added {amount} to {t.FullName}.{pi.Name} (int). New value {cur + amount}.");
-                            return true;
-                        }
-                        else if (pi.PropertyType == typeof(long))
-                        {
-                            long cur = (long)pi.GetValue(mb);
-                            pi.SetValue(mb, cur + amount);
-                            TBLog.Info($"AttemptRefundSilver: added {amount} to {t.FullName}.{pi.Name} (long). New value {cur + amount}.");
-                            return true;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn($"AttemptRefundSilver: property access {t.FullName}.{pi.Name} threw: {ex}");
-                    }
-                }
-            }
-        }
-
-        TBLog.Warn("AttemptRefundSilver: could not find a place to refund the currency automatically.");
-        return false;
     }
 
     // Add inside the TeleportHelpers static class
@@ -6153,16 +5199,6 @@ public partial class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private void TryPayAndTeleport(TravelButton.City city)
-    {
-        // Kept for compatibility with older callers; but the new flow uses TryTeleportThenCharge.
-        TryTeleportThenCharge(city, city.price ?? TravelButton.cfgTravelCost.Value);
-    }
-
-    /*   // Older implementation preserved as comment for reference...
-        ... (omitted) ...
-    */
-
     private void CloseDialogAndStopRefresh()
     {
         try
@@ -6648,245 +5684,6 @@ public partial class TravelButtonUI : MonoBehaviour
         }
     }
 
-    private bool AttemptTeleportToCity(TravelButton.City city)
-    {
-        TBLog.Info($"AttemptTeleportToCity: trying to teleport to {city.name}");
-
-        Vector3? targetPos = null;
-        if (!string.IsNullOrEmpty(city.targetGameObjectName))
-        {
-            var targetGO = GameObject.Find(city.targetGameObjectName);
-            if (targetGO != null)
-            {
-                targetPos = targetGO.transform.position;
-                TBLog.Info($"AttemptTeleportToCity: found GameObject '{city.targetGameObjectName}' at {targetPos.Value}");
-            }
-            else
-            {
-                TBLog.Warn($"AttemptTeleportToCity: target GameObject '{city.targetGameObjectName}' not found in scene.");
-            }
-        }
-
-        if (targetPos == null && city.coords != null && city.coords.Length >= 3)
-        {
-            targetPos = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-            TBLog.Info($"AttemptTeleportToCity: using explicit coords {targetPos.Value}");
-        }
-        else if (targetPos == null && city.coords != null)
-        {
-            TBLog.Warn($"AttemptTeleportToCity: coords provided but length < 3 for {city.name}. coords.length={city.coords.Length}");
-        }
-
-        if (targetPos == null)
-        {
-            // Extra attempt: try to find a scene object with the city's name (case-insensitive)
-            var allTransforms = UnityEngine.Object.FindObjectsOfType<Transform>();
-            foreach (var tr in allTransforms)
-            {
-                if (tr.name.IndexOf(city.name, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    targetPos = tr.position;
-                    TBLog.Info($"AttemptTeleportToCity: fallback found scene object '{tr.name}' for city '{city.name}' at {targetPos.Value}");
-                    break;
-                }
-            }
-        }
-
-        if (targetPos == null)
-        {
-            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            TravelButtonPlugin.LogError($"AttemptTeleportToCity: no valid target for {city.name} (scene='{scene.name}'). Aborting teleport.");
-            return false;
-        }
-
-        // Locate player transform more robustly
-        Transform playerTransform = null;
-        var tagged = GameObject.FindWithTag("Player");
-        if (tagged != null)
-        {
-            playerTransform = tagged.transform;
-            TBLog.Info("AttemptTeleportToCity: found player by tag 'Player'.");
-        }
-
-        if (playerTransform == null)
-        {
-            string[] playerTypeCandidates = new string[] { "PlayerCharacter", "PlayerEntity", "Character", "PC_Player", "PlayerController", "LocalPlayer" };
-            foreach (var tname in playerTypeCandidates)
-            {
-                try
-                {
-                    var t = ReflectionUtils.SafeGetType(tname + ", Assembly-CSharp");
-                    if (t != null)
-                    {
-                        var objs = UnityEngine.Object.FindObjectsOfType(t);
-                        if (objs != null && objs.Length > 0)
-                        {
-                            var comp = objs[0] as Component;
-                            if (comp != null)
-                            {
-                                playerTransform = comp.transform;
-                                TBLog.Info($"AttemptTeleportToCity: found player via type {tname} (object name='{comp.name}').");
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"AttemptTeleportToCity: exception checking type {tname}: {ex.Message}");
-                }
-            }
-        }
-
-        if (playerTransform == null)
-        {
-            var allTransforms2 = UnityEngine.Object.FindObjectsOfType<Transform>();
-            foreach (var tr in allTransforms2)
-            {
-                if (tr.name.IndexOf("player", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    tr.name.IndexOf("pc_", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    playerTransform = tr;
-                    TBLog.Info($"AttemptTeleportToCity: found player by name heuristic: {tr.name}");
-                    break;
-                }
-            }
-        }
-
-        if (playerTransform == null)
-        {
-            TravelButtonPlugin.LogError("AttemptTeleportToCity: could not locate player transform. Aborting.");
-            return false;
-        }
-
-        // Helper: perform teleport using the best available API
-        bool TrySetTransformPosition(Transform plyTransform, Vector3 pos)
-        {
-            try
-            {
-                // Try NavMeshAgent warp first if present (use reflection to avoid compile-time dependency on UnityEngine.AIModule)
-                try
-                {
-                    var navAgentType = ReflectionUtils.SafeGetType("UnityEngine.AI.NavMeshAgent, UnityEngine.AIModule");
-                    if (navAgentType != null)
-                    {
-                        var agentComp = plyTransform.GetComponent(navAgentType);
-                        if (agentComp != null)
-                        {
-                            // check isOnNavMesh property
-                            var isOnNavMeshProp = navAgentType.GetProperty("isOnNavMesh");
-                            bool isOnNavMesh = false;
-                            if (isOnNavMeshProp != null)
-                            {
-                                var val = isOnNavMeshProp.GetValue(agentComp);
-                                if (val is bool b) isOnNavMesh = b;
-                            }
-
-                            if (isOnNavMesh)
-                            {
-                                var warpMethod = navAgentType.GetMethod("Warp", new Type[] { typeof(Vector3) });
-                                if (warpMethod != null)
-                                {
-                                    warpMethod.Invoke(agentComp, new object[] { pos });
-                                    TBLog.Info("AttemptTeleportToCity: teleported using NavMeshAgent.Warp (via reflection).");
-                                    return true;
-                                }
-                            }
-                            else
-                            {
-                                TBLog.Warn("AttemptTeleportToCity: NavMeshAgent found but not on NavMesh. Falling back.");
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("AttemptTeleportToCity: NavMeshAgent reflection attempt failed: " + ex.Message);
-                }
-
-                // Try CharacterController: disable/enable around position set
-                var cc = plyTransform.GetComponent<CharacterController>();
-                if (cc != null)
-                {
-                    cc.enabled = false;
-                    plyTransform.position = pos;
-                    cc.enabled = true;
-                    TBLog.Info("AttemptTeleportToCity: teleported using CharacterController disable/enable.");
-                    return true;
-                }
-
-                // Try Rigidbody.MovePosition / setting rigidbody position
-                var rb = plyTransform.GetComponent<Rigidbody>();
-                if (rb != null)
-                {
-                    // If it is kinematic, set transform, otherwise set rb.position and zero velocity
-                    if (rb.isKinematic)
-                    {
-                        plyTransform.position = pos;
-                    }
-                    else
-                    {
-                        rb.position = pos;
-                        rb.velocity = Vector3.zero;
-                        rb.angularVelocity = Vector3.zero;
-                    }
-                    TBLog.Info("AttemptTeleportToCity: teleported using Rigidbody reposition.");
-                    return true;
-                }
-
-                // Try parent's rigidbody (some setups attach movement to parent)
-                if (plyTransform.parent != null)
-                {
-                    var parentRb = plyTransform.parent.GetComponent<Rigidbody>();
-                    if (parentRb != null)
-                    {
-                        parentRb.position = pos;
-                        parentRb.velocity = Vector3.zero;
-                        parentRb.angularVelocity = Vector3.zero;
-                        TBLog.Info("AttemptTeleportToCity: teleported by moving parent Rigidbody.");
-                        return true;
-                    }
-                }
-
-                // Final fallback: set transform.position directly
-                plyTransform.position = pos;
-                TBLog.Info("AttemptTeleportToCity: teleported by setting transform.position (fallback).");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                TravelButtonPlugin.LogError("AttemptTeleportToCity: teleport attempt failed: " + ex);
-                return false;
-            }
-        }
-
-        // If the found transform is not root of character, try to use root transform (some prefabs place the visible character below a root)
-        Transform effectiveTransform = playerTransform;
-        if (playerTransform.root != null && playerTransform.root != playerTransform)
-        {
-            TBLog.Info($"AttemptTeleportToCity: player transform root is '{playerTransform.root.name}', using root for teleport attempts.");
-            effectiveTransform = playerTransform.root;
-        }
-
-        // Try teleporting; if it fails on the effectiveTransform, try using the original transform as a last attempt
-        bool teleported = TrySetTransformPosition(effectiveTransform, targetPos.Value);
-        if (!teleported && effectiveTransform != playerTransform)
-        {
-            TBLog.Warn("AttemptTeleportToCity: teleport via root failed, trying original player transform.");
-            teleported = TrySetTransformPosition(playerTransform, targetPos.Value);
-        }
-
-        if (teleported)
-        {
-            TBLog.Info($"AttemptTeleportToCity: teleported player to {targetPos.Value}.");
-            return true;
-        }
-        else
-        {
-            TravelButtonPlugin.LogError("AttemptTeleportToCity: teleport strategies exhausted and all failed.");
-            return false;
-        }
-    }
 
     // Show a short, inline message in the open dialog (if present). Clears after a few seconds.
     private Coroutine inlineMessageClearCoroutine;
@@ -7167,5 +5964,623 @@ public partial class TravelButtonUI : MonoBehaviour
         }
     }
 
-}
+    // Replace existing CloseDialogAndInventory_Safe usage with this safer implementation:
+    private void CloseDialogAndInventory_Safe()
+    {
+        try
+        {
+            // Destroy our dialog UI if present (best-effort)
+            if (dialogRoot != null)
+            {
+                try
+                {
+                    TBLog.Info("CloseDialogAndInventory_Safe_Safe: destroying dialogRoot");
+                    UnityEngine.Object.Destroy(dialogRoot);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("CloseDialogAndInventory_Safe_Safe: destroying dialogRoot threw: " + ex);
+                    try { dialogRoot.SetActive(false); } catch { }
+                }
+                dialogRoot = null;
+            }
+            else
+            {
+                TBLog.Info("CloseDialogAndInventory_Safe_Safe: dialogRoot was null");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CloseDialogAndInventory_Safe_Safe: dialogRoot close attempt threw: " + ex);
+        }
 
+        // Try to find "MenuManager" and close/hide it safely
+        try
+        {
+            var menuGO = GameObject.Find("MenuManager");
+            if (menuGO == null)
+            {
+                TBLog.Info("CloseDialogAndInventory_Safe_Safe: MenuManager GameObject not found");
+                return;
+            }
+
+            // Save reference for restore
+            _tb_savedMenuManagerGO = menuGO;
+            _tb_savedMenuManagerActive = menuGO.activeSelf;
+            _tb_menuManagerHiddenByPlugin = false;
+            _tb_menuManagerClosedByMethod = false;
+
+            // 1) Try to call a close method on a MonoBehaviour component if available
+            var comps = menuGO.GetComponents<MonoBehaviour>();
+            foreach (var comp in comps)
+            {
+                if (comp == null) continue;
+                var t = comp.GetType();
+                // common close method names to try
+                var mClose = t.GetMethod("CloseAllMenus", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                          ?? t.GetMethod("CloseAll", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                          ?? t.GetMethod("Close", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                          ?? t.GetMethod("HideMenus", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                          ?? t.GetMethod("ToggleMenu", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (mClose != null)
+                {
+                    try
+                    {
+                        TBLog.Info($"CloseDialogAndInventory_Safe_Safe: invoking {t.FullName}.{mClose.Name}() on MenuManager component to close menus");
+                        mClose.Invoke(comp, null);
+                        _tb_menuManagerClosedByMethod = true;
+                        // We invoked a real close API; assume it handled focus and visuals properly
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn($"CloseDialogAndInventory_Safe_Safe: invoking {t.FullName}.{mClose.Name} threw: " + ex);
+                    }
+                }
+            }
+
+            // 2) No close method found: hide using CanvasGroup, but save the original state to restore later
+            var cg = menuGO.GetComponent<CanvasGroup>();
+            if (cg != null)
+            {
+                try
+                {
+                    _tb_savedMenuManagerCanvasGroup = cg;
+                    _tb_savedCanvasAlpha = cg.alpha;
+                    _tb_savedCanvasInteractable = cg.interactable;
+                    _tb_savedCanvasBlocksRaycasts = cg.blocksRaycasts;
+
+                    TBLog.Info("CloseDialogAndInventory_Safe_Safe: hiding MenuManager CanvasGroup (fallback)");
+                    cg.alpha = 0f;
+                    cg.interactable = false;
+                    cg.blocksRaycasts = false;
+
+                    _tb_menuManagerHiddenByPlugin = true;
+
+                    // Clear selected UI so EventSystem doesn't keep UI-focused selection
+                    try
+                    {
+                        var es = UnityEngine.EventSystems.EventSystem.current;
+                        if (es != null)
+                        {
+                            es.SetSelectedGameObject(null);
+                            TBLog.Info("CloseDialogAndInventory_Safe_Safe: cleared EventSystem selected GameObject");
+                        }
+                    }
+                    catch (Exception ex) { TBLog.Warn("CloseDialogAndInventory_Safe_Safe: clearing EventSystem selection threw: " + ex); }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("CloseDialogAndInventory_Safe_Safe: CanvasGroup hide fallback threw: " + ex);
+                }
+            }
+            else
+            {
+                // 3) Last-resort: deactivate the GameObject, but remember to restore
+                try
+                {
+                    TBLog.Info("CloseDialogAndInventory_Safe_Safe: MenuManager CanvasGroup not found; deactivating MenuManager GameObject as fallback");
+                    _tb_savedMenuManagerActive = menuGO.activeSelf;
+                    menuGO.SetActive(false);
+                    _tb_menuManagerHiddenByPlugin = true;
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("CloseDialogAndInventory_Safe_Safe: deactivating MenuManager threw: " + ex);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CloseDialogAndInventory_Safe_Safe: inventory/menu close attempt threw: " + ex);
+        }
+    }
+
+    // Call this after teleport is complete (after fade-in) to restore any state we changed.
+    private void RestoreDialogAndInventory_Safe()
+    {
+        try
+        {
+            // If a real close method was used, hope it handled restored state; we still attempt to clear selection and restore cursor.
+            if (_tb_menuManagerClosedByMethod)
+            {
+                // Clear the flag — no other restoration we can do safely
+                _tb_menuManagerClosedByMethod = false;
+            }
+
+            // If we hid MenuManager via CanvasGroup or deactivated it, restore saved values
+            if (_tb_savedMenuManagerGO != null && _tb_menuManagerHiddenByPlugin)
+            {
+                try
+                {
+                    // Restore CanvasGroup if we used it
+                    if (_tb_savedMenuManagerCanvasGroup != null)
+                    {
+                        try
+                        {
+                            _tb_savedMenuManagerCanvasGroup.alpha = _tb_savedCanvasAlpha;
+                            _tb_savedMenuManagerCanvasGroup.interactable = _tb_savedCanvasInteractable;
+                            _tb_savedMenuManagerCanvasGroup.blocksRaycasts = _tb_savedCanvasBlocksRaycasts;
+                            TBLog.Info("RestoreDialogAndInventory_Safe: restored MenuManager CanvasGroup properties");
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn("RestoreDialogAndInventory_Safe: restoring CanvasGroup properties threw: " + ex);
+                        }
+                    }
+                    else
+                    {
+                        // restore active state if we deactivated MenuManager
+                        try
+                        {
+                            _tb_savedMenuManagerGO.SetActive(_tb_savedMenuManagerActive);
+                            TBLog.Info($"RestoreDialogAndInventory_Safe: restored MenuManager active={_tb_savedMenuManagerActive}");
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn("RestoreDialogAndInventory_Safe: restoring MenuManager active state threw: " + ex);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("RestoreDialogAndInventory_Safe: error while restoring MenuManager: " + ex);
+                }
+            }
+
+            // Clear saved references and flags
+            _tb_menuManagerHiddenByPlugin = false;
+            _tb_savedMenuManagerCanvasGroup = null;
+            _tb_savedMenuManagerGO = null;
+
+            // Make sure EventSystem selection is cleared so camera input isn't blocked by stale selection,
+            // then optionally restore game cursor lock/visibility to gameplay mode.
+            try
+            {
+                var es = UnityEngine.EventSystems.EventSystem.current;
+                if (es != null)
+                {
+                    es.SetSelectedGameObject(null);
+                    TBLog.Info("RestoreDialogAndInventory_Safe: cleared EventSystem selected GameObject");
+                }
+            }
+            catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe: clearing EventSystem selection threw: " + ex); }
+
+            try
+            {
+                // restore cursor to gameplay (adjust if your game uses different lock/visibility)
+                Cursor.lockState = CursorLockMode.Locked;
+                Cursor.visible = false;
+                TBLog.Info("RestoreDialogAndInventory_Safe: set Cursor.lockState=Locked, visible=false");
+            }
+            catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe: cursor restore threw: " + ex); }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("RestoreDialogAndInventory_Safe: restore attempt threw: " + ex);
+        }
+    }
+
+    // Temporary: force the travel button visible and stop visibility monitor
+    private void Debug_ForceShowButton()
+    {
+        try
+        {
+            StopInventoryVisibilityMonitor(); // make sure monitor won't immediately toggle it
+        }
+        catch { }
+
+        if (buttonObject != null && !buttonObject.activeSelf)
+        {
+            try { buttonObject.SetActive(true); } catch { }
+        }
+        TBLog.Info("DEBUG: Forced Travel button visible and stopped visibility monitor.");
+    }
+
+    /// <summary>
+    /// Dump debugging information relevant to travel/teleport availability:
+    /// - city/destination components and visited/enabled flags
+    /// - travel/visited manager fields
+    /// - player money-like fields
+    /// - config/settings flags that mention cities
+    /// Safe to call on button click or after teleport success.
+    /// </summary>
+    public void DumpTravelDebugInfo()
+    {
+        try
+        {
+            TBLog.Info("DBG: ---- Travel debug dump start ----");
+            DumpVisitedManagers();
+            DumpCityComponents();
+            DumpPlayerMoneyCandidates();
+            DumpConfigFlags();
+            TBLog.Info("DBG: ---- Travel debug dump end ----");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpTravelDebugInfo failed: " + ex);
+        }
+    }
+
+    private void DumpVisitedManagers()
+    {
+        try
+        {
+            // Try to find known manager types first, then fallback to heuristics
+            string[] managerTypeNames = new[] { "TravelButtonVisitedManager", "VisitedManager", "CityDiscovery", "TravelManager", "VisitedList" };
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+
+            foreach (var name in managerTypeNames)
+            {
+                var t = assemblies.Select(a => a.GetType(name, false)).FirstOrDefault(tt => tt != null);
+                if (t != null)
+                {
+                    // Try find an instance in scene
+                    var instance = FindObjectOfType(t) as object;
+                    if (instance == null)
+                    {
+                        // Try static Instance property
+                        instance = t.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)?.GetValue(null);
+                    }
+
+                    TBLog.Info($"DBG: Found manager type {name}: type={t.FullName}, instance={(instance != null ? "yes" : "no")}");
+                    if (instance != null)
+                    {
+                        DumpObjectFieldsAndProperties(instance, "manager");
+                    }
+                }
+            }
+
+            // Fallback: attempt to locate any type in assemblies with "Visited" or "CityDiscovery" in name
+            var fallbackTypes = assemblies.SelectMany(a =>
+            {
+                try { return a.GetTypes(); } catch { return new Type[0]; }
+            })
+            .Where(tt => tt.Name.IndexOf("Visited", StringComparison.OrdinalIgnoreCase) >= 0
+                      || tt.Name.IndexOf("CityDiscovery", StringComparison.OrdinalIgnoreCase) >= 0)
+            .Distinct();
+
+            foreach (var ft in fallbackTypes)
+            {
+                var instance = FindObjectOfType(ft) as object;
+                if (instance != null)
+                {
+                    TBLog.Info($"DBG: Fallback manager instance found: {ft.FullName} on GameObject {(instance as MonoBehaviour)?.gameObject.name}");
+                    DumpObjectFieldsAndProperties(instance, "manager-fallback");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpVisitedManagers exception: " + ex);
+        }
+    }
+
+    private void DumpCityComponents()
+    {
+        try
+        {
+            // Get all MonoBehaviours (including inactive) and filter by type name
+            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
+            var interesting = comps.Where(c =>
+            {
+                var n = c.GetType().Name.ToLowerInvariant();
+                return n.Contains("city") || n.Contains("destination") || n.Contains("travel") || n.Contains("town");
+            }).ToArray();
+
+            TBLog.Info($"DBG: Found {interesting.Length} city-like components in scene.");
+            foreach (var comp in interesting)
+            {
+                var t = comp.GetType();
+                string goName = comp.gameObject != null ? comp.gameObject.name : "(no-go)";
+                TBLog.Info($"DBG: Component: {t.FullName} on GO '{goName}'");
+
+                // Basic name / display field attempts
+                var nameField = t.GetField("Name", BindingFlags.Public | BindingFlags.Instance)
+                             ?? t.GetField("name", BindingFlags.Public | BindingFlags.Instance);
+                if (nameField != null)
+                {
+                    try { TBLog.Info($"DBG:  - Name field: {nameField.GetValue(comp)}"); } catch { }
+                }
+
+                // Look for visited/enabled boolean fields and properties
+                var boolMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                   .Where(m =>
+                                   {
+                                       string mn = m.Name.ToLowerInvariant();
+                                       return mn.Contains("visited") || mn.Contains("isvisited") || mn.Contains("visitedflag")
+                                           || mn.Contains("enabled") || mn.Contains("isenabled") || mn.Contains("available") || mn.Contains("locked");
+                                   });
+
+                foreach (var mem in boolMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
+                        {
+                            var val = fi.GetValue(comp);
+                            TBLog.Info($"DBG:  - Field {fi.Name} (bool) = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                        {
+                            var val = pi.GetValue(comp, null);
+                            TBLog.Info($"DBG:  - Prop {pi.Name} (bool) = {val}");
+                        }
+                    }
+                    catch { /* ignore per-field errors */ }
+                }
+
+                // Look for cost/price numeric fields
+                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                  .Where(m =>
+                                  {
+                                      string mn = m.Name.ToLowerInvariant();
+                                      return mn.Contains("cost") || mn.Contains("price") || mn.Contains("fee") || mn.Contains("gold") || mn.Contains("coins");
+                                  });
+
+                foreach (var mem in numMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double)))
+                        {
+                            var val = fi.GetValue(comp);
+                            TBLog.Info($"DBG:  - Field {fi.Name} (num) = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double))
+                                 && pi.GetIndexParameters().Length == 0)
+                        {
+                            var val = pi.GetValue(comp, null);
+                            TBLog.Info($"DBG:  - Prop {pi.Name} (num) = {val}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpCityComponents exception: " + ex);
+        }
+    }
+
+    private void DumpPlayerMoneyCandidates()
+    {
+        try
+        {
+            // Find MonoBehaviours with "Player" or "Character" in the type name
+            var comps = Resources.FindObjectsOfTypeAll<MonoBehaviour>().Where(m => m != null && m.gameObject != null && m.gameObject.scene.IsValid()).ToArray();
+            var players = comps.Where(c =>
+            {
+                var n = c.GetType().Name.ToLowerInvariant();
+                return n.Contains("player") || n.Contains("character") || n.Contains("wallet") || n.Contains("account");
+            }).ToArray();
+
+            TBLog.Info($"DBG: Found {players.Length} player-like components.");
+
+            foreach (var p in players)
+            {
+                TBLog.Info($"DBG: Player-like component: {p.GetType().FullName} on GO '{p.gameObject.name}'");
+                var t = p.GetType();
+
+                // Numeric candidate fields/properties that might represent money
+                var numMembers = t.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                  .Where(m =>
+                                  {
+                                      string mn = m.Name.ToLowerInvariant();
+                                      return mn.Contains("money") || mn.Contains("gold") || mn.Contains("coins") || mn.Contains("silver") || mn.Contains("balance") || mn.Contains("wallet");
+                                  });
+
+                foreach (var mem in numMembers)
+                {
+                    try
+                    {
+                        if (mem is FieldInfo fi && (fi.FieldType == typeof(int) || fi.FieldType == typeof(float) || fi.FieldType == typeof(double) || fi.FieldType == typeof(long)))
+                        {
+                            var val = fi.GetValue(p);
+                            TBLog.Info($"DBG:  - Field {fi.Name} = {val}");
+                        }
+                        else if (mem is PropertyInfo pi && pi.GetIndexParameters().Length == 0 &&
+                                 (pi.PropertyType == typeof(int) || pi.PropertyType == typeof(float) || pi.PropertyType == typeof(double) || pi.PropertyType == typeof(long)))
+                        {
+                            var val = pi.GetValue(p, null);
+                            TBLog.Info($"DBG:  - Prop {pi.Name} = {val}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // Also try to find a global GameManager-like type that might hold currency
+            var allTypes = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
+            var gmTypes = allTypes.Where(tt => tt.Name.IndexOf("GameManager", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               tt.Name.IndexOf("Economy", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                               tt.Name.IndexOf("Currency", StringComparison.OrdinalIgnoreCase) >= 0);
+            foreach (var gt in gmTypes)
+            {
+                TBLog.Info($"DBG: Found manager type candidate: {gt.FullName}");
+                // try static properties/fields
+                var props = gt.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var pi in props.Where(p => (p.PropertyType == typeof(int) || p.PropertyType == typeof(float) || p.PropertyType == typeof(double) || p.PropertyType == typeof(long)) && p.GetIndexParameters().Length == 0))
+                {
+                    try
+                    {
+                        var val = pi.GetValue(null, null);
+                        TBLog.Info($"DBG:  - Static Prop {gt.Name}.{pi.Name} = {val}");
+                    }
+                    catch { }
+                }
+
+                var fields = gt.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (var fi in fields.Where(f => f.FieldType == typeof(int) || f.FieldType == typeof(float) || f.FieldType == typeof(double) || f.FieldType == typeof(long)))
+                {
+                    try
+                    {
+                        var val = fi.GetValue(null);
+                        TBLog.Info($"DBG:  - Static Field {gt.Name}.{fi.Name} = {val}");
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpPlayerMoneyCandidates exception: " + ex);
+        }
+    }
+
+    private void DumpConfigFlags()
+    {
+        try
+        {
+            var types = AppDomain.CurrentDomain.GetAssemblies().SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } });
+
+            // look for types that look like config/settings
+            var configTypes = types.Where(t => t.Name.IndexOf("Config", StringComparison.OrdinalIgnoreCase) >= 0
+                                           || t.Name.IndexOf("Settings", StringComparison.OrdinalIgnoreCase) >= 0
+                                           || t.Name.IndexOf("Options", StringComparison.OrdinalIgnoreCase) >= 0);
+
+            foreach (var ct in configTypes)
+            {
+                try
+                {
+                    // look for static instance or static fields/properties with booleans mentioning cities
+                    object instance = null;
+                    var instProp = ct.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                    if (instProp != null)
+                    {
+                        try { instance = instProp.GetValue(null); } catch { }
+                    }
+
+                    // log static boolean fields and properties that reference city or enable
+                    var staticBools = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                                        .Where(m =>
+                                        {
+                                            string mn = m.Name.ToLowerInvariant();
+                                            return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
+                                        });
+
+                    TBLog.Info($"DBG: Config/Settings candidate: {ct.FullName}, instance={(instance != null ? "yes" : "no")}");
+                    foreach (var mem in staticBools)
+                    {
+                        try
+                        {
+                            if (mem is FieldInfo sfi && sfi.FieldType == typeof(bool))
+                            {
+                                TBLog.Info($"DBG:  - Static Field {ct.Name}.{sfi.Name} = {sfi.GetValue(null)}");
+                            }
+                            else if (mem is PropertyInfo spi && spi.PropertyType == typeof(bool) && spi.GetIndexParameters().Length == 0)
+                            {
+                                TBLog.Info($"DBG:  - Static Prop {ct.Name}.{spi.Name} = {spi.GetValue(null)}");
+                            }
+                        }
+                        catch { }
+                    }
+
+                    // If instance exists, log instance bool fields/properties that mention city/enable
+                    if (instance != null)
+                    {
+                        var instMembers = ct.GetMembers(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                           .Where(m =>
+                                           {
+                                               string mn = m.Name.ToLowerInvariant();
+                                               return mn.Contains("city") || mn.Contains("enable") || mn.Contains("enabled") || mn.Contains("allow");
+                                           });
+
+                        foreach (var mem in instMembers)
+                        {
+                            try
+                            {
+                                if (mem is FieldInfo fi && fi.FieldType == typeof(bool))
+                                {
+                                    TBLog.Info($"DBG:  - Instance Field {ct.Name}.{fi.Name} = {fi.GetValue(instance)}");
+                                }
+                                else if (mem is PropertyInfo pi && pi.PropertyType == typeof(bool) && pi.GetIndexParameters().Length == 0)
+                                {
+                                    TBLog.Info($"DBG:  - Instance Prop {ct.Name}.{pi.Name} = {pi.GetValue(instance)}");
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpConfigFlags exception: " + ex);
+        }
+    }
+
+    private void DumpObjectFieldsAndProperties(object obj, string prefix = "")
+    {
+        if (obj == null) return;
+        try
+        {
+            var t = obj.GetType();
+            TBLog.Info($"DBG: Dumping fields/properties for {t.FullName} ({prefix})");
+
+            // boolean members
+            var boolFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                              .Where(f => f.FieldType == typeof(bool));
+            foreach (var f in boolFields)
+            {
+                try { TBLog.Info($"DBG:  - Field {f.Name} = {f.GetValue(obj)}"); } catch { }
+            }
+
+            var boolProps = t.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                             .Where(p => p.PropertyType == typeof(bool) && p.GetIndexParameters().Length == 0);
+            foreach (var p in boolProps)
+            {
+                try { TBLog.Info($"DBG:  - Prop {p.Name} = {p.GetValue(obj, null)}"); } catch { }
+            }
+
+            // list-like visited containers (IEnumerable of strings or bools or objects)
+            var listFields = t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static)
+                              .Where(f => typeof(System.Collections.IEnumerable).IsAssignableFrom(f.FieldType) && f.FieldType != typeof(string));
+            foreach (var f in listFields)
+            {
+                try
+                {
+                    var val = f.GetValue(obj) as System.Collections.IEnumerable;
+                    if (val == null) continue;
+                    TBLog.Info($"DBG:  - Enumerable Field {f.Name}:");
+                    int i = 0;
+                    foreach (var item in val)
+                    {
+                        TBLog.Info($"DBG:     [{i}] {item}");
+                        i++;
+                        if (i > 50) { TBLog.Info("DBG:     ... truncated after 50 items"); break; }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DBG: DumpObjectFieldsAndProperties failed: " + ex);
+        }
+    }
+
+}

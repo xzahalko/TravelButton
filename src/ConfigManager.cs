@@ -95,7 +95,7 @@ public static class ConfigManager
         {
             enabled = true,
             price = 200,
-            coords = new float[] { 61.5f, -3.7f, 167.5f },
+            coords = new float[] { 56.893f, -4.853f, 114.147f },
             targetGameObjectName = "Monsoon_Location",
             sceneName = "Monsoon",
             desc = "Monsoon - example description",

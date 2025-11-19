@@ -765,7 +765,7 @@ public static class TeleportManagerSafePlace
         // STEP A: Raycast grounding
         Vector3 groundedPos = requestedTarget;
         bool groundedByRaycast = false;
-        try
+/*        try
         {
             const float RAY_UP = 4.0f;
             const float RAY_DOWN = 20.0f;
@@ -789,7 +789,7 @@ public static class TeleportManagerSafePlace
         {
             TBLog.Warn("ComputeSafePlacementCoords: raycast threw: " + ex);
         }
-
+*/
         // STEP B: NavMesh fallback if raycast not used
         if (!groundedByRaycast)
         {

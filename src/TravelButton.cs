@@ -2012,7 +2012,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             if (TravelButton.Cities == null) return;
 
-            // Ensure visited dictionary exists
+            // Ensure visited dictionary exists (we won't fill it with ConfigEntries)
             if (bex_cityVisited == null) bex_cityVisited = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
 
             foreach (var city in TravelButton.Cities)
@@ -2026,7 +2026,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 var visitedDefault = false;
                 try
                 {
-                    // try to read existing visited field on city (if present in model/JSON)
+                    // try to read existing visited value from model if present
                     var ct = city.GetType();
                     var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                     if (prop != null && prop.PropertyType == typeof(bool) && prop.CanRead)
@@ -2041,43 +2041,51 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 catch { visitedDefault = false; }
 
                 var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
-                var priceKey = Config.Bind<int>(section, $"{city.name}.Price", (int)city.price,
+                var priceKey = Config.Bind<int>(section, $"{city.name}.Price", (int)(city.price ?? priceDefault),
                     new ConfigDescription($"Price for {city.name}"));
-
-                // Bind Visited (default from model if present, otherwise false)
-                var visitedKey = Config.Bind<bool>(section, $"{city.name}.Visited", visitedDefault,
-                    new ConfigDescription($"Visited state for {city.name} (managed by plugin; mirrored here if desired)"));
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
-                bex_cityVisited[city.name] = visitedKey;
 
-                // Log source of values
+                // ===== visited: DO NOT create a ConfigEntry; read from cfg file if present and apply to model ====
+                try
+                {
+                    string cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                    if (TryReadBoolFromCfgFile(cfgFile, section, $"{city.name}.Visited", out bool visitedFromFile))
+                    {
+                        try
+                        {
+                            var ct = city.GetType();
+                            var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (prop != null && prop.PropertyType == typeof(bool) && prop.CanWrite)
+                                prop.SetValue(city, visitedFromFile, null);
+                            else
+                            {
+                                var field = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                if (field != null && field.FieldType == typeof(bool))
+                                    field.SetValue(city, visitedFromFile);
+                            }
+                        }
+                        catch { /* ignore reflection errors */ }
+
+                        TBLog.Info($"BindCityConfigsForNewCities: applied {city.name}.Visited from cfg file: {visitedFromFile}");
+                    }
+                }
+                catch (Exception exRead)
+                {
+                    TBLog.Warn("BindCityConfigsForNewCities: reading visited value from cfg failed: " + exRead.Message);
+                }
+
+                // log source of values
                 bool priceFromJson = city.price.HasValue && city.price.Value == priceDefault;
                 string priceSource = priceFromJson ? "JSON-seed" : "BepInEx";
                 string enabledSource = enabledKey.Value == enabledDefault ? "default" : "BepInEx";
-                string visitedSource = visitedKey.Value == visitedDefault ? "default" : "BepInEx";
 
-                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource}), visited={visitedKey.Value} (source: {visitedSource})");
+                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource}), visited={visitedDefault} (model)");
 
-                // sync initial runtime (BepInEx is authoritative)
+                // sync initial runtime (BepInEx is authoritative for enabled/price)
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
-                try
-                {
-                    // apply visited to runtime model (property or field)
-                    var ct2 = city.GetType();
-                    var prop2 = ct2.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                    if (prop2 != null && prop2.PropertyType == typeof(bool) && prop2.CanWrite)
-                        prop2.SetValue(city, visitedKey.Value, null);
-                    else
-                    {
-                        var field2 = ct2.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                        if (field2 != null && field2.FieldType == typeof(bool))
-                            field2.SetValue(city, visitedKey.Value);
-                    }
-                }
-                catch { /* ignore reflection errors */ }
 
                 enabledKey.SettingChanged += (s, e) =>
                 {
@@ -2097,30 +2105,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     }
                     catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
                 };
-                visitedKey.SettingChanged += (s, e) =>
-                {
-                    try
-                    {
-                        // apply to runtime model
-                        try
-                        {
-                            var ct3 = city.GetType();
-                            var prop3 = ct3.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                            if (prop3 != null && prop3.PropertyType == typeof(bool) && prop3.CanWrite)
-                                prop3.SetValue(city, visitedKey.Value, null);
-                            else
-                            {
-                                var field3 = ct3.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                if (field3 != null && field3.FieldType == typeof(bool))
-                                    field3.SetValue(city, visitedKey.Value);
-                            }
-                        }
-                        catch { /* ignore */ }
 
-                        TravelButton.PersistCitiesToPluginFolder();
-                    }
-                    catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
-                };
+                // NOTE: No visitedKey.SettingChanged here — visited is hidden from ConfigManager.
             }
         }
         catch (Exception ex)
