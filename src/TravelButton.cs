@@ -28,7 +28,7 @@ using static TravelButtonUI;
 // - Provides City model used by TravelButtonUI and helpers to map/persist configuration.
 // - Adds diagnostics helpers DumpTravelButtonState and ForceShowTravelButton for runtime inspection.
 //
-[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.1.0")]
+[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.1.1")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
 
@@ -254,7 +254,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = true;
+        DebugConfig.IsDebug = false;
 
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
 
@@ -408,6 +408,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             string sceneName = scene.name ?? "";
             if (string.IsNullOrEmpty(sceneName)) return;
             MarkCityVisitedByScene(sceneName);
+            LogActiveSceneInfo();
         }
         catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
     }
