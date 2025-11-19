@@ -28,7 +28,7 @@ using static TravelButtonUI;
 // - Provides City model used by TravelButtonUI and helpers to map/persist configuration.
 // - Adds diagnostics helpers DumpTravelButtonState and ForceShowTravelButton for runtime inspection.
 //
-[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.0.1")]
+[BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.1.1")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
 
@@ -36,7 +36,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private BepInEx.Configuration.ConfigEntry<bool> bex_enableMod;
     private BepInEx.Configuration.ConfigEntry<int> bex_globalPrice;
     private BepInEx.Configuration.ConfigEntry<string> bex_currencyItem;
-    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
+//    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
 
     // per-city config entries
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
@@ -45,7 +45,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     // Filenames used by the plugin
     public const string CitiesJsonFileName = "TravelButton_Cities.json";
-    private const string LegacyCfgFileName = "cz.valheimskal.travelbutton.cfg";
+    public const string LegacyCfgFileName = "cz.valheimskal.travelbutton.cfg";
 
     /// <summary>
     /// Directory that contains the plugin DLL. Detected at runtime from Assembly location.
@@ -64,6 +64,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private const string Prefix = "[TravelButton] ";
 
     private DateTime _lastConfigChange = DateTime.MinValue;
+
+    private bool _suppressVisitedSettingChanged = false;
 
     private static TeleportMode ParseTeleportMode(string v)
     {
@@ -252,7 +254,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = true;
+        DebugConfig.IsDebug = false;
 
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
 
@@ -341,7 +343,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("Awake initialization failed: " + ex);
         }
 
-        // Bind teleport mode config using a simple string description (compatible with older BepInEx overloads)
+/*        // Bind teleport mode config using a simple string description (compatible with older BepInEx overloads)
         try
         {
             bex_teleportMode = Config.Bind(
@@ -375,7 +377,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             TBLog.Warn("[TravelButtonPlugin] TeleportMode config binding failed: " + ex);
         }
-
+*/
         ShowPlayerNotification = (msg) =>
         {
             // enqueue to main thread if required; Show uses Unity main thread anyway
@@ -406,6 +408,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             string sceneName = scene.name ?? "";
             if (string.IsNullOrEmpty(sceneName)) return;
             MarkCityVisitedByScene(sceneName);
+            LogActiveSceneInfo();
         }
         catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
     }
@@ -557,7 +560,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             {
                 var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
                 if (!string.IsNullOrEmpty(asmLocation))
-                    candidatePaths.Add(Path.Combine(asmLocation, "TravelButton_Cities.json"));
+                    candidatePaths.Add(Path.Combine(asmLocation, TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json"));
             }
             catch { }
 
@@ -705,7 +708,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                             // Common BepInEx config location
                             var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
+                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", LegacyCfgFileName));
                             candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton.cfg"));
 
                             // r2modman / profile locations (from LogOutput earlier)
@@ -714,7 +717,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 var userRoaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                                 if (!string.IsNullOrEmpty(userRoaming))
                                 {
-                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "cz.valheimskal.travelbutton.cfg"));
+                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", LegacyCfgFileName));
                                     candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "TravelButton.cfg"));
                                 }
                             }
@@ -731,7 +734,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 }
                                 else if (!string.IsNullOrEmpty(cfgPath))
                                 {
-                                    try { var d = Path.GetDirectoryName(cfgPath); if (!string.IsNullOrEmpty(d)) candidateCfgs.Add(Path.Combine(d, "cz.valheimskal.travelbutton.cfg")); } catch { }
+                                    try { var d = Path.GetDirectoryName(cfgPath); if (!string.IsNullOrEmpty(d)) candidateCfgs.Add(Path.Combine(d, LegacyCfgFileName)); } catch { }
                                 }
                             }
                             catch { }
@@ -836,7 +839,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             try
             {
                 // prefer BepInEx Paths.ConfigPath if available
-                cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                cfgFile = Path.Combine(Paths.ConfigPath, LegacyCfgFileName);
             }
             catch
             {
@@ -1402,7 +1405,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         try
         {
-            var configPath = ConfigManager.ConfigPathForLog();
+            var configPath = GetLegacyCfgPath();
             var file = Path.GetFileName(configPath);
             var dir = Path.GetDirectoryName(configPath);
             if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(file)) return;
@@ -1528,22 +1531,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         }
                         catch { /* ignore reflection failures */ }
 
-                        // Fallback: search for a travelbutton-related cfg in the BepInEx config dir
-                        if (string.IsNullOrEmpty(cfgFile))
-                        {
-                            try
-                            {
-                                var files = Directory.GetFiles(Paths.ConfigPath, "*travelbutton*.cfg", SearchOption.TopDirectoryOnly);
-                                if (files != null && files.Length > 0)
-                                    cfgFile = files[0];
-                            }
-                            catch { /* ignore */ }
-                        }
-
                         // Final fallback: use the filename observed in logs (adjust if your install differs)
                         if (string.IsNullOrEmpty(cfgFile))
                         {
-                            cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                            cfgFile = Path.Combine(Paths.ConfigPath, LegacyCfgFileName);
                         }
 
                         // Parse and apply hidden-enabled keys
@@ -1659,7 +1650,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         try
                         {
                             // Determine cfg filename (adjust if your plugin uses a different filename)
-                            string cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                            string cfgFile = Path.Combine(Paths.ConfigPath, LegacyCfgFileName);
 
                             // Read Enabled from cfg file if present (manual edits will still be honored)
                             if (TryReadBoolFromCfgFile(cfgFile, section, $"{city.name}.Enabled", out bool enabledFromFile))
@@ -1831,7 +1822,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                             field.SetValue(localCity, newVal);
                                     }
                                 }
-                                catch { /* ignore reflection errors */ }
+                                catch { }
 
                                 TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Visited = {newVal}");
                                 try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
@@ -1839,6 +1830,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
                         };
                     }
+
                 }
                 catch (Exception exCity)
                 {
@@ -2006,13 +1998,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     // Helper to bind config entries for any cities added at runtime after initial bind
     // Call BindCityConfigsForNewCities() if your code adds new cities later.
+    // Helper to bind config entries for any cities added at runtime after initial bind
+    // Call BindCityConfigsForNewCities() if your code adds new cities later.
     private void BindCityConfigsForNewCities()
     {
         try
         {
             if (TravelButton.Cities == null) return;
 
-            // Ensure visited dictionary exists (we won't fill it with ConfigEntries)
+            // Ensure visited dictionary exists
             if (bex_cityVisited == null) bex_cityVisited = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.InvariantCultureIgnoreCase);
 
             foreach (var city in TravelButton.Cities)
@@ -2026,7 +2020,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 var visitedDefault = false;
                 try
                 {
-                    // try to read existing visited value from model if present
+                    // try to read existing visited field on city (if present in model/JSON)
                     var ct = city.GetType();
                     var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                     if (prop != null && prop.PropertyType == typeof(bool) && prop.CanRead)
@@ -2041,51 +2035,43 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 catch { visitedDefault = false; }
 
                 var enabledKey = Config.Bind(section, $"{city.name}.Enabled", enabledDefault, $"Enable teleport destination {city.name}");
-                var priceKey = Config.Bind<int>(section, $"{city.name}.Price", (int)(city.price ?? priceDefault),
+                var priceKey = Config.Bind<int>(section, $"{city.name}.Price", (int)city.price,
                     new ConfigDescription($"Price for {city.name}"));
+
+                // Bind Visited (default from model if present, otherwise false)
+                var visitedKey = Config.Bind<bool>(section, $"{city.name}.Visited", visitedDefault,
+                    new ConfigDescription($"Visited state for {city.name} (managed by plugin; mirrored here if desired)"));
 
                 bex_cityEnabled[city.name] = enabledKey;
                 bex_cityPrice[city.name] = priceKey;
+                bex_cityVisited[city.name] = visitedKey;
 
-                // ===== visited: DO NOT create a ConfigEntry; read from cfg file if present and apply to model ====
-                try
-                {
-                    string cfgFile = Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
-                    if (TryReadBoolFromCfgFile(cfgFile, section, $"{city.name}.Visited", out bool visitedFromFile))
-                    {
-                        try
-                        {
-                            var ct = city.GetType();
-                            var prop = ct.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                            if (prop != null && prop.PropertyType == typeof(bool) && prop.CanWrite)
-                                prop.SetValue(city, visitedFromFile, null);
-                            else
-                            {
-                                var field = ct.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                if (field != null && field.FieldType == typeof(bool))
-                                    field.SetValue(city, visitedFromFile);
-                            }
-                        }
-                        catch { /* ignore reflection errors */ }
-
-                        TBLog.Info($"BindCityConfigsForNewCities: applied {city.name}.Visited from cfg file: {visitedFromFile}");
-                    }
-                }
-                catch (Exception exRead)
-                {
-                    TBLog.Warn("BindCityConfigsForNewCities: reading visited value from cfg failed: " + exRead.Message);
-                }
-
-                // log source of values
+                // Log source of values
                 bool priceFromJson = city.price.HasValue && city.price.Value == priceDefault;
                 string priceSource = priceFromJson ? "JSON-seed" : "BepInEx";
                 string enabledSource = enabledKey.Value == enabledDefault ? "default" : "BepInEx";
+                string visitedSource = visitedKey.Value == visitedDefault ? "default" : "BepInEx";
 
-                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource}), visited={visitedDefault} (model)");
+                TBLog.Info($"New city '{city.name}': enabled={enabledKey.Value} (source: {enabledSource}), price={priceKey.Value} (source: {priceSource}), visited={visitedKey.Value} (source: {visitedSource})");
 
-                // sync initial runtime (BepInEx is authoritative for enabled/price)
+                // sync initial runtime (BepInEx is authoritative)
                 city.enabled = enabledKey.Value;
                 city.price = priceKey.Value;
+                try
+                {
+                    // apply visited to runtime model (property or field)
+                    var ct2 = city.GetType();
+                    var prop2 = ct2.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (prop2 != null && prop2.PropertyType == typeof(bool) && prop2.CanWrite)
+                        prop2.SetValue(city, visitedKey.Value, null);
+                    else
+                    {
+                        var field2 = ct2.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (field2 != null && field2.FieldType == typeof(bool))
+                            field2.SetValue(city, visitedKey.Value);
+                    }
+                }
+                catch { /* ignore reflection errors */ }
 
                 enabledKey.SettingChanged += (s, e) =>
                 {
@@ -2105,8 +2091,30 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     }
                     catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
                 };
+                visitedKey.SettingChanged += (s, e) =>
+                {
+                    try
+                    {
+                        // apply to runtime model
+                        try
+                        {
+                            var ct3 = city.GetType();
+                            var prop3 = ct3.GetProperty("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                            if (prop3 != null && prop3.PropertyType == typeof(bool) && prop3.CanWrite)
+                                prop3.SetValue(city, visitedKey.Value, null);
+                            else
+                            {
+                                var field3 = ct3.GetField("visited", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                if (field3 != null && field3.FieldType == typeof(bool))
+                                    field3.SetValue(city, visitedKey.Value);
+                            }
+                        }
+                        catch { /* ignore */ }
 
-                // NOTE: No visitedKey.SettingChanged here — visited is hidden from ConfigManager.
+                        TravelButton.PersistCitiesToPluginFolder();
+                    }
+                    catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
+                };
             }
         }
         catch (Exception ex)
@@ -2918,7 +2926,7 @@ public static class TravelButton
     {
         get
         {
-            try { return ConfigManager.ConfigPathForLog(); }
+            try { return TravelButtonPlugin.GetLegacyCfgPath(); }
             catch { return "(unknown)"; }
         }
     }
@@ -3989,7 +3997,7 @@ public static class TravelButton
             string cfgFile = null;
             try
             {
-                cfgFile = System.IO.Path.Combine(Paths.ConfigPath, "cz.valheimskal.travelbutton.cfg");
+                cfgFile = System.IO.Path.Combine(Paths.ConfigPath, TravelButtonPlugin.LegacyCfgFileName);
             }
             catch
             {
@@ -6076,4 +6084,5 @@ public static class TravelButton
             TBLog.Warn("NotifyVisitedFlagsChanged: unexpected error: " + ex);
         }
     }
+
 }

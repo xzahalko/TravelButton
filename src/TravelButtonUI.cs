@@ -2851,30 +2851,30 @@ public partial class TravelButtonUI : MonoBehaviour
         bool haveTargetGameObject = false;
         bool targetGameObjectFound = false;
         bool isFaded = false;
-        try
-        {
-            if (!string.IsNullOrEmpty(city.targetGameObjectName))
-            {
-                haveTargetGameObject = true;
-                var tgo = GameObject.Find(city.targetGameObjectName);
-                if (tgo != null)
+        /*        try
                 {
-                    targetGameObjectFound = true;
-                    coordsHint = tgo.transform.position;
-                    haveCoordsHint = true;
-                    TBLog.Info($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
+                    if (!string.IsNullOrEmpty(city.targetGameObjectName))
+                    {
+                        haveTargetGameObject = true;
+                        var tgo = GameObject.Find(city.targetGameObjectName);
+                        if (tgo != null)
+                        {
+                            targetGameObjectFound = true;
+                            coordsHint = tgo.transform.position;
+                            haveCoordsHint = true;
+                            TBLog.Info($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
+                        }
+                        else
+                        {
+                            TBLog.Info($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
+                        }
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    TBLog.Info($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
+                    TBLog.Warn("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
                 }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
-        }
-
+        */
         if (!haveCoordsHint && city.coords != null && city.coords.Length >= 3)
         {
             coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
@@ -2994,13 +2994,30 @@ public partial class TravelButtonUI : MonoBehaviour
                 yield break;
             }
 
+            // compute a corrected placement coordinate synchronously
+            Vector3 correctedCoords;
+            Vector3 correctedCoordsFinal;
+            Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+            TBLog.Info($"TryTeleportThenCharge: computing safe placement coords based on coordsHint={coordsHint}");
+            bool coordsOk = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, coordsHint, true, out correctedCoords);
+            if (!coordsOk)
+            {
+                // fallback to grounded coords if compute failed
+                correctedCoordsFinal = groundedCoords;
+                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={correctedCoordsFinal}");
+            }
+            else
+            {
+                correctedCoordsFinal = correctedCoords;
+                TBLog.Info($"ComputeSafePlacementCoords: ok -> correctedCoordsFinal={correctedCoordsFinal}, groundedCoords={groundedCoords}");
+            }
+
             // Start teleport request (no yields in this try)
             bool accepted = false;
             try
             {
-                Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
-                TBLog.Info($"TryTeleportThenCharge: calling tm.StartTeleport(activeScene='{activeScene2.name}', target='{city.targetGameObjectName}', groundedCoords={groundedCoords}, haveCoordsHint={haveCoordsHint}, cost={cost})");
-                accepted = tm.StartTeleport(activeScene2.name, city.targetGameObjectName, groundedCoords, haveCoordsHint, cost);
+                TBLog.Info($"TryTeleportThenCharge: calling tm.StartTeleport(activeScene='{activeScene2.name}', target='{city.targetGameObjectName}', correctedCoordsFinal={correctedCoordsFinal}, haveCoordsHint={haveCoordsHint}, cost={cost})");
+                accepted = tm.StartTeleport(activeScene2.name, city.targetGameObjectName, correctedCoordsFinal, haveCoordsHint, cost);
                 TBLog.Info($"TryTeleportThenCharge: tm.StartTeleport returned accepted={accepted}");
             }
             catch (Exception ex)
@@ -3110,26 +3127,30 @@ public partial class TravelButtonUI : MonoBehaviour
             bool loadSuccess = false;
 
             // compute a corrected placement coordinate synchronously
+            // compute a corrected placement coordinate synchronously
             Vector3 correctedCoords;
+            Vector3 correctedCoordsFinal;
+            Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
             TBLog.Info($"TryTeleportThenCharge: computing safe placement coords based on coordsHint={coordsHint}");
             bool coordsOk = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, coordsHint, true, out correctedCoords);
             if (!coordsOk)
             {
                 // fallback to grounded coords if compute failed
-                correctedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
-                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={correctedCoords}");
+                correctedCoordsFinal = groundedCoords;
+                TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={correctedCoordsFinal}");
             }
             else
             {
-                TBLog.Info($"ComputeSafePlacementCoords: ok -> correctedCoords={correctedCoords}");
+                correctedCoordsFinal = correctedCoords;
+                TBLog.Info($"ComputeSafePlacementCoords: ok -> correctedCoordsFinal={correctedCoordsFinal}, groundedCoords={groundedCoords}");
             }
 
             // use correctedCoords from here on when starting the teleport/placement
-            TBLog.Info($"TryTeleportThenCharge: calling tm.StartSceneLoad(scene='{city.sceneName}', correctedCoords={correctedCoords})");
+            TBLog.Info($"TryTeleportThenCharge: calling tm.StartSceneLoad(scene='{city.sceneName}', correctedCoords={correctedCoordsFinal})");
             bool acceptedLoad = false;
             try
             {
-                acceptedLoad = tm.StartSceneLoad(city.sceneName, correctedCoords, (loadedScene, asyncOp, ok) =>
+                acceptedLoad = tm.StartSceneLoad(city.sceneName, correctedCoordsFinal, (loadedScene, asyncOp, ok) =>
                 {
                     try { TBLog.Info($"TryTeleportThenCharge: StartSceneLoad callback invoked for scene='{city.sceneName}' ok={ok}, loadedScene.name={(loadedScene != null ? loadedScene.name : "<null>")}"); } catch { }
                     loadSuccess = ok;
@@ -3202,8 +3223,8 @@ public partial class TravelButtonUI : MonoBehaviour
             bool placed = false;
             try
             {
-                placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoords);
-                TBLog.Info($"TryTeleportThenCharge: AttemptTeleportToPositionSafe returned placed={placed} for correctedCoords={correctedCoords}");
+                placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoordsFinal);
+                TBLog.Info($"TryTeleportThenCharge: AttemptTeleportToPositionSafe returned placed={placed} for correctedCoords={correctedCoordsFinal}");
             }
             catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
 
@@ -6582,5 +6603,22 @@ public partial class TravelButtonUI : MonoBehaviour
             TBLog.Warn("DBG: DumpObjectFieldsAndProperties failed: " + ex);
         }
     }
-
+    /// <summary>
+    /// Detects the currently active scene and logs a short info message.
+    /// Uses the project's TBLog helper so output appears in the same log as the mod.
+    /// Call: TravelButtonUtils.LogActiveSceneInfo();
+    /// </summary>
+    public static void LogActiveSceneInfo()
+    {
+        try
+        {
+            var scene = SceneManager.GetActiveScene();
+            string sceneName = scene.IsValid() ? scene.name : "(invalid)";
+            TBLog.Info($"Active scene: '{sceneName}' (isLoaded={scene.isLoaded}, rootCount={scene.rootCount})");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("LogActiveSceneInfo failed: " + ex.Message);
+        }
+    }
 }

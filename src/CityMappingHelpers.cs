@@ -78,7 +78,7 @@ public static class CityMappingHelpers
                         var cfg = prop.GetValue(null) as string;
                         if (!string.IsNullOrEmpty(cfg))
                         {
-                            string fileName = "TravelButton_Cities.json";
+                            string fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                             try
                             {
                                 // Prefer the canonical filename constant if available
@@ -107,12 +107,7 @@ public static class CityMappingHelpers
             catch { }
             try
             {
-                candidates.Add(Path.GetFullPath(Path.Combine(Application.dataPath, "TravelButton_Cities.json")));
-            }
-            catch { }
-            try
-            {
-                candidates.Add(Path.GetFullPath(Path.Combine(Application.dataPath, "..", "TravelButton_Cities.json")));
+                candidates.Add(Path.GetFullPath(Path.Combine(TravelButtonPlugin.GetCitiesJsonPath(), TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json")));
             }
             catch { }
 
@@ -1304,13 +1299,11 @@ public static class CityMappingHelpers
                         try
                         {
                             // Prefer the canonical filename constant if available
-                            var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                            if (f != null)
-                                fileName = TravelButtonPlugin.CitiesJsonFileName;
+                            fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                         }
                         catch { /* ignore */ }
 
-                        if (string.IsNullOrEmpty(fileName)) fileName = "TravelButton_Cities.json";
+                        if (string.IsNullOrEmpty(fileName)) fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                         var candidate = Path.Combine(cfg, fileName);
                         if (!string.IsNullOrEmpty(candidate)) return candidate;
                     }
@@ -1328,7 +1321,7 @@ public static class CityMappingHelpers
             var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
             if (!string.IsNullOrEmpty(asmDir))
             {
-                var fileName = "TravelButton_Cities.json";
+                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                 try
                 {
                     var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
@@ -1347,7 +1340,7 @@ public static class CityMappingHelpers
             var cwd = Directory.GetCurrentDirectory();
             if (!string.IsNullOrEmpty(cwd))
             {
-                var fileName = "TravelButton_Cities.json";
+                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                 try
                 {
                     var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
