@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
@@ -293,6 +294,7 @@ public static class CurrencyHelpers
     ///
     /// NOTE: This version is more conservative than the previous one — it verifies effects when method return type is non-boolean.
     /// </summary>
+    // Replace the existing TryDeductPlayerCurrency method with this improved implementation.
     public static bool TryDeductPlayerCurrency(int amount, string currencyKeyword = "silver")
     {
         if (amount < 0)
@@ -300,370 +302,339 @@ public static class CurrencyHelpers
             TBLog.Warn($"TryDeductPlayerCurrency: cannot process a negative amount: {amount}");
             return false;
         }
-        if (amount == 0)
-        {
-            return true;
-        }
+        if (amount == 0) return true;
 
         currencyKeyword = (currencyKeyword ?? string.Empty).Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(currencyKeyword))
-        {
-            currencyKeyword = "silver";
-        }
+        if (string.IsNullOrEmpty(currencyKeyword)) currencyKeyword = "silver";
 
         try
         {
             TBLog.Info($"TryDeductPlayerCurrency: trying to deduct {amount} {currencyKeyword}.");
 
-            // 2) Try direct player / inventory manipulation (preferred fallback)
+            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (player == null)
+            {
+                TBLog.Warn("TryDeductPlayerCurrency: could not find local player.");
+                return false;
+            }
+
+            // Gather candidate inventory-like objects: player.Inventory plus all child components whose
+            // type name suggests an inventory/characterinventory/bag/wallet.
+            var candidates = new List<object>();
             try
             {
-                var player = CharacterManager.Instance?.GetFirstLocalCharacter();
-                if (player != null)
+                var inv = player.Inventory;
+                if (inv != null) candidates.Add(inv);
+
+                var comps = player.GetComponentsInChildren<MonoBehaviour>(true);
+                foreach (var c in comps)
                 {
-                    var inventory = player.Inventory;
-                    if (inventory != null)
+                    var tname = c.GetType().Name.ToLowerInvariant();
+                    if (tname.Contains("inventory") || tname.Contains("characterinventory") || tname.Contains("bag") || tname.Contains("wallet") || tname.Contains("pouch"))
                     {
-                        long before = DetectPlayerCurrencyOrMinusOne();
+                        if (!candidates.Contains(c)) candidates.Add(c);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("TryDeductPlayerCurrency: collecting inventory candidates failed: " + ex.Message);
+            }
 
-                        // If currencyKeyword == "silver" try removing silver item via Inventory.RemoveItem(itemId, qty) if available
-                        if (currencyKeyword == "silver")
-                        {
-                            const int silverItemID = 6100110;
-                            try
-                            {
-                                var invType = inventory.GetType();
+            long before = DetectPlayerCurrencyOrMinusOne();
 
-                                // 1) Prefer explicit RemoveItem(itemId, qty)
-                                var removeMi = invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
-                                                                 null, new Type[] { typeof(int), typeof(int) }, null)
-                                               ?? invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
-                                                                    null, new Type[] { typeof(int), typeof(long) }, null)
-                                               // some games use signatures with more parameters (e.g. removeItem(id, qty, out, flags)), try simpler fallback
-                                               ?? invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
-                                                        .FirstOrDefault(m => m.Name.Equals("RemoveItem", StringComparison.InvariantCultureIgnoreCase)
-                                                                             && m.GetParameters().Length >= 2
-                                                                             && (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long))
-                                                                             && (m.GetParameters()[1].ParameterType == typeof(int) || m.GetParameters()[1].ParameterType == typeof(long)));
+            // Try each candidate with the same reflection-based strategies your original code used,
+            // but applied across all candidates until one succeeds.
+            foreach (var candidate in candidates)
+            {
+                if (candidate == null) continue;
+                var invType = candidate.GetType();
 
-                                if (removeMi != null)
-                                {
-                                    object res = null;
-                                    try
-                                    {
-                                        var pType = removeMi.GetParameters()[1].ParameterType;
-                                        var argQty = pType == typeof(long) ? (object)(long)amount : (object)amount;
-                                        // For methods with >=2 params we only pass the first two; additional params may be optional/defaulted.
-                                        var args = new object[] { silverItemID, argQty };
-                                        // If more params exist, fill with defaults/nulls
-                                        var ps = removeMi.GetParameters();
-                                        if (ps.Length > 2)
-                                        {
-                                            var fullArgs = new object[ps.Length];
-                                            fullArgs[0] = silverItemID;
-                                            fullArgs[1] = argQty;
-                                            for (int i = 2; i < ps.Length; i++)
-                                            {
-                                                fullArgs[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
-                                            }
-                                            args = fullArgs;
-                                        }
+                // 1) Try RemoveItem(int id, int/long qty) style methods
+                try
+                {
+                    const int silverItemID = 6100110;
+                    var removeMi = invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                     null, new Type[] { typeof(int), typeof(int) }, null)
+                                   ?? invType.GetMethod("RemoveItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                        null, new Type[] { typeof(int), typeof(long) }, null)
+                                   ?? invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
+                                            .FirstOrDefault(m => m.Name.Equals("RemoveItem", StringComparison.InvariantCultureIgnoreCase)
+                                                                 && m.GetParameters().Length >= 2
+                                                                 && (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long))
+                                                                 && (m.GetParameters()[1].ParameterType == typeof(int) || m.GetParameters()[1].ParameterType == typeof(long)));
 
-                                        res = removeMi.Invoke(inventory, args);
-                                        TBLog.Info($"TryDeductPlayerCurrency: called Inventory.{removeMi.Name}({silverItemID},{amount}) -> {res}");
-                                    }
-                                    catch (TargetInvocationException tie)
-                                    {
-                                        TBLog.Warn($"TryDeductPlayerCurrency: Inventory.{removeMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
-                                    }
-
-                                    // If method returns bool, trust it.
-                                    if (removeMi.ReturnType == typeof(bool))
-                                    {
-                                        if (res is bool ok && ok)
-                                        {
-                                            TryRefreshCurrencyDisplay(currencyKeyword);
-                                            return true;
-                                        }
-                                        TBLog.Warn("TryDeductPlayerCurrency: Inventory.RemoveItem returned false.");
-                                        return false;
-                                    }
-                                    else
-                                    {
-                                        // Non-boolean return: verify effect by re-reading currency when possible.
-                                        long after = DetectPlayerCurrencyOrMinusOne();
-                                        if (before != -1 && after != -1)
-                                        {
-                                            if (after == before - amount)
-                                            {
-                                                TryRefreshCurrencyDisplay(currencyKeyword);
-                                                return true;
-                                            }
-                                            TBLog.Info($"TryDeductPlayerCurrency: RemoveItem did not change currency as expected (before={before}, after={after}). Will try alternative fallbacks.");
-                                        }
-                                        else
-                                        {
-                                            TBLog.Info("TryDeductPlayerCurrency: RemoveItem returned non-bool and currency read is unreliable; will attempt fallbacks.");
-                                        }
-                                        // fall through to fallback attempts below
-                                    }
-                                }
-
-                                // 2) If explicit RemoveItem not found or verification failed, see if AddItem exists and supports negative amounts
-                                var addMi = invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
-                                                              null, new Type[] { typeof(int), typeof(int) }, null)
-                                            ?? invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
-                                                                  null, new Type[] { typeof(int), typeof(long) }, null)
-                                            ?? invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
-                                                    .FirstOrDefault(m => m.Name.Equals("AddItem", StringComparison.InvariantCultureIgnoreCase)
-                                                                         && m.GetParameters().Length >= 2
-                                                                         && (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long))
-                                                                         && (m.GetParameters()[1].ParameterType == typeof(int) || m.GetParameters()[1].ParameterType == typeof(long)));
-
-                                if (addMi != null)
-                                {
-                                    object res = null;
-                                    try
-                                    {
-                                        var paramType = addMi.GetParameters()[1].ParameterType;
-                                        var argQty = paramType == typeof(long) ? (object)(long)-amount : (object)-amount;
-                                        var args = new object[] { silverItemID, argQty };
-                                        var ps = addMi.GetParameters();
-                                        if (ps.Length > 2)
-                                        {
-                                            var fullArgs = new object[ps.Length];
-                                            fullArgs[0] = silverItemID;
-                                            fullArgs[1] = argQty;
-                                            for (int i = 2; i < ps.Length; i++)
-                                            {
-                                                fullArgs[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
-                                            }
-                                            args = fullArgs;
-                                        }
-
-                                        res = addMi.Invoke(inventory, args);
-                                        TBLog.Info($"TryDeductPlayerCurrency: called Inventory.{addMi.Name}({silverItemID},-{amount}) -> {res}");
-                                    }
-                                    catch (TargetInvocationException tie)
-                                    {
-                                        TBLog.Warn($"TryDeductPlayerCurrency: Inventory.{addMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
-                                    }
-
-                                    if (addMi.ReturnType == typeof(bool))
-                                    {
-                                        if (res is bool ok && ok)
-                                        {
-                                            TryRefreshCurrencyDisplay(currencyKeyword);
-                                            return true;
-                                        }
-                                        TBLog.Warn("TryDeductPlayerCurrency: Inventory.AddItem returned false when called with negative quantity.");
-                                        return false;
-                                    }
-                                    else
-                                    {
-                                        long after = DetectPlayerCurrencyOrMinusOne();
-                                        if (before != -1 && after != -1)
-                                        {
-                                            if (after == before - amount)
-                                            {
-                                                TryRefreshCurrencyDisplay(currencyKeyword);
-                                                return true;
-                                            }
-                                            TBLog.Warn($"TryDeductPlayerCurrency: AddItem(negative) did not change currency as expected (before={before}, after={after}). Will try alternative fallbacks.");
-                                        }
-                                        else
-                                        {
-                                            TBLog.Info("TryDeductPlayerCurrency: AddItem(negative) returned non-bool and currency read is unreliable; will attempt fallbacks.");
-                                        }
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                TBLog.Warn($"TryDeductPlayerCurrency: inventory silver-path failed: {ex}");
-                            }
-                        }
-
-                        // Generic fallback: look for inventory methods that are subtractive or consume currency
+                    if (removeMi != null)
+                    {
+                        object res = null;
                         try
                         {
-                            var invType = inventory.GetType();
-                            var nameLowerCandidates = new[] { "remove", "subtract", "sub", "spend", "consume", "decrease", "deduct" };
-
-                            var invMi = invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
-                                              .FirstOrDefault(m =>
-                                              {
-                                                  var n = m.Name.ToLowerInvariant();
-                                                  bool nameMatchesCurrency = n.Contains(currencyKeyword);
-                                                  bool nameMatchesAction = nameLowerCandidates.Any(k => n.Contains(k));
-                                                  bool hasSingleNumericParam = m.GetParameters().Length == 1 &&
-                                                      (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long));
-                                                  return nameMatchesCurrency && nameMatchesAction && hasSingleNumericParam;
-                                              });
-
-                            if (invMi != null)
+                            var pType = removeMi.GetParameters()[1].ParameterType;
+                            var argQty = pType == typeof(long) ? (object)(long)amount : (object)amount;
+                            var args = new object[] { silverItemID, argQty };
+                            var ps = removeMi.GetParameters();
+                            if (ps.Length > 2)
                             {
-                                var pType = invMi.GetParameters()[0].ParameterType;
-                                var arg = pType == typeof(long) ? (object)(long)amount : (object)amount;
-                                object res = null;
-                                try
-                                {
-                                    res = invMi.Invoke(inventory, new object[] { arg });
-                                    TBLog.Info($"TryDeductPlayerCurrency: called {invType.FullName}.{invMi.Name}({amount}) -> {res}");
-                                }
-                                catch (TargetInvocationException tie)
-                                {
-                                    TBLog.Warn($"TryDeductPlayerCurrency: inventory method {invMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
-                                }
+                                var fullArgs = new object[ps.Length];
+                                fullArgs[0] = silverItemID;
+                                fullArgs[1] = argQty;
+                                for (int i = 2; i < ps.Length; i++)
+                                    fullArgs[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+                                args = fullArgs;
+                            }
+                            res = removeMi.Invoke(candidate, args);
+                            TBLog.Info($"TryDeductPlayerCurrency: called {invType.FullName}.{removeMi.Name}({silverItemID},{amount}) -> {res}");
+                        }
+                        catch (TargetInvocationException tie)
+                        {
+                            TBLog.Warn($"TryDeductPlayerCurrency: {invType.FullName}.{removeMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
+                        }
 
-                                if (invMi.ReturnType == typeof(bool))
+                        // If method returns bool, accept true only if it returned true AND currency decreased
+                        if (removeMi.ReturnType == typeof(bool))
+                        {
+                            if (res is bool ok && ok)
+                            {
+                                long after = DetectPlayerCurrencyOrMinusOne();
+                                if (before != -1 && after != -1 && after == before - amount)
                                 {
-                                    if (res is bool ok && ok)
-                                    {
-                                        TryRefreshCurrencyDisplay(currencyKeyword);
-                                        return true;
-                                    }
-                                    TBLog.Warn($"TryDeductPlayerCurrency: {invType.FullName}.{invMi.Name} returned false.");
-                                    return false;
+                                    TryRefreshCurrencyDisplay(currencyKeyword);
+                                    return true;
                                 }
-                                else
-                                {
-                                    long after = DetectPlayerCurrencyOrMinusOne();
-                                    if (before != -1 && after != -1)
-                                    {
-                                        if (after == before - amount)
-                                        {
-                                            TryRefreshCurrencyDisplay(currencyKeyword);
-                                            return true;
-                                        }
-                                        TBLog.Warn($"TryDeductPlayerCurrency: {invMi.Name} did not change currency as expected (before={before}, after={after}).");
-                                    }
-                                    else
-                                    {
-                                        TBLog.Info($"TryDeductPlayerCurrency: {invMi.Name} returned non-bool and currency read is unreliable; trying other fallbacks.");
-                                    }
-                                }
+                                // If currency reading is unreliable, accept boolean true as success (best-effort)
+                                if (!(before != -1 && after != -1)) { TryRefreshCurrencyDisplay(currencyKeyword); return true; }
+                            }
+                            else
+                            {
+                                // returned false => try next candidate
                             }
                         }
-                        catch (Exception ex)
+                        else
                         {
-                            TBLog.Warn($"TryDeductPlayerCurrency: inventory method fallback failed: {ex}");
+                            // Non-boolean return: verify by reading currency
+                            long after = DetectPlayerCurrencyOrMinusOne();
+                            if (before != -1 && after != -1 && after == before - amount)
+                            {
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
                         }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"TryDeductPlayerCurrency: RemoveItem attempt on {candidate.GetType().FullName} failed: {ex.Message}");
+                }
 
-                        // Generic fallback: decrement numeric field/property on inventory that contains currencyKeyword
+                // 2) Try AddItem with negative quantity (some inventories accept negative adds)
+                try
+                {
+                    var addMi = invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                  null, new Type[] { typeof(int), typeof(int) }, null)
+                                ?? invType.GetMethod("AddItem", BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic,
+                                                      null, new Type[] { typeof(int), typeof(long) }, null)
+                                ?? invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
+                                        .FirstOrDefault(m => m.Name.Equals("AddItem", StringComparison.InvariantCultureIgnoreCase)
+                                                             && m.GetParameters().Length >= 2
+                                                             && (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long))
+                                                             && (m.GetParameters()[1].ParameterType == typeof(int) || m.GetParameters()[1].ParameterType == typeof(long)));
+                    if (addMi != null)
+                    {
+                        object res = null;
                         try
                         {
-                            var invType = inventory.GetType();
-
-                            foreach (var fi in invType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                            var pType = addMi.GetParameters()[1].ParameterType;
+                            var argQty = pType == typeof(long) ? (object)(long)-amount : (object)-amount;
+                            var args = new object[] { 6100110, argQty };
+                            var ps = addMi.GetParameters();
+                            if (ps.Length > 2)
                             {
-                                try
-                                {
-                                    var name = fi.Name.ToLowerInvariant();
-                                    if (!name.Contains(currencyKeyword) && !name.Contains("contained")) continue;
-
-                                    if (fi.FieldType == typeof(int))
-                                    {
-                                        int cur = (int)fi.GetValue(inventory);
-                                        if (cur < amount)
-                                        {
-                                            TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{fi.Name} (int). Current {cur}, requested {amount}.");
-                                            return false;
-                                        }
-                                        fi.SetValue(inventory, cur - amount);
-                                        TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{fi.Name} (int). New value {cur - amount}.");
-                                        TryRefreshCurrencyDisplay(currencyKeyword);
-                                        return true;
-                                    }
-                                    else if (fi.FieldType == typeof(long))
-                                    {
-                                        long cur = (long)fi.GetValue(inventory);
-                                        if (cur < amount)
-                                        {
-                                            TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{fi.Name} (long). Current {cur}, requested {amount}.");
-                                            return false;
-                                        }
-                                        fi.SetValue(inventory, cur - amount);
-                                        TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{fi.Name} (long). New value {cur - amount}.");
-                                        TryRefreshCurrencyDisplay(currencyKeyword);
-                                        return true;
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    TBLog.Warn($"TryDeductPlayerCurrency: inventory field access {invType.FullName}.{fi.Name} threw: {ex}");
-                                }
+                                var fullArgs = new object[ps.Length];
+                                fullArgs[0] = 6100110;
+                                fullArgs[1] = argQty;
+                                for (int i = 2; i < ps.Length; i++)
+                                    fullArgs[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : (ps[i].ParameterType.IsValueType ? Activator.CreateInstance(ps[i].ParameterType) : null);
+                                args = fullArgs;
                             }
+                            res = addMi.Invoke(candidate, args);
+                            TBLog.Info($"TryDeductPlayerCurrency: called {invType.FullName}.{addMi.Name}(6100110,{-amount}) -> {res}");
+                        }
+                        catch (TargetInvocationException tie)
+                        {
+                            TBLog.Warn($"TryDeductPlayerCurrency: {invType.FullName}.{addMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
+                        }
 
-                            foreach (var pi in invType.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                        if (addMi.ReturnType == typeof(bool))
+                        {
+                            if (res is bool ok && ok)
                             {
-                                try
+                                long after = DetectPlayerCurrencyOrMinusOne();
+                                if (before != -1 && after != -1 && after == before - amount)
                                 {
-                                    var name = pi.Name.ToLowerInvariant();
-                                    if (!name.Contains(currencyKeyword) && !name.Contains("contained")) continue;
-                                    if (!pi.CanRead || !pi.CanWrite) continue;
-
-                                    if (pi.PropertyType == typeof(int))
-                                    {
-                                        int cur = (int)pi.GetValue(inventory);
-                                        if (cur < amount)
-                                        {
-                                            TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{pi.Name} (int). Current {cur}, requested {amount}.");
-                                            return false;
-                                        }
-                                        pi.SetValue(inventory, cur - amount);
-                                        TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{pi.Name} (int). New value {cur - amount}.");
-                                        TryRefreshCurrencyDisplay(currencyKeyword);
-                                        return true;
-                                    }
-                                    else if (pi.PropertyType == typeof(long))
-                                    {
-                                        long cur = (long)pi.GetValue(inventory);
-                                        if (cur < amount)
-                                        {
-                                            TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{pi.Name} (long). Current {cur}, requested {amount}.");
-                                            return false;
-                                        }
-                                        pi.SetValue(inventory, cur - amount);
-                                        TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{pi.Name} (long). New value {cur - amount}.");
-                                        TryRefreshCurrencyDisplay(currencyKeyword);
-                                        return true;
-                                    }
+                                    TryRefreshCurrencyDisplay(currencyKeyword);
+                                    return true;
                                 }
-                                catch (Exception ex)
-                                {
-                                    TBLog.Warn($"TryDeductPlayerCurrency: inventory property access {invType.FullName}.{pi.Name} threw: {ex}");
-                                }
+                                if (!(before != -1 && after != -1)) { TryRefreshCurrencyDisplay(currencyKeyword); return true; }
                             }
-
-                            // If we reached here and we had a reliable 'before' read but couldn't change anything, fail.
-                            long finalAfter = DetectPlayerCurrencyOrMinusOne();
-                            if (before != -1 && finalAfter != -1 && finalAfter <= before - amount)
+                        }
+                        else
+                        {
+                            long after = DetectPlayerCurrencyOrMinusOne();
+                            if (before != -1 && after != -1 && after == before - amount)
                             {
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"TryDeductPlayerCurrency: AddItem attempt on {candidate.GetType().FullName} failed: {ex.Message}");
+                }
+
+                // 3) Try generic named methods that mention currencyKeyword and an action (remove/spend/consume)
+                try
+                {
+                    var nameLowerCandidates = new[] { "remove", "subtract", "sub", "spend", "consume", "decrease", "deduct" };
+                    var invMi = invType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic)
+                                      .FirstOrDefault(m =>
+                                      {
+                                          var n = m.Name.ToLowerInvariant();
+                                          bool nameMatchesCurrency = n.Contains(currencyKeyword);
+                                          bool nameMatchesAction = nameLowerCandidates.Any(k => n.Contains(k));
+                                          bool hasSingleNumericParam = m.GetParameters().Length == 1 &&
+                                              (m.GetParameters()[0].ParameterType == typeof(int) || m.GetParameters()[0].ParameterType == typeof(long));
+                                          return (nameMatchesCurrency && nameMatchesAction && hasSingleNumericParam) ||
+                                                 (nameMatchesAction && hasSingleNumericParam && m.Name.ToLowerInvariant().Contains("silver"));
+                                      });
+
+                    if (invMi != null)
+                    {
+                        var pType = invMi.GetParameters()[0].ParameterType;
+                        var arg = pType == typeof(long) ? (object)(long)amount : (object)amount;
+                        object res = null;
+                        try
+                        {
+                            res = invMi.Invoke(candidate, new object[] { arg });
+                            TBLog.Info($"TryDeductPlayerCurrency: called {invType.FullName}.{invMi.Name}({amount}) -> {res}");
+                        }
+                        catch (TargetInvocationException tie)
+                        {
+                            TBLog.Warn($"TryDeductPlayerCurrency: {invType.FullName}.{invMi.Name} threw: {tie.InnerException?.Message ?? tie.Message}");
+                        }
+
+                        if (invMi.ReturnType == typeof(bool))
+                        {
+                            if (res is bool ok && ok)
+                            {
+                                long after = DetectPlayerCurrencyOrMinusOne();
+                                if (before != -1 && after != -1 && after == before - amount)
+                                {
+                                    TryRefreshCurrencyDisplay(currencyKeyword);
+                                    return true;
+                                }
+                                if (!(before != -1 && after != -1)) { TryRefreshCurrencyDisplay(currencyKeyword); return true; }
+                            }
+                        }
+                        else
+                        {
+                            long after = DetectPlayerCurrencyOrMinusOne();
+                            if (before != -1 && after != -1 && after == before - amount)
+                            {
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"TryDeductPlayerCurrency: generic method attempt on {candidate.GetType().FullName} failed: {ex}");
+                }
+
+                // 4) Generic numeric field/property decrement fallbacks on this candidate
+                try
+                {
+                    foreach (var fi in invType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                    {
+                        try
+                        {
+                            var name = fi.Name.ToLowerInvariant();
+                            if (!name.Contains(currencyKeyword) && !name.Contains("contained") && !name.Contains("silver") && !name.Contains("amount")) continue;
+
+                            if (fi.FieldType == typeof(int))
+                            {
+                                int cur = (int)fi.GetValue(candidate);
+                                if (cur < amount) { TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{fi.Name} (int). Current {cur}, requested {amount}."); continue; }
+                                fi.SetValue(candidate, cur - amount);
+                                TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{fi.Name} (int). New value {cur - amount}.");
+                                long after = DetectPlayerCurrencyOrMinusOne();
+                                if (before != -1 && after != -1 && after == before - amount)
+                                {
+                                    TryRefreshCurrencyDisplay(currencyKeyword);
+                                    return true;
+                                }
+                                // If field change is local and detection unreliable, still accept as success
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
+                            else if (fi.FieldType == typeof(long))
+                            {
+                                long cur = (long)fi.GetValue(candidate);
+                                if (cur < amount) { TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{fi.Name} (long). Current {cur}, requested {amount}."); continue; }
+                                fi.SetValue(candidate, cur - amount);
+                                TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{fi.Name} (long). New value {cur - amount}.");
                                 TryRefreshCurrencyDisplay(currencyKeyword);
                                 return true;
                             }
                         }
                         catch (Exception ex)
                         {
-                            TBLog.Warn($"TryDeductPlayerCurrency: generic inventory fallback failed: {ex}");
+                            TBLog.Warn($"TryDeductPlayerCurrency: inventory field access {invType.FullName}.{fi.Name} threw: {ex}");
                         }
                     }
-                    else
+
+                    foreach (var pi in invType.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
                     {
-                        TBLog.Warn("TryDeductPlayerCurrency: player inventory is null.");
+                        try
+                        {
+                            var name = pi.Name.ToLowerInvariant();
+                            if (!name.Contains(currencyKeyword) && !name.Contains("contained") && !name.Contains("silver") && !name.Contains("amount")) continue;
+                            if (!pi.CanRead || !pi.CanWrite) continue;
+
+                            if (pi.PropertyType == typeof(int))
+                            {
+                                int cur = (int)pi.GetValue(candidate);
+                                if (cur < amount) { TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{pi.Name} (int). Current {cur}, requested {amount}."); continue; }
+                                pi.SetValue(candidate, cur - amount);
+                                TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{pi.Name} (int). New value {cur - amount}.");
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
+                            else if (pi.PropertyType == typeof(long))
+                            {
+                                long cur = (long)pi.GetValue(candidate);
+                                if (cur < amount) { TBLog.Warn($"TryDeductPlayerCurrency: insufficient {currencyKeyword} in {invType.FullName}.{pi.Name} (long). Current {cur}, requested {amount}."); continue; }
+                                pi.SetValue(candidate, cur - amount);
+                                TBLog.Info($"TryDeductPlayerCurrency: subtracted {amount} from {invType.FullName}.{pi.Name} (long). New value {cur - amount}.");
+                                TryRefreshCurrencyDisplay(currencyKeyword);
+                                return true;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn($"TryDeductPlayerCurrency: inventory property access {invType.FullName}.{pi.Name} threw: {ex}");
+                        }
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    TBLog.Warn("TryDeductPlayerCurrency: could not find local player via CharacterManager.Instance.GetFirstLocalCharacter().");
+                    TBLog.Warn($"TryDeductPlayerCurrency: generic field/property fallback on {invType.FullName} failed: {ex}");
                 }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"TryDeductPlayerCurrency: player/inventory attempt failed: {ex}");
-            }
+            } // end foreach candidate
 
+            // If we get here, no candidate successfully deducted currency
             TBLog.Warn($"TryDeductPlayerCurrency: could not find a place to deduct the currency containing '{currencyKeyword}'.");
             return false;
         }
@@ -946,130 +917,257 @@ public static class CurrencyHelpers
         }
     }
 
-    public static bool AttemptDeductSilverDirect(int amount, bool justSimulate = false)
+    // Replace or update the AttemptDeductSilverDirect method to perform an actual deduction (no simulated remove+refund).
+    // Return true when currency was actually deducted, false otherwise.
+    private static bool AttemptDeductSilverDirect(int amount)
     {
-        if (amount < 0)
+        try
         {
-            TBLog.Warn($"AttemptDeductSilverDirect: Cannot process a negative amount: {amount}");
+            TBLog.Info($"AttemptDeductSilverDirect: attempting to deduct {amount} silver (real).");
+
+            // Try real deduction using the robust reflection-based helper
+            bool ok = TryDeductPlayerCurrency(amount, "silver");
+            if (ok)
+            {
+                TBLog.Info($"AttemptDeductSilverDirect: real deduction succeeded for {amount} silver.");
+                return true;
+            }
+
+            TBLog.Warn($"AttemptDeductSilverDirect: real deduction failed for {amount} silver.");
             return false;
         }
-        if (amount == 0)
+        catch (Exception ex)
         {
+            TBLog.Warn($"AttemptDeductSilverDirect exception: {ex}");
+            return false;
+        }
+    }
+
+    // Unified AttemptDeductSilverDirect that supports both "simulate" and "real" modes.
+    // Keep this public with the optional parameter to preserve existing callsites.
+    public static bool AttemptDeductSilverDirect(int amount, bool justSimulate = false)
+    {
+        try
+        {
+            if (amount < 0)
+            {
+                TBLog.Warn($"AttemptDeductSilverDirect: invalid negative amount {amount}");
+                return false;
+            }
+            if (amount == 0) return true;
+
+            if (justSimulate)
+            {
+                TBLog.Info($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver by attempting to remove and refund.");
+
+                // Simulation: attempt a removal, verify it decreased total, then refund immediately.
+                // We try real removal, but always refund so game state is unchanged.
+                long before = DetectPlayerCurrencyOrMinusOne();
+                bool removed = TryDeductPlayerCurrency(amount, "silver");
+                long afterRemove = DetectPlayerCurrencyOrMinusOne();
+
+                if (!removed && before != -1 && afterRemove != -1 && afterRemove == before - amount)
+                {
+                    // In some cases TryDeductPlayerCurrency may have used direct field manipulation or methods
+                    // and returned false; treat observed change as removed.
+                    removed = true;
+                }
+
+                if (!removed)
+                {
+                    TBLog.Info("AttemptDeductSilverDirect: Simulation remove failed; no refundable change observed.");
+                    return false; // simulation failed
+                }
+
+                // Refund the same amount so we leave the player's state unchanged.
+                bool refunded = TryRefundPlayerCurrency(amount, "silver");
+                if (!refunded)
+                {
+                    TBLog.Warn("AttemptDeductSilverDirect: Simulation refund failed after successful simulated remove; this is unexpected.");
+                    // Try best-effort to restore by reloading or logging, but return false to be safe.
+                    return false;
+                }
+
+                TBLog.Info("AttemptDeductSilverDirect: Simulation successful (remove + refund verified).");
+                return true;
+            }
+            else
+            {
+                TBLog.Info($"AttemptDeductSilverDirect: attempting to deduct {amount} silver (real).");
+                bool ok = TryDeductPlayerCurrency(amount, "silver");
+                if (ok)
+                {
+                    TBLog.Info($"AttemptDeductSilverDirect: real deduction succeeded for {amount} silver.");
+                    return true;
+                }
+
+                TBLog.Warn($"AttemptDeductSilverDirect: real deduction failed for {amount} silver.");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"AttemptDeductSilverDirect exception: {ex}");
+            return false;
+        }
+    }
+
+    // Best-effort currency amount detection used to show early "not enough resources"
+    public static long GetPlayerCurrencyAmountOrMinusOne()
+    {
+        try
+        {
+            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            foreach (var mb in allMono)
+            {
+                var t = mb.GetType();
+                string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
+                foreach (var pn in propNames)
+                {
+                    var pi = t.GetProperty(pn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                    if (pi != null && pi.CanRead)
+                    {
+                        try
+                        {
+                            var val = pi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch { }
+                    }
+                }
+
+                string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
+                foreach (var mn in methodNames)
+                {
+                    var mi = t.GetMethod(mn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                    if (mi != null && mi.GetParameters().Length == 0)
+                    {
+                        try
+                        {
+                            var res = mi.Invoke(mb, null);
+                            if (res is int) return (int)res;
+                            if (res is long) return (long)res;
+                            if (res is float) return (long)((float)res);
+                            if (res is double) return (long)((double)res);
+                        }
+                        catch { }
+                    }
+                }
+
+                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    var name = fi.Name.ToLower();
+                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                    {
+                        try
+                        {
+                            var val = fi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            return -1;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Check whether the player can be charged 'price' silver.
+    /// Does NOT perform any teleportation.
+    /// Preferred (non-invasive) check: uses CurrencyHelpers.AttemptDeductSilverDirect(price, true) if available
+    /// which simulates the deduction. If that simulation throws or is unavailable we fall back to a
+    /// real deduct+refund attempt as a best-effort check.
+    ///
+    /// Returns true when a deduction is possible (either simulation succeeded, or real deduct succeeded
+    /// and was refunded). Returns false when the player cannot be charged or when an unrecoverable
+    /// error occurs. All exceptional conditions are caught and logged. If a real deduction is performed
+    /// it is immediately refunded (best-effort).
+    /// </summary>
+    public static bool CheckChargePossibleAndRefund(int price)
+    {
+        if (price <= 0)
+        {
+            // No cost => trivially affordable
             return true;
         }
 
         try
         {
-            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
-            if (player == null)
+            // Preferred: simulate deduction if helper supports it.
+            // (Existing code used AttemptDeductSilverDirect(price, false) to perform a real deduction,
+            // so we call with simulate=true to only test affordability.)
+            bool canSimulate = CurrencyHelpers.AttemptDeductSilverDirect(price, true);
+            if (canSimulate)
             {
-                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Could not find the local player character.");
-                return false;
+                TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player can pay {price} silver (no changes made).");
+                return true;
             }
 
-            var inventory = player.Inventory;
-            if (inventory == null)
-            {
-                TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Player inventory is null.");
-                return false;
-            }
-
-            // If you already have a reliable read (preferred), use it first.
-            long playerSilver = DetectPlayerCurrencyOrMinusOne();
-            if (playerSilver != -1 && playerSilver < amount)
-            {
-                TBLog.Warn($"AttemptDeductSilverDirect: Player does not have enough silver ({playerSilver} < {amount}).");
-                return false;
-            }
-
-            if (justSimulate)
-            {
-                TBLog.Info($"AttemptDeductSilverDirect: Simulating deduction of {amount} silver by attempting to remove and refund.");
-                bool removed = false;
-                long before = DetectPlayerCurrencyOrMinusOne();
-                try
-                {
-                    // TryDeduct will now verify that currency actually decreased before returning true.
-                    if (!TryDeductPlayerCurrency(amount))
-                    {
-                        TBLog.Info("AttemptDeductSilverDirect: Simulation remove reported failure (likely insufficient funds or verification failed).");
-                        return false;
-                    }
-
-                    removed = true;
-                    TBLog.Info("AttemptDeductSilverDirect: Simulation remove succeeded - will attempt refund.");
-
-                    // Verify currency decreased as expected before refunding (TryDeduct already does verification when possible).
-                    long afterRemove = DetectPlayerCurrencyOrMinusOne();
-                    if (before != -1 && afterRemove != -1 && afterRemove != before - amount)
-                    {
-                        TBLog.Warn($"AttemptDeductSilverDirect: After simulated remove the currency did not match expected (before={before}, afterRemove={afterRemove}). Attempting to refund and failing simulation.");
-                        TryRefundPlayerCurrency(amount);
-                        return false;
-                    }
-
-                    // TryRefundPlayerCurrency should add the silver back. Ensure it returns success/false.
-                    if (!TryRefundPlayerCurrency(amount))
-                    {
-                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: Simulation refund failed after RemoveItem. THIS IS SERIOUS.");
-                        return false;
-                    }
-
-                    // Final verification: player currency should be back to before
-                    long final = DetectPlayerCurrencyOrMinusOne();
-                    if (before != -1 && final != -1 && final == before)
-                    {
-                        TBLog.Info("AttemptDeductSilverDirect: Simulation successful (remove + refund verified).");
-                        return true;
-                    }
-
-                    TBLog.Warn($"AttemptDeductSilverDirect: Simulation final verification failed (before={before}, final={final}).");
-                    return false;
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"AttemptDeductSilverDirect: Simulation remove failed. Exception: {ex.Message}");
-                    // If RemoveItem threw and removed == false, nothing to refund.
-                    if (removed)
-                    {
-                        // Attempt to refund in case RemoveItem succeeded but something threw later.
-                        try
-                        {
-                            TryRefundPlayerCurrency(amount);
-                        }
-                        catch (Exception refundEx)
-                        {
-                            TravelButtonPlugin.LogError($"AttemptDeductSilverDirect: Failed to refund after partial simulation remove: {refundEx}");
-                        }
-                    }
-                    return false;
-                }
-            }
-            else
-            {
-                TBLog.Info($"AttemptDeductSilverDirect: Attempting to deduct {amount} silver.");
-                try
-                {
-                    // The TryDeductPlayerCurrency now verifies actual effect when possible.
-                    if (!TryDeductPlayerCurrency(amount))
-                    {
-                        TravelButtonPlugin.LogError("AttemptDeductSilverDirect: TryDeductPlayerCurrency reported failure; deduction did not occur.");
-                        return false;
-                    }
-                    TBLog.Info($"AttemptDeductSilverDirect: Successfully deducted {amount} silver.");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"AttemptDeductSilverDirect: Failed to deduct silver. Exception: {ex.Message}");
-                    return false;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn($"AttemptDeductSilverDirect: An exception occurred: {ex.Message}");
+            TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player cannot pay {price} silver.");
             return false;
         }
+        catch (Exception exSim)
+        {
+            // Simulation failed (method might throw or behave unexpectedly). Fall back to a real deduct+refund.
+            TBLog.Warn("CheckChargePossibleAndRefund: simulation attempt threw, falling back to real deduct+refund. Exception: " + exSim);
+
+            try
+            {
+                bool deducted = false;
+                try
+                {
+                    // Perform a real deduction
+                    deducted = CurrencyHelpers.AttemptDeductSilverDirect(price, false);
+                }
+                catch (Exception exDeduct)
+                {
+                    TBLog.Warn("CheckChargePossibleAndRefund: real deduction attempt threw: " + exDeduct);
+                    deducted = false;
+                }
+
+                if (!deducted)
+                {
+                    TBLog.Info($"CheckChargePossibleAndRefund: real deduction failed -> player cannot pay {price} silver.");
+                    return false;
+                }
+
+                // We successfully deducted. Now refund immediately (best-effort).
+                try
+                {
+                    CurrencyHelpers.TryRefundPlayerCurrency(price);
+                    TBLog.Info($"CheckChargePossibleAndRefund: deducted {price} silver and refunded successfully (probe).");
+                }
+                catch (Exception exRefund)
+                {
+                    TBLog.Warn("CheckChargePossibleAndRefund: refund after probe deduction failed: " + exRefund);
+                    // Even if refund failed, return true because deduction succeeded (but state may be corrupt).
+                    // Caller should be aware of the logged warning.
+                }
+
+                return true;
+            }
+            catch (Exception exFallback)
+            {
+                TBLog.Warn("CheckChargePossibleAndRefund: unexpected exception during fallback deduct/refund: " + exFallback);
+                // Best-effort: attempt to refund in case some partial operation occurred
+                try { CurrencyHelpers.TryRefundPlayerCurrency(price); } catch { }
+                return false;
+            }
+        }
     }
+
 }

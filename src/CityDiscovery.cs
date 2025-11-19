@@ -145,7 +145,7 @@ public class CityDiscovery : MonoBehaviour
         }
 
         float bestDist = float.MaxValue;
-        TravelButtonMod.City bestCity = null;
+        TravelButton.City bestCity = null;
         Vector3? bestPos = null;
 
         foreach (var city in cities)
@@ -228,15 +228,15 @@ public class CityDiscovery : MonoBehaviour
 
     // --- helper utilities ---
 
-    private IList<TravelButtonMod.City> GetCitiesList()
+    private IList<TravelButton.City> GetCitiesList()
     {
-        IList<TravelButtonMod.City> cities = null;
-        var citiesField = typeof(TravelButtonMod).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
-        if (citiesField != null) cities = citiesField.GetValue(null) as IList<TravelButtonMod.City>;
+        IList<TravelButton.City> cities = null;
+        var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
+        if (citiesField != null) cities = citiesField.GetValue(null) as IList<TravelButton.City>;
         if (cities == null)
         {
-            var prop = typeof(TravelButtonMod).GetProperty("Cities", BindingFlags.Public | BindingFlags.Static);
-            if (prop != null) cities = prop.GetValue(null, null) as IList<TravelButtonMod.City>;
+            var prop = typeof(TravelButton).GetProperty("Cities", BindingFlags.Public | BindingFlags.Static);
+            if (prop != null) cities = prop.GetValue(null, null) as IList<TravelButton.City>;
         }
         return cities;
     }
@@ -305,7 +305,7 @@ public class CityDiscovery : MonoBehaviour
         return null;
     }
 
-    public Vector3? GetCityPosition(TravelButtonMod.City city)
+    public Vector3? GetCityPosition(TravelButton.City city)
     {
         if (city == null) return null;
         try

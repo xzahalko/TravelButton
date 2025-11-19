@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using UnityEngine;
 
 /// <summary>
 /// Safe reflection helpers: never throw on missing types, and provide a best-effort resolution fallback.

@@ -1,5 +1,7 @@
 # TravelButton — Outward: Definitive Edition Sample Mod
 
+<!-- Optimizations branch: Consolidated TravelButton_Cities.json handling -->
+
 This repository contains a minimal example BepInEx plugin for Outward: Definitive Edition.
 It demonstrates a safe, non-invasive plugin structure: configuration entries, a simple toggleable on-screen overlay,
 and a place to add Harmony patches later.
