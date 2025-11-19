@@ -170,7 +170,7 @@ public static class ConfigManager
         }
     }
 
-    public static string ConfigPathForLog()
+/*    public static string ConfigPathForLog()
     {
         try
         {
@@ -182,7 +182,7 @@ public static class ConfigManager
             return Path.GetFullPath(candidates[0]);
         }
         catch { return "(unknown)"; }
-    }
+    }*/
 
     /// <summary>
     /// Save the legacy config to file using JsonUtility (pretty).
