@@ -3292,8 +3292,9 @@ public partial class TravelButtonUI : MonoBehaviour
         return false;
     }
 
-    // New: Teleport first, THEN attempt to charge player currency.
-    // This mirrors the TravelDialog behavior: do not deduct before teleport.
+    // Modified TryTeleportThenCharge: call CheckChargePossibleAndRefund at start,
+    // and stop using TeleportManager.EnsureInstance(); instead use TeleportManager.Instance (no creation).
+    // Teleportation logic otherwise left unchanged.
     private void TryTeleportThenCharge(TravelButton.City city, int cost)
     {
         LogCityConfig(city.name);
@@ -3301,6 +3302,27 @@ public partial class TravelButtonUI : MonoBehaviour
         if (city == null)
         {
             TBLog.Warn("TryTeleportThenCharge: city is null.");
+            isTeleporting = false;
+            return;
+        }
+
+        // New: verify player can be charged (non-invasive probe) before attempting teleport.
+        try
+        {
+            bool canPay = CurrencyHelpers.CheckChargePossibleAndRefund(cost);
+            if (!canPay)
+            {
+                TBLog.Info($"TryTeleportThenCharge: player cannot pay {cost} silver for '{city.name}'. Aborting.");
+                try { TravelButtonPlugin.ShowPlayerNotification?.Invoke("Not enough silver for teleport."); } catch { }
+                isTeleporting = false;
+                return;
+            }
+        }
+        catch (Exception exCheck)
+        {
+            TBLog.Warn("TryTeleportThenCharge: CheckChargePossibleAndRefund threw: " + exCheck);
+            // Fail-safe: don't proceed if we couldn't validate currency state.
+            try { TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not verify currency."); } catch { }
             isTeleporting = false;
             return;
         }
@@ -3376,10 +3398,10 @@ public partial class TravelButtonUI : MonoBehaviour
                 {
                     coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
                     // ONZA
-/*                    var cd = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
-                    Vector3? posNullable = cd.GetCityPosition(city);
-                    coordsHint = posNullable.Value;
-*/
+                    /*                    var cd = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
+                                        Vector3? posNullable = cd.GetCityPosition(city);
+                                        coordsHint = posNullable.Value;
+                    */
                     haveCoordsHint = true;
                     TBLog.Info($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
                     if (!IsCoordsReasonable(coordsHint))
@@ -3422,8 +3444,8 @@ public partial class TravelButtonUI : MonoBehaviour
                     Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
                     try
                     {
-                        // Prefer TeleportManager to handle teleport lifecycle. EnsureInstance will create the manager if missing.
-                        var tm = TeleportManager.EnsureInstance();
+                        // Use existing TeleportManager.Instance; do NOT create one here.
+                        var tm = TeleportManager.Instance;
                         if (tm != null)
                         {
                             // Use the manager's StartTeleport (returns true if started)
@@ -3431,14 +3453,14 @@ public partial class TravelButtonUI : MonoBehaviour
                             if (!accepted)
                             {
                                 TBLog.Warn("TryTeleportThenCharge: TeleportManager rejected StartTeleport request; falling back to immediate coroutine.");
-//                                StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
+                                //                                StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
                             }
                         }
                         else
                         {
-                            // No TeleportManager and cannot create one -> fall back to the old immediate coroutine
-                            TBLog.Warn("TryTeleportThenCharge: TeleportManager.EnsureInstance returned null; using ImmediateTeleport fallback.");
-//                            StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
+                            // No TeleportManager available -> fall back to the old immediate coroutine
+                            TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; using ImmediateTeleport fallback.");
+                            //                            StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
                         }
 
                         return; // exit original caller — coroutine or manager will perform success/failure handling
@@ -3461,11 +3483,11 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Info($"TryTeleportThenCharge: target scene '{city.sceneName}' differs from active '{activeScene.name}' - loading scene then teleporting.");
 
-                // Ensure we have (or can create) a TeleportManager instance
-                var tm = TeleportManager.EnsureInstance();
+                // Use existing TeleportManager.Instance; do NOT create one here.
+                var tm = TeleportManager.Instance;
                 if (tm == null)
                 {
-                    TBLog.Warn("TryTeleportThenCharge: TeleportManager.EnsureInstance returned null; cannot start scene teleport. Falling back to local helper.");
+                    TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; cannot start scene teleport. Falling back to local helper.");
                     // fallthrough to fallback helper below
                 }
                 else
@@ -3489,15 +3511,35 @@ public partial class TravelButtonUI : MonoBehaviour
                                 TBLog.Info($"TryTeleportThenCharge: scene '{city.sceneName}' loaded; requesting teleport in loaded scene.");
 
                                 // Perform placement inside the newly loaded scene
-                                // (StartTeleport will run TeleportInLoadedSceneCoroutine and perform the actual placement)
                                 bool startedTeleport = TravelButtonUI.AttemptTeleportToPositionSafe(coordsHint);
                                 if (!startedTeleport)
                                 {
-                                    TBLog.Warn("TryTeleportThenCharge: TeleportManager rejected StartTeleport request after load.");
-                                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: manager rejected teleport request.");
+                                    TBLog.Warn("TryTeleportThenCharge: placement after load failed.");
+                                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place you at the destination.");
                                     // Optionally fall back to local helper here
-                                } else
+                                }
+                                else
                                 {
+                                    // After successful placement, perform the real deduction
+                                    try
+                                    {
+                                        bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                                        if (!charged)
+                                        {
+                                            TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
+                                        }
+                                        else
+                                        {
+                                            ShowInlineDialogMessage($"Teleported to {city.name}");
+                                        }
+                                    }
+                                    catch (Exception exCharge)
+                                    {
+                                        TBLog.Warn("TryTeleportThenCharge: charge attempt threw after scene-load placement: " + exCharge);
+                                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                                    }
+
                                     isTeleporting = false;
                                 }
                             }
@@ -3523,88 +3565,7 @@ public partial class TravelButtonUI : MonoBehaviour
                         TBLog.Warn("TryTeleportThenCharge: exception while requesting scene load/teleport: " + ex);
                         // fall back to helper below
                     }
-                
-                /*
-                                                                        bool started = false;
-                                                                        try
-                                                                        {
-                                                                            // StartSceneTeleport will begin the load+teleport and return immediately with acceptance flag.
-                                                                            started = tm.StartSceneTeleport(city.sceneName, city.targetGameObjectName, coordsHint, haveCoordsHint, cost);
-                                                                        }
-                                                                        catch (Exception ex)
-                                                                        {
-                                                                            TBLog.Warn("TryTeleportThenCharge: exception while requesting scene teleport: " + ex);
-                                                                            started = false;
-                                                                        }
-
-                                                                        if (!started)
-                                                                        {
-                                                                            TBLog.Warn("TryTeleportThenCharge: StartSceneTeleport rejected the request (another transition or bad args). Falling back.");
-                                                                            // fall back to helper below
-                                                                        }
-                                                                        else
-                                                                        {
-                                                                            TBLog.Info("TryTeleportThenCharge: StartSceneTeleport accepted request; waiting for completion (OnTeleportFinished).");
-
-                                                                            // Subscribe to OnTeleportFinished to run post-teleport work.
-                                                                            // Use a local handler so we can unsubscribe it after invocation.
-                                                                            Action<bool> onFinished = null;
-                                                                            onFinished = success =>
-                                                                            {
-                                                                                try
-                                                                                {
-                                                                                    if (success)
-                                                                                    {
-                                                                                        TBLog.Info("TryTeleportThenCharge: Teleport succeeded. Dumping travel debug info and persisting cities.");
-
-                                                                                        if (CoordsConvertor.TryConvertToVector3(coordsHint, out Vector3 destCords))
-                                                                                        {
-                                                                                            TBLog.Info($"Converted coords -> {destCords}");
-                                                                                            PlayerPositionHelpers.MovePlayerTo(destCords, safeTeleportAfter: false);
-                                                                                            // use coords
-                                                                                        }
-                                                                                        else
-                                                                                        {
-                                                                                            TBLog.Warn("Could not convert coordsVal to Vector3");
-                                                                                        }
-
-                                                                                        try
-                                                                                        {
-                                                                                            TravelButton.PersistCitiesToPluginFolder();
-                                                                                            TBLog.Info("PersistCitiesToPluginFolder: succeeded.");
-                                                                                        }
-                                                                                        catch (Exception exPersist)
-                                                                                        {
-                                                                                            TBLog.Warn("PersistCitiesToPluginFolder failed - skipping persistence to avoid corrupting runtime state: " + exPersist);
-                                                                                        }
-                                                                                    }
-                                                                                    else
-                                                                                    {
-                                                                                        TBLog.Warn("TryTeleportThenCharge: Teleport failed (OnTeleportFinished reported failure).");
-                                                                                        TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place you at the destination.");
-                                                                                    }
-                                                                                }
-                                                                                catch (Exception exCallback)
-                                                                                {
-                                                                                    TBLog.Warn("TryTeleportThenCharge: OnTeleportFinished handler threw: " + exCallback);
-                                                                                }
-                                                                                finally
-                                                                                {
-                                                                                    // Unsubscribe to avoid leaking the handler
-                                                                                    try { tm.OnTeleportFinished -= onFinished; } catch { }
-                                                                                }
-                                                                            };
-
-                                                                            // Subscribe
-                                                                            tm.OnTeleportFinished += onFinished;
-
-                                                                            // Return now — post-teleport actions happen in the handler above.
-                                                                            return;
-                                                                        }
-                                                    */
-            }
-
-                // fall back to helper below if StartSceneTeleport failed to start...
+                }
             }
 
             // 6) Fallback: use existing TeleportHelpersBehaviour coroutine (keeps previous robust behavior)

@@ -1011,4 +1011,163 @@ public static class CurrencyHelpers
             return false;
         }
     }
+
+    // Best-effort currency amount detection used to show early "not enough resources"
+    public static long GetPlayerCurrencyAmountOrMinusOne()
+    {
+        try
+        {
+            var allMono = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+            foreach (var mb in allMono)
+            {
+                var t = mb.GetType();
+                string[] propNames = new string[] { "Silver", "Money", "Gold", "Coins", "Currency", "CurrentMoney", "SilverAmount", "MoneyAmount" };
+                foreach (var pn in propNames)
+                {
+                    var pi = t.GetProperty(pn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                    if (pi != null && pi.CanRead)
+                    {
+                        try
+                        {
+                            var val = pi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch { }
+                    }
+                }
+
+                string[] methodNames = new string[] { "GetMoney", "GetSilver", "GetCoins", "GetCurrency" };
+                foreach (var mn in methodNames)
+                {
+                    var mi = t.GetMethod(mn, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                    if (mi != null && mi.GetParameters().Length == 0)
+                    {
+                        try
+                        {
+                            var res = mi.Invoke(mb, null);
+                            if (res is int) return (int)res;
+                            if (res is long) return (long)res;
+                            if (res is float) return (long)((float)res);
+                            if (res is double) return (long)((double)res);
+                        }
+                        catch { }
+                    }
+                }
+
+                foreach (var fi in t.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    var name = fi.Name.ToLower();
+                    if (name.Contains("silver") || name.Contains("money") || name.Contains("gold") || name.Contains("coin") || name.Contains("currency"))
+                    {
+                        try
+                        {
+                            var val = fi.GetValue(mb);
+                            if (val is int) return (int)val;
+                            if (val is long) return (long)val;
+                            if (val is float) return (long)((float)val);
+                            if (val is double) return (long)((double)val);
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne: could not detect a currency field/property automatically.");
+            return -1;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("GetPlayerCurrencyAmountOrMinusOne exception: " + ex);
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Check whether the player can be charged 'price' silver.
+    /// Does NOT perform any teleportation.
+    /// Preferred (non-invasive) check: uses CurrencyHelpers.AttemptDeductSilverDirect(price, true) if available
+    /// which simulates the deduction. If that simulation throws or is unavailable we fall back to a
+    /// real deduct+refund attempt as a best-effort check.
+    ///
+    /// Returns true when a deduction is possible (either simulation succeeded, or real deduct succeeded
+    /// and was refunded). Returns false when the player cannot be charged or when an unrecoverable
+    /// error occurs. All exceptional conditions are caught and logged. If a real deduction is performed
+    /// it is immediately refunded (best-effort).
+    /// </summary>
+    public static bool CheckChargePossibleAndRefund(int price)
+    {
+        if (price <= 0)
+        {
+            // No cost => trivially affordable
+            return true;
+        }
+
+        try
+        {
+            // Preferred: simulate deduction if helper supports it.
+            // (Existing code used AttemptDeductSilverDirect(price, false) to perform a real deduction,
+            // so we call with simulate=true to only test affordability.)
+            bool canSimulate = CurrencyHelpers.AttemptDeductSilverDirect(price, true);
+            if (canSimulate)
+            {
+                TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player can pay {price} silver (no changes made).");
+                return true;
+            }
+
+            TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player cannot pay {price} silver.");
+            return false;
+        }
+        catch (Exception exSim)
+        {
+            // Simulation failed (method might throw or behave unexpectedly). Fall back to a real deduct+refund.
+            TBLog.Warn("CheckChargePossibleAndRefund: simulation attempt threw, falling back to real deduct+refund. Exception: " + exSim);
+
+            try
+            {
+                bool deducted = false;
+                try
+                {
+                    // Perform a real deduction
+                    deducted = CurrencyHelpers.AttemptDeductSilverDirect(price, false);
+                }
+                catch (Exception exDeduct)
+                {
+                    TBLog.Warn("CheckChargePossibleAndRefund: real deduction attempt threw: " + exDeduct);
+                    deducted = false;
+                }
+
+                if (!deducted)
+                {
+                    TBLog.Info($"CheckChargePossibleAndRefund: real deduction failed -> player cannot pay {price} silver.");
+                    return false;
+                }
+
+                // We successfully deducted. Now refund immediately (best-effort).
+                try
+                {
+                    CurrencyHelpers.TryRefundPlayerCurrency(price);
+                    TBLog.Info($"CheckChargePossibleAndRefund: deducted {price} silver and refunded successfully (probe).");
+                }
+                catch (Exception exRefund)
+                {
+                    TBLog.Warn("CheckChargePossibleAndRefund: refund after probe deduction failed: " + exRefund);
+                    // Even if refund failed, return true because deduction succeeded (but state may be corrupt).
+                    // Caller should be aware of the logged warning.
+                }
+
+                return true;
+            }
+            catch (Exception exFallback)
+            {
+                TBLog.Warn("CheckChargePossibleAndRefund: unexpected exception during fallback deduct/refund: " + exFallback);
+                // Best-effort: attempt to refund in case some partial operation occurred
+                try { CurrencyHelpers.TryRefundPlayerCurrency(price); } catch { }
+                return false;
+            }
+        }
+    }
+
 }
