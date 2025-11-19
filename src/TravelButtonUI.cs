@@ -2350,23 +2350,82 @@ public partial class TravelButtonUI : MonoBehaviour
             TBLog.Warn("DebugLogToolbarCandidates: " + ex);
         }
     }
-
-    private void StopRefreshCoroutine()
+    
+    /// <summary>
+    /// Stop the refresh coroutine if it's running and clear related flags.
+    /// Safe to call repeatedly.
+    /// </summary>
+    public void StopRefreshCoroutine()
     {
         try
         {
-            refreshRequested = false;
+            // stop and clear running coroutine
             if (refreshButtonsCoroutine != null)
             {
-                try { StopCoroutine(refreshButtonsCoroutine); } catch { }
+                try
+                {
+                    StopCoroutine(refreshButtonsCoroutine);
+                }
+                catch { /* swallow - may already be stopped */ }
                 refreshButtonsCoroutine = null;
             }
-            try { UnregisterCityButtons(); } catch { }
-            TBLog.Info("StopRefreshCoroutine: stopped refresh and cleared registrations.");
+
+            // clear request flag
+            refreshRequested = false;
         }
         catch (Exception ex)
         {
-            TBLog.Warn("StopRefreshCoroutine failed: " + ex.Message);
+            TBLog.Warn("StopRefreshCoroutine: failed: " + ex);
+        }
+    }
+
+    /// <summary>
+    /// Best-effort close of the travel dialog plus stopping the refresh coroutine and some UI cleanup.
+    /// Call this when you want to close the dialog after a teleport or when the user explicitly presses Close.
+    /// </summary>
+    public void CloseDialogAndStopRefresh()
+    {
+        try
+        {
+            // Stop the refresh coroutine and clear flags
+            StopRefreshCoroutine();
+
+            // Re-enable dialog buttons if they were disabled (best-effort)
+            try
+            {
+                EnableDialogButtons();
+            }
+            catch (Exception exEnable)
+            {
+                TBLog.Warn("CloseDialogAndStopRefresh: EnableDialogButtons failed: " + exEnable);
+            }
+
+            // Hide the dialog root (do not destroy - preserves state for re-opening)
+            try
+            {
+                if (dialogRoot != null)
+                {
+                    dialogRoot.SetActive(false);
+                }
+                else
+                {
+                    // Fallback: try the named TravelDialogCanvas if present
+                    var go = GameObject.Find("TravelDialogCanvas");
+                    if (go != null) go.SetActive(false);
+                }
+            }
+            catch (Exception exHide)
+            {
+                TBLog.Warn("CloseDialogAndStopRefresh: failed to hide dialog root: " + exHide);
+            }
+
+            // Clear some state to be safe
+            try { isTeleporting = false; } catch { }
+            try { dialogOpenedTime = 0f; } catch { }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CloseDialogAndStopRefresh: unexpected error: " + ex);
         }
     }
 
@@ -2907,7 +2966,7 @@ public partial class TravelButtonUI : MonoBehaviour
                 {
                     try
                     {
-                        StopRefreshCoroutine();
+                        CloseDialogAndStopRefresh();
                         if (dialogRoot != null) dialogRoot.SetActive(false);
                     }
                     catch (Exception ex)
@@ -3292,12 +3351,9 @@ public partial class TravelButtonUI : MonoBehaviour
         return false;
     }
 
-    // Modified TryTeleportThenCharge: call CheckChargePossibleAndRefund at start,
-    // and stop using TeleportManager.EnsureInstance(); instead use TeleportManager.Instance (no creation).
-    // Teleportation logic otherwise left unchanged.
     private void TryTeleportThenCharge(TravelButton.City city, int cost)
     {
-        LogCityConfig(city.name);
+        LogCityConfig(city?.name);
 
         if (city == null)
         {
@@ -3306,7 +3362,7 @@ public partial class TravelButtonUI : MonoBehaviour
             return;
         }
 
-        // New: verify player can be charged (non-invasive probe) before attempting teleport.
+        // 0) Non-invasive affordability probe: abort early if player cannot pay.
         try
         {
             bool canPay = CurrencyHelpers.CheckChargePossibleAndRefund(cost);
@@ -3321,97 +3377,49 @@ public partial class TravelButtonUI : MonoBehaviour
         catch (Exception exCheck)
         {
             TBLog.Warn("TryTeleportThenCharge: CheckChargePossibleAndRefund threw: " + exCheck);
-            // Fail-safe: don't proceed if we couldn't validate currency state.
             try { TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not verify currency."); } catch { }
             isTeleporting = false;
             return;
         }
 
+        // gather minimal hints
+        Vector3 coordsHint = Vector3.zero;
+        bool haveCoordsHint = false;
         try
         {
-            bool enabledByConfig = TravelButton.IsCityEnabled(city.name);
-            bool visitedInHistory = false;
-            try
+            if (!string.IsNullOrEmpty(city.targetGameObjectName))
             {
-                visitedInHistory = TravelButton.HasPlayerVisited(city);
-            }
-            catch (Exception ex)
-            {
-                visitedInHistory = false;
-                TBLog.Warn("OpenTravelDialog: HasPlayerVisited failed for '" + city?.name + "': " + ex.Message);
-            }
-
-            long currentMoney = GetPlayerCurrencyAmountOrMinusOne();
-            bool haveMoneyInfo = currentMoney >= 0;
-            bool hasEnoughMoney = haveMoneyInfo ? currentMoney >= cost : true;
-            bool coordsAvailable = !string.IsNullOrEmpty(city.targetGameObjectName) || (city.coords != null && city.coords.Length >= 3);
-            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-            bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
-            bool isCurrentScene = targetSceneSpecified && string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
-            Vector3 playerPos;
-            bool havePlayerPos = TryGetPlayerPosition(out playerPos);
-
-            TBLog.Info($"Debug Teleport '{city.name}': enabledByConfig={enabledByConfig}, visitedInHistory={visitedInHistory}, hasEnoughMoney={hasEnoughMoney}, coordsAvailable={coordsAvailable}, isCurrentScene={isCurrentScene}, playerPos={(havePlayerPos ? $"({playerPos.x:F1},{playerPos.y:F1},{playerPos.z:F1})" : "unknown")}");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryTeleportThenCharge debug logging failed: " + ex);
-        }
-
-        try
-        {
-            TBLog.Info($"TryTeleportThenCharge: attempting teleport to {city.name} (post-charge flow).");
-
-            // 1) Determine coords/anchor availability
-            Vector3 coordsHint = Vector3.zero;
-            bool haveCoordsHint = false;
-            bool haveTargetGameObject = false;
-            bool targetGameObjectFound = false;
-
-            try
-            {
-                if (!string.IsNullOrEmpty(city.targetGameObjectName))
+                try
                 {
-                    haveTargetGameObject = true;
                     var tgo = GameObject.Find(city.targetGameObjectName);
                     if (tgo != null)
                     {
-                        targetGameObjectFound = true;
                         coordsHint = tgo.transform.position;
                         haveCoordsHint = true;
-                        TBLog.Info($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
+                        TBLog.Info($"TryTeleportThenCharge: found anchor '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
                     }
                     else
                     {
-                        TBLog.Info($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
+                        TBLog.Info($"TryTeleportThenCharge: anchor '{city.targetGameObjectName}' not found in current scene.");
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
-            }
-
-            if (!haveCoordsHint)
-            {
-                if (city.coords != null && city.coords.Length >= 3)
+                catch (Exception exFind)
                 {
-                    coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
-                    // ONZA
-                    /*                    var cd = UnityEngine.Object.FindObjectOfType<CityDiscovery>();
-                                        Vector3? posNullable = cd.GetCityPosition(city);
-                                        coordsHint = posNullable.Value;
-                    */
-                    haveCoordsHint = true;
-                    TBLog.Info($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
-                    if (!IsCoordsReasonable(coordsHint))
-                    {
-                        TBLog.Warn($"TryTeleportThenCharge: explicit coords {coordsHint} look suspicious for city '{city.name}'. Verify travel_config.json contains correct world coords.");
-                    }
+                    TBLog.Warn("TryTeleportThenCharge: GameObject.Find for anchor threw: " + exFind);
                 }
             }
 
-            // 2) If sceneName not provided, try to guess it from build settings BEFORE deciding immediate vs load
+            if (!haveCoordsHint && city.coords != null && city.coords.Length >= 3)
+            {
+                coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
+                haveCoordsHint = true;
+                TBLog.Info($"TryTeleportThenCharge: using explicit coords from config for {city.name}: {coordsHint}");
+                if (!IsCoordsReasonable(coordsHint))
+                {
+                    TBLog.Warn($"TryTeleportThenCharge: explicit coords {coordsHint} look suspicious for city '{city.name}'.");
+                }
+            }
+
             if (string.IsNullOrEmpty(city.sceneName))
             {
                 try
@@ -3420,155 +3428,81 @@ public partial class TravelButtonUI : MonoBehaviour
                     if (!string.IsNullOrEmpty(guessed))
                     {
                         TBLog.Info($"TryTeleportThenCharge: guessed sceneName='{guessed}' from build settings for city '{city.name}'");
-                        city.sceneName = guessed; // in-memory assignment only
+                        city.sceneName = guessed;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception exGuess)
                 {
-                    TBLog.Warn("TryTeleportThenCharge: GuessSceneNameFromBuildSettings failed: " + ex);
+                    TBLog.Warn("TryTeleportThenCharge: GuessSceneNameFromBuildSettings failed: " + exGuess);
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryTeleportThenCharge: error gathering teleport hints: " + ex);
+        }
 
-            TBLog.Info($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}, sceneName='{city.sceneName}'");
-
-            // 3) Decide whether target scene is specified and whether it matches active scene
+        // decide and delegate to wrappers; ensure TeleportManager.Instance is present before passing it
+        try
+        {
             var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
             bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
             bool sceneMatches = !targetSceneSpecified || string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
 
-            // 4) FAST PATH: same-scene or unspecified-scene + coords available => immediate teleport
+            // FAST PATH: same-scene (or unspecified scene) + have coords -> same-scene wrapper
             if (haveCoordsHint && sceneMatches)
             {
                 try
                 {
                     Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
-                    try
-                    {
-                        // Use existing TeleportManager.Instance; do NOT create one here.
-                        var tm = TeleportManager.Instance;
-                        if (tm != null)
-                        {
-                            // Use the manager's StartTeleport (returns true if started)
-                            bool accepted = tm.StartTeleport(activeScene.name, city.targetGameObjectName, groundedCoords, haveCoordsHint, cost);
-                            if (!accepted)
-                            {
-                                TBLog.Warn("TryTeleportThenCharge: TeleportManager rejected StartTeleport request; falling back to immediate coroutine.");
-                                //                                StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
-                            }
-                        }
-                        else
-                        {
-                            // No TeleportManager available -> fall back to the old immediate coroutine
-                            TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; using ImmediateTeleport fallback.");
-                            //                            StartCoroutine(ImmediateTeleportAndChargeCoroutine(city, groundedCoords, cost, haveCoordsHint));
-                        }
 
-                        return; // exit original caller — coroutine or manager will perform success/failure handling
-                    }
-                    catch (Exception ex)
+                    var tm = TeleportManager.Instance;
+                    if (tm == null)
                     {
-                        TBLog.Warn("TryTeleportThenCharge: failed to start immediate teleport via TeleportManager: " + ex);
-                        // fall through to fallback if you want to keep existing behavior
+                        TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; cannot start same-scene StartTeleport. Falling back to helper.");
+                        // fall through to fallback helper below
+                    }
+                    else
+                    {
+                        try { DisableDialogButtons(); } catch { }
+                        StartCoroutine(FadeThenStartTeleportAndHandle(city, tm, activeScene.name, city.targetGameObjectName, groundedCoords, haveCoordsHint, cost));
+                        isTeleporting = true;
+                        return;
                     }
                 }
-                catch (Exception exImmediate)
+                catch (Exception exGround)
                 {
-                    TBLog.Warn("TryTeleportThenCharge: immediate teleport attempt exception: " + exImmediate);
-                    // fallthrough to fallback
+                    TBLog.Warn("TryTeleportThenCharge: grounding coords threw: " + exGround);
                 }
             }
 
-            // 5) If a target scene is specified and it differs from active, load it and teleport there
+            // CROSS-SCENE: target specified and differs from active -> scene-load wrapper
             if (targetSceneSpecified && !sceneMatches)
             {
-                TBLog.Info($"TryTeleportThenCharge: target scene '{city.sceneName}' differs from active '{activeScene.name}' - loading scene then teleporting.");
-
-                // Use existing TeleportManager.Instance; do NOT create one here.
-                var tm = TeleportManager.Instance;
-                if (tm == null)
+                try
                 {
-                    TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; cannot start scene teleport. Falling back to local helper.");
-                    // fallthrough to fallback helper below
+                    Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
+
+                    var tm = TeleportManager.Instance;
+                    if (tm == null)
+                    {
+                        TBLog.Warn("TryTeleportThenCharge: TeleportManager.Instance is null; cannot start StartSceneLoad. Falling back to helper.");
+                        // fall through to fallback helper below
+                    }
+                    else
+                    {
+                        StartCoroutine(FadeThenStartSceneLoadAndHandle(city, tm, city.sceneName, groundedCoords, cost));
+                        isTeleporting = true;
+                        return;
+                    }
                 }
-                else
+                catch (Exception exGround)
                 {
-                    try
-                    {
-                        Vector3 groundedCoords = TeleportHelpers.GetGroundedPosition(coordsHint);
-
-                        // StartSceneLoad(sceneName, coordsHint, onComplete)
-                        bool accepted = tm.StartSceneLoad(city.sceneName, groundedCoords, (loadedScene, asyncOp, success) =>
-                        {
-                            try
-                            {
-                                if (!success)
-                                {
-                                    TBLog.Warn($"TryTeleportThenCharge: scene '{city.sceneName}' failed to load.");
-                                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not load destination scene.");
-                                    return;
-                                }
-
-                                TBLog.Info($"TryTeleportThenCharge: scene '{city.sceneName}' loaded; requesting teleport in loaded scene.");
-
-                                // Perform placement inside the newly loaded scene
-                                bool startedTeleport = TravelButtonUI.AttemptTeleportToPositionSafe(coordsHint);
-                                if (!startedTeleport)
-                                {
-                                    TBLog.Warn("TryTeleportThenCharge: placement after load failed.");
-                                    TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place you at the destination.");
-                                    // Optionally fall back to local helper here
-                                }
-                                else
-                                {
-                                    // After successful placement, perform the real deduction
-                                    try
-                                    {
-                                        bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
-                                        if (!charged)
-                                        {
-                                            TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
-                                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
-                                        }
-                                        else
-                                        {
-                                            ShowInlineDialogMessage($"Teleported to {city.name}");
-                                        }
-                                    }
-                                    catch (Exception exCharge)
-                                    {
-                                        TBLog.Warn("TryTeleportThenCharge: charge attempt threw after scene-load placement: " + exCharge);
-                                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
-                                    }
-
-                                    isTeleporting = false;
-                                }
-                            }
-                            catch (Exception exCallback)
-                            {
-                                TBLog.Warn("TryTeleportThenCharge: StartSceneLoad onComplete callback threw: " + exCallback);
-                            }
-                        });
-
-                        if (!accepted)
-                        {
-                            TBLog.Warn("TryTeleportThenCharge: StartSceneLoad rejected the request (another transition or bad args). Falling back.");
-                            // fall back to helper below
-                        }
-                        else
-                        {
-                            TBLog.Info("TryTeleportThenCharge: StartSceneLoad accepted request; waiting for completion (onComplete will handle teleport).");
-                            return; // exit original caller — onComplete will handle post-load teleport/persistence
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn("TryTeleportThenCharge: exception while requesting scene load/teleport: " + ex);
-                        // fall back to helper below
-                    }
+                    TBLog.Warn("TryTeleportThenCharge: grounding coords threw: " + exGround);
                 }
             }
 
-            // 6) Fallback: use existing TeleportHelpersBehaviour coroutine (keeps previous robust behavior)
+            // FALLBACK helper
             try
             {
                 TeleportHelpersBehaviour helper = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
@@ -3579,6 +3513,7 @@ public partial class TravelButtonUI : MonoBehaviour
                     helper = go.AddComponent<TeleportHelpersBehaviour>();
                 }
 
+                try { DisableDialogButtons(); } catch { }
                 helper.StartCoroutine(helper.EnsureSceneAndTeleport(city, coordsHint, haveCoordsHint, success =>
                 {
                     if (success)
@@ -3610,12 +3545,7 @@ public partial class TravelButtonUI : MonoBehaviour
                         try
                         {
                             isTeleporting = false;
-                            if (dialogRoot != null) dialogRoot.SetActive(false);
-                            if (refreshButtonsCoroutine != null)
-                            {
-                                StopCoroutine(refreshButtonsCoroutine);
-                                refreshButtonsCoroutine = null;
-                            }
+                            CloseDialogAndStopRefresh();
                         }
                         catch { }
                     }
@@ -3626,21 +3556,7 @@ public partial class TravelButtonUI : MonoBehaviour
                         try
                         {
                             isTeleporting = false;
-                            var contentParent = dialogRoot?.transform.Find("ScrollArea/Viewport/Content");
-                            if (contentParent != null)
-                            {
-                                for (int ci = 0; ci < contentParent.childCount; ci++)
-                                {
-                                    var child = contentParent.GetChild(ci);
-                                    var childBtn = child.GetComponent<Button>();
-                                    var childImg = child.GetComponent<Image>();
-                                    if (childBtn != null)
-                                    {
-                                        childBtn.interactable = true;
-                                        if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
-                                    }
-                                }
-                            }
+                            EnableDialogButtons();
                         }
                         catch (Exception exEnable)
                         {
@@ -4162,44 +4078,64 @@ public partial class TravelButtonUI : MonoBehaviour
         yield return StartCoroutine(enumerator);
     }
 
-    // Best-effort public wrappers so other code can call EnableDialogButtons/DisableDialogButtons.
-    // Adapt to call your real methods if they exist; if your class already has methods with
-    // these names remove these definitions.
+    // Public wrappers used by other code to disable/enable the dialog UI.
+    // These try to toggle a dialog root GameObject first (via reflection), falling back to per-button toggles.
     public void DisableDialogButtons()
     {
         try
         {
-            if (!TrySetDialogRootActive(false))
+            // Try to toggle a dialog root active state (best-effort).
+            if (TrySetDialogRootActive(false)) return;
+
+            // Try to find a GameObject named TravelDialogCanvas under scene, hide it if present.
+            var go = GameObject.Find("TravelDialogCanvas");
+            if (go != null)
             {
-                var go = GameObject.Find("TravelDialogCanvas");
-                if (go != null) { go.SetActive(false); return; }
-                TBLog.Warn("DisableDialogButtons: could not find dialogRoot or TravelDialogCanvas to disable.");
+                go.SetActive(false);
+                return;
             }
+
+            // Fall back to per-button disabling
+            DisableDialogButtonsInternal();
         }
-        catch (Exception ex) { TBLog.Warn("DisableDialogButtons: " + ex); }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DisableDialogButtons: " + ex);
+        }
     }
 
     public void EnableDialogButtons()
     {
         try
         {
-            if (!TrySetDialogRootActive(true))
+            // Try to toggle a dialog root active state (best-effort).
+            if (TrySetDialogRootActive(true)) return;
+
+            // Try to find a GameObject named TravelDialogCanvas under scene, show it if present.
+            var go = GameObject.Find("TravelDialogCanvas");
+            if (go != null)
             {
-                var go = GameObject.Find("TravelDialogCanvas");
-                if (go != null) { go.SetActive(true); return; }
-                TBLog.Warn("EnableDialogButtons: could not find dialogRoot or TravelDialogCanvas to enable.");
+                go.SetActive(true);
+                return;
             }
+
+            // Fall back to per-button enabling
+            EnableDialogButtonsInternal();
         }
-        catch (Exception ex) { TBLog.Warn("EnableDialogButtons: " + ex); }
+        catch (Exception ex)
+        {
+            TBLog.Warn("EnableDialogButtons: " + ex);
+        }
     }
 
-    // Tries to find a GameObject field/property named like dialogRoot and set it active/inactive.
-    // Returns true if we found and toggled something.
+    // Private: attempt to find a field/property on this instance that references the dialog root GameObject
+    // and set it active/inactive. Returns true if we found & toggled something.
     private bool TrySetDialogRootActive(bool active)
     {
         try
         {
             Type t = this.GetType();
+            // Common names used historically in the codebase; expand if you have other names.
             string[] names = new[] { "dialogRoot", "DialogRoot", "dialogRootField", "dialogRootObj", "dialog", "dialogRootGameObject" };
             foreach (var n in names)
             {
@@ -4218,13 +4154,423 @@ public partial class TravelButtonUI : MonoBehaviour
                 }
             }
 
-            // Try to find TravelDialogCanvas under this GameObject
+            // Try to find TravelDialogCanvas as a direct child of this transform
             var child = transform.Find("TravelDialogCanvas");
             if (child != null && child.gameObject != null) { child.gameObject.SetActive(active); return true; }
         }
-        catch { /* swallow - helper should be best-effort */ }
+        catch
+        {
+            // swallow - helper is best-effort and should not throw
+        }
 
         return false;
+    }
+
+    // Per-button disable implementation that iterates children of "ScrollArea/Viewport/Content" under dialogRoot.
+    // This is used as the fallback when dialog root toggling isn't available.
+    private void DisableDialogButtonsInternal()
+    {
+        try
+        {
+            if (dialogRoot == null)
+            {
+                // Attempt to find a fallback canvas
+                var go = GameObject.Find("TravelDialogCanvas");
+                if (go == null) return;
+                dialogRoot = go; // cache if you have a field
+            }
+
+            var contentParent = dialogRoot.transform.Find("ScrollArea/Viewport/Content");
+            if (contentParent == null) return;
+
+            for (int ci = 0; ci < contentParent.childCount; ci++)
+            {
+                var child = contentParent.GetChild(ci);
+                var childBtn = child.GetComponent<Button>();
+                var childImg = child.GetComponent<Image>();
+                if (childBtn != null)
+                {
+                    childBtn.interactable = false;
+                    if (childImg != null) childImg.color = new Color(0.6f, 0.45f, 0.35f, 1f);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DisableDialogButtonsInternal failed: " + ex);
+        }
+    }
+
+    // Per-button enable implementation - reverts the colors and interaction state to default.
+    private void EnableDialogButtonsInternal()
+    {
+        try
+        {
+            if (dialogRoot == null)
+            {
+                var go = GameObject.Find("TravelDialogCanvas");
+                if (go == null) return;
+                dialogRoot = go;
+            }
+
+            var contentParent = dialogRoot.transform.Find("ScrollArea/Viewport/Content");
+            if (contentParent == null) return;
+
+            for (int ci = 0; ci < contentParent.childCount; ci++)
+            {
+                var child = contentParent.GetChild(ci);
+                var childBtn = child.GetComponent<Button>();
+                var childImg = child.GetComponent<Image>();
+                if (childBtn != null)
+                {
+                    childBtn.interactable = true;
+                    if (childImg != null) childImg.color = new Color(0.35f, 0.20f, 0.08f, 1f);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("EnableDialogButtonsInternal failed: " + ex);
+        }
+    }
+
+    // Convenience private methods calling the internals (keeps naming similar to earlier code)
+    private void DisableDialogButtons_Safe() => DisableDialogButtonsInternal();
+    private void EnableDialogButtons_Safe() => EnableDialogButtonsInternal();
+
+    //
+    // Fade + teleport wrappers
+    //
+
+    // Wrapper that fades the screen out, starts the same-scene teleport via TeleportManager.Instance,
+    // subscribes to OnTeleportFinished to charge/cleanup and fades back in.
+    private IEnumerator FadeThenStartTeleportAndHandle(TravelButton.City city, TeleportManager tm, string sceneName, string targetGameObjectName, Vector3 groundedCoords, bool haveCoordsHint, int cost)
+    {
+        // Fade out
+        yield return StartCoroutine(TravelDialog.ScreenFade(0f, 1f, 0.35f));
+
+        // Defensive: ensure tm is valid
+        if (tm == null)
+        {
+            TBLog.Warn("FadeThenStartTeleportAndHandle: TeleportManager parameter is null; aborting teleport and restoring UI.");
+            try { EnableDialogButtons(); } catch { }
+            isTeleporting = false;
+            // fade back in
+            yield return StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f));
+            yield break;
+        }
+
+        Action<bool> onFinished = null;
+        onFinished = (success) =>
+        {
+            try
+            {
+                if (success)
+                {
+                    TBLog.Info($"TryTeleportThenCharge: teleport to '{city.name}' reported success. Charging {cost} silver now.");
+                    try
+                    {
+                        bool charged = false;
+                        try { charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false); } catch (Exception exc) { TBLog.Warn("Charge attempt threw: " + exc); charged = false; }
+
+                        if (!charged)
+                        {
+                            TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
+                        }
+                        else
+                        {
+                            ShowInlineDialogMessage($"Teleported to {city.name}");
+                        }
+                    }
+                    catch (Exception exCharge)
+                    {
+                        TBLog.Warn("TryTeleportThenCharge: charge attempt threw after teleport: " + exCharge);
+                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                    }
+
+                    try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
+                    try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception ex) { TBLog.Warn("PersistCitiesToPluginFolder after teleport failed: " + ex); }
+                }
+                else
+                {
+                    TBLog.Warn($"TryTeleportThenCharge: teleport to '{city.name}' failed.");
+                    ShowInlineDialogMessage("Teleport failed");
+                    try { TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place you at the destination."); } catch { }
+                }
+            }
+            finally
+            {
+                // Re-enable UI and cleanup
+                try
+                {
+                    isTeleporting = false;
+                    EnableDialogButtons();
+                }
+                catch { }
+
+                // Unsubscribe
+                try { if (TeleportManager.Instance != null) TeleportManager.Instance.OnTeleportFinished -= onFinished; } catch { }
+                // Fade back in
+                try { StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f)); } catch { }
+            }
+        };
+
+        // subscribe
+        try
+        {
+            if (TeleportManager.Instance != null) TeleportManager.Instance.OnTeleportFinished += onFinished;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("Failed to subscribe OnTeleportFinished: " + ex);
+            // If subscription fails, re-enable UI and fade in and exit
+            try { EnableDialogButtons(); } catch { }
+            yield break;
+        }
+
+        // Start actual teleport
+        bool accepted = false;
+        try
+        {
+            accepted = tm.StartTeleport(sceneName, targetGameObjectName, groundedCoords, haveCoordsHint, cost);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("FadeThenStartTeleportAndHandle: StartTeleport threw: " + ex);
+            accepted = false;
+        }
+
+        if (!accepted)
+        {
+            TBLog.Warn("FadeThenStartTeleportAndHandle: StartTeleport rejected request; unsubscribing and restoring UI.");
+            try { if (TeleportManager.Instance != null) TeleportManager.Instance.OnTeleportFinished -= onFinished; } catch { }
+            try { EnableDialogButtons(); } catch { }
+            // fade in
+            yield return StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f));
+            isTeleporting = false;
+            yield break;
+        }
+
+        // leave coroutine; completion is handled by onFinished when OnTeleportFinished fires
+        yield break;
+    }
+
+    // (This is a suggested change: modify FadeThenStartSceneLoadAndHandle to hide player renderers while the scene loads)
+    private IEnumerator FadeThenStartSceneLoadAndHandle(TravelButton.City city, TeleportManager tm, string targetSceneName, Vector3 groundedCoords, int cost)
+    {
+        // Fade out
+        yield return StartCoroutine(TravelDialog.ScreenFade(0f, 1f, 0.35f));
+
+        // Defensive: ensure tm is valid
+        if (tm == null)
+        {
+            TBLog.Warn("FadeThenStartSceneLoadAndHandle: TeleportManager parameter is null; aborting scene-load and restoring UI.");
+            try { EnableDialogButtons(); } catch { }
+            isTeleporting = false;
+            yield return StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f));
+            yield break;
+        }
+
+        // Disable UI while loading
+        try { DisableDialogButtons(); } catch { }
+
+        // --- Hide player renderers to avoid seeing intermediate spawn in loaded scene ---
+        GameObject playerRoot = null;
+        Renderer[] disabledRenderers = null;
+        try
+        {
+            playerRoot = TeleportHelpers.FindPlayerRoot();
+            if (playerRoot != null)
+            {
+                var rends = playerRoot.GetComponentsInChildren<Renderer>(true);
+                if (rends != null && rends.Length > 0)
+                {
+                    disabledRenderers = rends;
+                    foreach (var r in disabledRenderers)
+                    {
+                        try { r.enabled = false; } catch { }
+                    }
+                    TBLog.Info("FadeThenStartSceneLoadAndHandle: disabled player renderers during scene load.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("FadeThenStartSceneLoadAndHandle: failed to disable player renderers: " + ex);
+            disabledRenderers = null;
+        }
+
+        bool accepted = false;
+        try
+        {
+            accepted = tm.StartSceneLoad(targetSceneName, groundedCoords, (loadedScene, asyncOp, success) =>
+            {
+                try
+                {
+                    if (!success)
+                    {
+                        TBLog.Warn($"TryTeleportThenCharge: scene '{targetSceneName}' failed to load.");
+                        TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not load destination scene.");
+                        try { EnableDialogButtons(); } catch { }
+
+                        // Re-enable player visuals if we disabled them
+                        try
+                        {
+                            if (disabledRenderers != null)
+                            {
+                                foreach (var r in disabledRenderers)
+                                {
+                                    try { if (r != null) r.enabled = true; } catch { }
+                                }
+                            }
+                        }
+                        catch { }
+
+                        isTeleporting = false;
+                        // Fade in back
+                        try { StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f)); } catch { }
+                        return;
+                    }
+
+                    TBLog.Info($"TryTeleportThenCharge: scene '{targetSceneName}' loaded; performing placement and charging.");
+
+                    // Attempt placement using the same helper used elsewhere
+                    bool moveSucceeded = false;
+                    try
+                    {
+                        moveSucceeded = TravelButtonUI.AttemptTeleportToPositionSafe(groundedCoords);
+                    }
+                    catch (Exception exMove)
+                    {
+                        TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + exMove);
+                        moveSucceeded = false;
+                    }
+
+                    if (!moveSucceeded)
+                    {
+                        TBLog.Warn("TryTeleportThenCharge: placement after scene load failed.");
+                        ShowInlineDialogMessage("Teleport failed");
+                        TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place you at the destination.");
+                        try { EnableDialogButtons(); } catch { }
+
+                        // ensure we re-enable renderers if we disabled them
+                        try
+                        {
+                            if (disabledRenderers != null)
+                            {
+                                foreach (var r in disabledRenderers)
+                                {
+                                    try { if (r != null) r.enabled = true; } catch { }
+                                }
+                            }
+                        }
+                        catch { }
+
+                        isTeleporting = false;
+                        try { StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f)); } catch { }
+                        return;
+                    }
+
+                    // Re-enable player visuals now that placement succeeded
+                    try
+                    {
+                        if (disabledRenderers != null)
+                        {
+                            foreach (var r in disabledRenderers)
+                            {
+                                try { if (r != null) r.enabled = true; } catch { }
+                            }
+                            TBLog.Info("FadeThenStartSceneLoadAndHandle: re-enabled player renderers after placement.");
+                        }
+                    }
+                    catch (Exception exRe) { TBLog.Warn("FadeThenStartSceneLoadAndHandle: failed to re-enable player renderers: " + exRe); }
+
+                    // Placement succeeded — now perform the real deduction
+                    try
+                    {
+                        bool charged = CurrencyHelpers.AttemptDeductSilverDirect(cost, false);
+                        if (!charged)
+                        {
+                            TBLog.Warn($"TryTeleportThenCharge: Teleported to {city.name} but failed to deduct {cost} silver.");
+                            ShowInlineDialogMessage($"Teleported to {city.name} (failed to charge {cost} {TravelButton.cfgCurrencyItem.Value})");
+                        }
+                        else
+                        {
+                            ShowInlineDialogMessage($"Teleported to {city.name}");
+                        }
+                    }
+                    catch (Exception exCharge)
+                    {
+                        TBLog.Warn("TryTeleportThenCharge: charge attempt threw after scene-load placement: " + exCharge);
+                        ShowInlineDialogMessage($"Teleported to {city.name} (charge error)");
+                    }
+
+                    try { TravelButton.OnSuccessfulTeleport(city.name); } catch { }
+                    try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception ex) { TBLog.Warn("PersistCitiesToPluginFolder after scene-load teleport failed: " + ex); }
+
+                    // Re-enable UI and clear flag
+                    try { EnableDialogButtons(); } catch { }
+                    isTeleporting = false;
+
+                    // Fade back in
+                    try { StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f)); } catch { }
+                }
+                catch (Exception exCallback)
+                {
+                    TBLog.Warn("TryTeleportThenCharge: StartSceneLoad onComplete callback threw: " + exCallback);
+                    try { EnableDialogButtons(); } catch { }
+                    isTeleporting = false;
+
+                    // ensure player visuals are re-enabled
+                    try
+                    {
+                        if (disabledRenderers != null)
+                        {
+                            foreach (var r in disabledRenderers)
+                            {
+                                try { if (r != null) r.enabled = true; } catch { }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    try { StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f)); } catch { }
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryTeleportThenCharge: StartSceneLoad threw: " + ex);
+            accepted = false;
+        }
+
+        if (!accepted)
+        {
+            TBLog.Warn("TryTeleportThenCharge: StartSceneLoad rejected the request (another transition or bad args). Re-enabling UI and falling back.");
+            try { EnableDialogButtons(); } catch { }
+
+            // re-enable player visuals if we had disabled them
+            try
+            {
+                if (disabledRenderers != null)
+                {
+                    foreach (var r in disabledRenderers)
+                    {
+                        try { if (r != null) r.enabled = true; } catch { }
+                    }
+                }
+            }
+            catch { }
+
+            isTeleporting = false;
+            // fade in
+            yield return StartCoroutine(TravelDialog.ScreenFade(1f, 0f, 0.35f));
+            yield break;
+        }
+
+        // if accepted, the onComplete callback handles the remainder.
+        yield break;
     }
 
     // Add this static helper into the TravelButtonMod class (paste with other static helpers).
@@ -6070,23 +6416,6 @@ public partial class TravelButtonUI : MonoBehaviour
     /*   // Older implementation preserved as comment for reference...
         ... (omitted) ...
     */
-
-    private void CloseDialogAndStopRefresh()
-    {
-        try
-        {
-            if (dialogRoot != null) dialogRoot.SetActive(false);
-            if (refreshButtonsCoroutine != null)
-            {
-                StopCoroutine(refreshButtonsCoroutine);
-                refreshButtonsCoroutine = null;
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("CloseDialogAndStopRefresh failed: " + ex);
-        }
-    }
 
     // Coroutine that refreshes button states while dialog is open.
     // NOTE: yields are outside try/catch to satisfy C# iterator restrictions.

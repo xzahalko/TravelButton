@@ -408,93 +408,114 @@ public class TravelDialog : MonoBehaviour
         return false;
     }
 
-    /// <summary>
-    /// Check whether the player can be charged 'price' silver.
-    /// Does NOT perform any teleportation.
-    /// Preferred (non-invasive) check: uses CurrencyHelpers.AttemptDeductSilverDirect(price, true) if available
-    /// which simulates the deduction. If that simulation throws or is unavailable we fall back to a
-    /// real deduct+refund attempt as a best-effort check.
-    ///
-    /// Returns true when a deduction is possible (either simulation succeeded, or real deduct succeeded
-    /// and was refunded). Returns false when the player cannot be charged or when an unrecoverable
-    /// error occurs. All exceptional conditions are caught and logged. If a real deduction is performed
-    /// it is immediately refunded (best-effort).
-    /// </summary>
-    public bool CheckChargePossibleAndRefund(int price)
-    {
-        if (price <= 0)
-        {
-            // No cost => trivially affordable
-            return true;
-        }
-
-        try
-        {
-            // Preferred: simulate deduction if helper supports it.
-            // (Existing code used AttemptDeductSilverDirect(price, false) to perform a real deduction,
-            // so we call with simulate=true to only test affordability.)
-            bool canSimulate = CurrencyHelpers.AttemptDeductSilverDirect(price, true);
-            if (canSimulate)
-            {
-                TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player can pay {price} silver (no changes made).");
-                return true;
-            }
-
-            TBLog.Info($"CheckChargePossibleAndRefund: simulation indicates player cannot pay {price} silver.");
-            return false;
-        }
-        catch (Exception exSim)
-        {
-            // Simulation failed (method might throw or behave unexpectedly). Fall back to a real deduct+refund.
-            TBLog.Warn("CheckChargePossibleAndRefund: simulation attempt threw, falling back to real deduct+refund. Exception: " + exSim);
-
-            try
-            {
-                bool deducted = false;
-                try
-                {
-                    // Perform a real deduction
-                    deducted = CurrencyHelpers.AttemptDeductSilverDirect(price, false);
-                }
-                catch (Exception exDeduct)
-                {
-                    TBLog.Warn("CheckChargePossibleAndRefund: real deduction attempt threw: " + exDeduct);
-                    deducted = false;
-                }
-
-                if (!deducted)
-                {
-                    TBLog.Info($"CheckChargePossibleAndRefund: real deduction failed -> player cannot pay {price} silver.");
-                    return false;
-                }
-
-                // We successfully deducted. Now refund immediately (best-effort).
-                try
-                {
-                    CurrencyHelpers.TryRefundPlayerCurrency(price);
-                    TBLog.Info($"CheckChargePossibleAndRefund: deducted {price} silver and refunded successfully (probe).");
-                }
-                catch (Exception exRefund)
-                {
-                    TBLog.Warn("CheckChargePossibleAndRefund: refund after probe deduction failed: " + exRefund);
-                    // Even if refund failed, return true because deduction succeeded (but state may be corrupt).
-                    // Caller should be aware of the logged warning.
-                }
-
-                return true;
-            }
-            catch (Exception exFallback)
-            {
-                TBLog.Warn("CheckChargePossibleAndRefund: unexpected exception during fallback deduct/refund: " + exFallback);
-                // Best-effort: attempt to refund in case some partial operation occurred
-                try { CurrencyHelpers.TryRefundPlayerCurrency(price); } catch { }
-                return false;
-            }
-        }
-    }
-
     private void ShowMessage(string msg)
     {
         Debug.Log("[TravelButton] " + msg);
+    }
+
+    /// <summary>
+    /// Simple full-screen fade helper that creates (once) a fullscreen black Image on a Canvas
+    /// and animates its alpha from fromAlpha to toAlpha over duration (seconds).
+    /// - fromAlpha / toAlpha in range [0,1]
+    /// - Uses unscaled time so fades continue even if Time.timeScale changes.
+    /// - This is a coroutine returning IEnumerator so callers can StartCoroutine(TeleportManager.ScreenFade(...))
+    /// </summary>
+    public static IEnumerator ScreenFade(float fromAlpha, float toAlpha, float duration)
+    {
+        // Ensure duration positive
+        if (duration <= 0f)
+        {
+            // instant set: create/ensure overlay and set target alpha then exit
+            var inst0 = EnsureFadeOverlay();
+            SetOverlayAlpha(inst0.canvasGroup, toAlpha);
+            yield break;
+        }
+
+        var inst = EnsureFadeOverlay();
+        var cg = inst.canvasGroup;
+        // initialize
+        SetOverlayAlpha(cg, fromAlpha);
+        inst.root.SetActive(true);
+
+        float t = 0f;
+        float start = Time.realtimeSinceStartup;
+        while (t < 1f)
+        {
+            float now = Time.realtimeSinceStartup;
+            t = Mathf.Clamp01((now - start) / duration);
+            float a = Mathf.Lerp(fromAlpha, toAlpha, t);
+            SetOverlayAlpha(cg, a);
+            yield return null;
+        }
+
+        SetOverlayAlpha(cg, toAlpha);
+
+        // if fully transparent, hide overlay to avoid blocking raycasts; if opaque keep visible.
+        if (toAlpha <= 0f + 1e-6f)
+        {
+            inst.root.SetActive(false);
+        }
+        else
+        {
+            inst.root.SetActive(true);
+        }
+        yield break;
+    }
+
+    // Internal helper types / methods for the fade overlay
+    private class FadeOverlayInstance
+    {
+        public GameObject root;
+        public Canvas canvas;
+        public CanvasGroup canvasGroup;
+        public Image image;
+    }
+
+    private static FadeOverlayInstance _fadeOverlayInstance;
+    private static FadeOverlayInstance EnsureFadeOverlay()
+    {
+        if (_fadeOverlayInstance != null) return _fadeOverlayInstance;
+
+        // Create a persistent fullscreen canvas with an Image child and CanvasGroup
+        var go = new GameObject("TeleportFadeOverlay");
+        GameObject.DontDestroyOnLoad(go);
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 10000; // ensure on top
+
+        var cg = go.AddComponent<CanvasGroup>();
+        cg.blocksRaycasts = true; // while visible block raycasts to prevent interactions
+
+        // Create full-screen Image
+        var imgGO = new GameObject("FadeImage");
+        imgGO.transform.SetParent(go.transform, false);
+        var img = imgGO.AddComponent<Image>();
+        img.color = Color.black;
+        // stretch to full screen
+        var rect = img.rectTransform;
+        rect.anchorMin = Vector2.zero;
+        rect.anchorMax = Vector2.one;
+        rect.offsetMin = Vector2.zero;
+        rect.offsetMax = Vector2.zero;
+
+        _fadeOverlayInstance = new FadeOverlayInstance
+        {
+            root = go,
+            canvas = canvas,
+            canvasGroup = cg,
+            image = img
+        };
+
+        // start hidden
+        go.SetActive(false);
+        SetOverlayAlpha(cg, 0f);
+
+        return _fadeOverlayInstance;
+    }
+
+    private static void SetOverlayAlpha(CanvasGroup cg, float alpha)
+    {
+        if (cg == null) return;
+        cg.alpha = Mathf.Clamp01(alpha);
     }
 }
