@@ -254,7 +254,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = false;
+        DebugConfig.IsDebug = true;
 
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
 
