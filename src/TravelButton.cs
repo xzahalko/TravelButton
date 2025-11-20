@@ -357,7 +357,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         };
 
         // in Awake/Init:
-        cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", false, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
+        cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", true, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
 
     }
 

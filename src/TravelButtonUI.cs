@@ -33,6 +33,7 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using static MapMagic.SpatialHash;
 using static TravelButton;
+using UnityEngine;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -3119,13 +3120,16 @@ public partial class TravelButtonUI : MonoBehaviour
             // Insert this snippet into TryTeleportThenCharge (before you call tm.StartSceneLoad for the target scene).
             // It avoids assuming StartSceneLoad returns bool (some builds return void), and polls the active scene instead.
 
+//onza
             // Two-step transition: load LowMemory_TransitionScene first (guarded by config).
+            var sentinel = new UnityEngine.Vector3(-5000f, -5000f, -5000f);
+
+            TBLog.Info($"TwoStepTeleport: cfgUseTransitionScene={TravelButtonPlugin.cfgUseTransitionScene?.Value.ToString() ?? "<null>"}");
             if (!string.Equals(city.sceneName, "LowMemory_TransitionScene", StringComparison.OrdinalIgnoreCase)
                 && TravelButtonPlugin.cfgUseTransitionScene.Value)
             {
                 TBLog.Info("TwoStepTeleport: attempting transition via LowMemory_TransitionScene first.");
 
-                var sentinel = new UnityEngine.Vector3(-5000f, -5000f, -5000f);
                 var transitionSceneName = "LowMemory_TransitionScene";
 
                 bool acceptedLowLoad = false;
@@ -3203,11 +3207,12 @@ public partial class TravelButtonUI : MonoBehaviour
 
                 if (!acceptedLowLoad) TBLog.Warn("TwoStepTeleport: StartSceneLoad returned false or was not accepted for transition.");
             }
+//onza
 
             bool acceptedLoad = false;
             try
             {
-                acceptedLoad = tm.StartSceneLoad(city.sceneName, correctedCoordsFinal, (loadedScene, asyncOp, ok) =>
+                acceptedLoad = tm.StartSceneLoad(city.sceneName, sentinel, (loadedScene, asyncOp, ok) =>
                 {
                     try { TBLog.Info($"TryTeleportThenCharge: StartSceneLoad callback invoked for scene='{city.sceneName}' ok={ok}, loadedScene.name={(loadedScene != null ? loadedScene.name : "<null>")}"); } catch { }
                     loadSuccess = ok;
@@ -3275,8 +3280,104 @@ public partial class TravelButtonUI : MonoBehaviour
                 yield break;
             }
 
-            TBLog.Info("TryTeleportThenCharge: scene loaded successfully - performing placement attempt using AttemptTeleportToPositionSafe");
+            // --- Post-load stabilization: call this after the final scene is reported loaded (success) ---
 
+//onza
+            // ensure the loaded scene is active and unload transition scene
+            try
+            {
+                // 'loadedTargetScene' should be the Scene object you receive from StartSceneLoad callback,
+                // or you can query SceneManager.GetSceneByName(targetSceneName) if needed.
+                var loadedTargetScene = UnityEngine.SceneManagement.SceneManager.GetSceneByName(city.sceneName);
+                if (loadedTargetScene.IsValid())
+                {
+                    try
+                    {
+                        UnityEngine.SceneManagement.SceneManager.SetActiveScene(loadedTargetScene);
+                        TBLog.Info($"TwoStepTeleport: SetActiveScene('{city.sceneName}')");
+                    }
+                    catch (Exception exSet) { TBLog.Warn("TwoStepTeleport: SetActiveScene failed: " + exSet.Message); }
+                }
+
+                // Unload transition scene if present
+                const string transitionSceneName = "LowMemory_TransitionScene";
+                var transScene = UnityEngine.SceneManagement.SceneManager.GetSceneByName(transitionSceneName);
+                if (transScene.IsValid() && transScene.isLoaded && !string.Equals(transScene.name, loadedTargetScene.name, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        UnityEngine.SceneManagement.SceneManager.UnloadSceneAsync(transitionSceneName);
+                        TBLog.Info($"TwoStepTeleport: Unloading transition scene '{transitionSceneName}'.");
+                    }
+                    catch (Exception exUn) { TBLog.Warn("TwoStepTeleport: UnloadSceneAsync(transition) failed: " + exUn.Message); }
+                }
+            }
+            catch (Exception ex) { TBLog.Warn("TwoStepTeleport: post-load scene swap/unload failed: " + ex.Message); }
+
+            // small wait to let scene objects run their Start/Awake/init
+            yield return new UnityEngine.WaitForSeconds(0.25f);
+
+            // restart / clear particle systems to avoid leftover/bad-initialized FX
+            try
+            {
+                var allPS = UnityEngine.Object.FindObjectsOfType<UnityEngine.ParticleSystem>();
+                foreach (var ps in allPS)
+                {
+                    try
+                    {
+                        // Clear and re-play so systems start from a known state
+                        ps.Clear(true);
+                        ps.Simulate(0f, true, true);
+                        ps.Play(true);
+                    }
+                    catch { /* ignore per-PS failures */ }
+                }
+                TBLog.Info($"TwoStepTeleport: restarted {allPS.Length} ParticleSystem(s) for stabilization.");
+            }
+            catch (Exception ex) { TBLog.Warn("TwoStepTeleport: particle stabilization failed: " + ex.Message); }
+
+            // optionally force unload unused and GC to let other systems settle
+            // call UnloadUnusedAssets (catch exceptions here), then yield outside the try/catch
+            UnityEngine.AsyncOperation op = null;
+            try
+            {
+                op = UnityEngine.Resources.UnloadUnusedAssets();
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("TwoStepTeleport: UnloadUnusedAssets threw: " + ex.Message);
+            }
+
+            // Wait for it (yield outside try/catch)
+            if (op != null)
+            {
+                while (!op.isDone) yield return null;
+                try
+                {
+                    System.GC.Collect();
+                    TBLog.Info("TwoStepTeleport: UnloadUnusedAssets + GC completed.");
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("TwoStepTeleport: GC failed: " + ex.Message);
+                }
+            }
+            else
+            {
+                // no op to wait for
+                TBLog.Info("TwoStepTeleport: UnloadUnusedAssets was not started.");
+            }
+
+            // refresh plugin visited caches / UI if such helpers exist (non-fatal)
+            try
+            {
+                try { TravelButton.PrepareVisitedLookup(); } catch { }
+                try { TravelButton.NotifyVisitedFlagsChanged(); } catch { }
+            }
+            catch { /* ignore if helpers missing */ }
+
+            TBLog.Info("TryTeleportThenCharge: scene loaded successfully - performing placement attempt using AttemptTeleportToPositionSafe");
+//onza
             // Add immediately here (use sceneNameLocal or city.sceneName as appropriate)
             try
             {
