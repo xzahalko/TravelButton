@@ -31,12 +31,16 @@ using static TravelButtonUI;
 [BepInPlugin("cz.valheimskal.travelbutton", "TravelButton", "1.1.1")]
 public class TravelButtonPlugin : BaseUnityPlugin
 {
+    public static TravelButtonPlugin Instance { get; private set; }
 
     // BepInEx config entries (top-level)
     private BepInEx.Configuration.ConfigEntry<bool> bex_enableMod;
     private BepInEx.Configuration.ConfigEntry<int> bex_globalPrice;
     private BepInEx.Configuration.ConfigEntry<string> bex_currencyItem;
-//    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
+    //    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
+
+    // example: add in your plugin Init (BepInEx) so users can toggle:
+    public static BepInEx.Configuration.ConfigEntry<bool> cfgUseTransitionScene;
 
     // per-city config entries
     private Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>> bex_cityEnabled = new Dictionary<string, BepInEx.Configuration.ConfigEntry<bool>>(StringComparer.OrdinalIgnoreCase);
@@ -254,7 +258,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DebugConfig.IsDebug = false;
+        DebugConfig.IsDebug = true;
+
+        // Set the static instance reference
+        Instance = this;
 
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
 
@@ -343,51 +350,22 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("Awake initialization failed: " + ex);
         }
 
-/*        // Bind teleport mode config using a simple string description (compatible with older BepInEx overloads)
-        try
-        {
-            bex_teleportMode = Config.Bind(
-                "General",
-                "TeleportMode",
-                "Auto",
-                "Teleportation mode: Auto (prefer New, fallback to Old), New (refactored SafePlacePlayer), Old (restored AttemptTeleportToPositionSafe). Change via Configuration Manager."
-            );
-
-            // Initialize TeleportService mode from config
-            var initialMode = ParseTeleportMode(bex_teleportMode.Value);
-            TeleportService.Instance.Mode = initialMode;
-            TBLog.Info($"[TravelButtonPlugin] TeleportMode initial value: {TeleportModeToString(initialMode)}");
-
-            // Watch for runtime changes from Configuration Manager or manual edits
-            bex_teleportMode.SettingChanged += (sender, args) =>
-            {
-                try
-                {
-                    var newMode = ParseTeleportMode(bex_teleportMode.Value);
-                    TeleportService.Instance.Mode = newMode;
-                    TBLog.Info($"[TravelButtonPlugin] TeleportMode changed to: {TeleportModeToString(newMode)}");
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("[TravelButtonPlugin] Failed to apply TeleportMode change: " + ex);
-                }
-            };
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("[TravelButtonPlugin] TeleportMode config binding failed: " + ex);
-        }
-*/
         ShowPlayerNotification = (msg) =>
         {
             // enqueue to main thread if required; Show uses Unity main thread anyway
             TravelButtonNotificationUI.Show(msg, 3f);
         };
+
+        // in Awake/Init:
+        cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", false, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
+
     }
 
     // Add OnDestroy to clean up the watcher and any resources:
     private void OnDestroy()
     {
+        if (Instance == this) Instance = null;
+
         try
         {
             StopConfigWatcher();
@@ -407,11 +385,68 @@ public class TravelButtonPlugin : BaseUnityPlugin
         {
             string sceneName = scene.name ?? "";
             if (string.IsNullOrEmpty(sceneName)) return;
-            MarkCityVisitedByScene(sceneName);
-            LogActiveSceneInfo();
+
+            // Log active scene info (diagnostic)
+            try
+            {
+                LogActiveSceneInfo();
+            }
+            catch (Exception exLog)
+            {
+                TBLog.Warn("OnSceneLoaded: LogActiveSceneInfo failed: " + exLog.Message);
+            }
+
+            // Gather best-effort player position
+            UnityEngine.Vector3? playerPos = null;
+            try
+            {
+                playerPos = TravelButton.GetPlayerPositionInScene();
+            }
+            catch (Exception exPos)
+            {
+                TBLog.Warn("OnSceneLoaded: GetPlayerPositionInScene failed: " + exPos.Message);
+            }
+
+            // Best-effort detect a target GameObject name for the scene
+            string detectedTarget = null;
+            try
+            {
+                detectedTarget = TravelButton.DetectTargetGameObjectName(sceneName);
+            }
+            catch (Exception exDetect)
+            {
+                TBLog.Warn("OnSceneLoaded: DetectTargetGameObjectName failed: " + exDetect.Message);
+            }
+
+            // Optional description (keep null unless you have a source)
+            string sceneDesc = null;
+
+            // Record discovered scene into canonical JSON (safe, idempotent)
+            try
+            {
+                TravelButton.StoreVisitedSceneToJson(sceneName, playerPos, detectedTarget, sceneDesc);
+            }
+            catch (Exception exStore)
+            {
+                TBLog.Warn("OnSceneLoaded: StoreVisitedSceneToJson failed: " + exStore.Message);
+            }
+
+            // Existing visit marking logic
+            try
+            {
+                MarkCityVisitedByScene(sceneName);
+            }
+            catch (Exception exMark)
+            {
+                TBLog.Warn("OnSceneLoaded: MarkCityVisitedByScene failed: " + exMark.Message);
+            }
         }
-        catch (Exception ex) { TBLog.Warn("OnSceneLoaded: " + ex.Message); }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OnSceneLoaded: " + ex.Message);
+        }
     }
+
     // Add these snippets into src/TravelButton.cs in the TravelButton class.
     // 1) Add a plugin fallback set (near other static fields)
     private static System.Collections.Generic.HashSet<string> s_pluginVisitedNames = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
@@ -529,6 +564,81 @@ public class TravelButtonPlugin : BaseUnityPlugin
             return false;
         }
     }
+
+    // Public wrapper so other static classes can request deferred storage via coroutine
+    public Coroutine StartWaitForPlayerPlacementAndStore(string sceneName, float maxWaitSeconds = 6f, float pollInterval = 0.5f)
+    {
+        try
+        {
+            return StartCoroutine(WaitForPlayerPlacementAndStore(sceneName, maxWaitSeconds, pollInterval));
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("StartWaitForPlayerPlacementAndStore: failed to start coroutine: " + ex.Message);
+            return null;
+        }
+    }
+
+    // Coroutine: wait until a reliable player position is available or until timeout,
+    // then call TravelButton.StoreVisitedSceneToJson with detected coords.
+    private IEnumerator WaitForPlayerPlacementAndStore(string sceneName, float maxWaitSeconds = 6f, float pollInterval = 0.5f)
+    {
+        Vector3? acceptedPos = null;
+        float elapsed = 0f;
+
+        // small initial delay to allow scene objects to begin initializing
+        yield return null;
+
+        while (elapsed < maxWaitSeconds)
+        {
+            try
+            {
+                // Prefer the more thorough TryGetExactPlayerWorldPosition helper if available.
+                // This method should return true when a reliable position is found.
+                if (PlayerPositionExact.TryGetExactPlayerWorldPosition(out Vector3 exactPos))
+                {
+                    bool looksLikeSentinel =
+                        Math.Abs(exactPos.x + 5000f) < 200f ||
+                        Math.Abs(exactPos.y + 5000f) < 200f ||
+                        Math.Abs(exactPos.z + 5000f) < 200f;
+
+                    bool isZero = exactPos == Vector3.zero;
+
+                    if (!looksLikeSentinel && !isZero)
+                    {
+                        acceptedPos = exactPos;
+                        break;
+                    }
+                }
+            }
+            catch (Exception exTry)
+            {
+                TBLog.Warn("WaitForPlayerPlacementAndStore: TryGetExactPlayerWorldPosition threw: " + exTry.Message);
+            }
+
+            yield return new WaitForSeconds(pollInterval);
+            elapsed += pollInterval;
+        }
+
+        // fallback: best-effort GetPlayerPositionInScene
+        if (!acceptedPos.HasValue)
+        {
+            try { acceptedPos = TravelButton.GetPlayerPositionInScene(); } catch { acceptedPos = null; }
+        }
+
+        string detectedTarget = null;
+        try { detectedTarget = TravelButton.DetectTargetGameObjectName(sceneName); } catch { detectedTarget = null; }
+
+        try
+        {
+            TravelButton.StoreVisitedSceneToJson(sceneName, acceptedPos, detectedTarget, null);
+        }
+        catch (Exception exStore)
+        {
+            TBLog.Warn("WaitForPlayerPlacementAndStore: StoreVisitedSceneToJson failed: " + exStore.Message);
+        }
+    }
+
 
     /// <summary>
     /// Load TravelButton_Cities.json from candidate locations using TravelConfig.LoadFromFile.
@@ -2137,6 +2247,206 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         return null;
     }
+
+    /// <summary>
+    /// Check whether the canonical TravelButton_Cities.json contains a city with the given sceneName.
+    /// If found, returns true and outputs the JObject for that city.
+    /// </summary>
+    public static bool VerifyJsonContainsScene(string sceneName, out JObject cityObj)
+    {
+        cityObj = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sceneName))
+            {
+                TBLog.Warn("VerifyJsonContainsScene: sceneName empty");
+                return false;
+            }
+
+            string jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath))
+            {
+                TBLog.Warn($"VerifyJsonContainsScene: JSON not found at path: {jsonPath}");
+                return false;
+            }
+
+            var text = File.ReadAllText(jsonPath);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                TBLog.Warn("VerifyJsonContainsScene: JSON file is empty");
+                return false;
+            }
+
+            var root = JObject.Parse(text);
+            var cities = root["cities"] as JArray;
+            if (cities == null)
+            {
+                TBLog.Warn("VerifyJsonContainsScene: JSON does not contain 'cities' array");
+                return false;
+            }
+
+            string norm = sceneName.Trim();
+            cityObj = cities.Children<JObject>()
+                .FirstOrDefault(c =>
+                {
+                    var sn = ((string)(c["sceneName"] ?? c["name"]))?.Trim();
+                    return !string.IsNullOrEmpty(sn) && string.Equals(sn, norm, StringComparison.OrdinalIgnoreCase);
+                });
+
+            if (cityObj != null)
+            {
+                TBLog.Info($"VerifyJsonContainsScene: found scene '{sceneName}' in JSON: {cityObj.ToString(Newtonsoft.Json.Formatting.None)}");
+                return true;
+            }
+            else
+            {
+                TBLog.Info($"VerifyJsonContainsScene: scene '{sceneName}' NOT found in JSON at {jsonPath}");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("VerifyJsonContainsScene: error: " + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Attempts to reload runtime TravelButton.Cities from JSON using any available loader method (via reflection),
+    /// then checks whether TravelButton.Cities contains an entry for sceneName.
+    /// Returns true if runtime contains the scene after reload.
+    /// </summary>
+    public static bool ReloadCitiesFromJsonAndVerify(string sceneName)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sceneName))
+            {
+                TBLog.Warn("ReloadCitiesFromJsonAndVerify: sceneName empty");
+                return false;
+            }
+
+            // 1) Try to call known loader methods via reflection to force runtime to read JSON:
+            Type tbType = typeof(TravelButton);
+            // Candidate method names observed in logs/source: ParseCitiesJsonFile, EnsureCitiesInitializedFromJsonOrDefaults, TryLoadCitiesJsonIntoTravelButtonMod, InitCities, EnsureCitiesInitializedFromJsonOrDefaults
+            var methodCandidates = new[] {
+                "EnsureCitiesInitializedFromJsonOrDefaults",
+                "ParseCitiesJsonFile",
+                "TryLoadCitiesJsonIntoTravelButtonMod",
+                "InitCities",
+                "EnsureCitiesInitialized"
+            };
+
+            MethodInfo foundMethod = null;
+            foreach (var name in methodCandidates)
+            {
+                foundMethod = tbType.GetMethod(name, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (foundMethod != null) break;
+            }
+
+            if (foundMethod != null)
+            {
+                TBLog.Info($"ReloadCitiesFromJsonAndVerify: invoking loader method '{foundMethod.Name}' to refresh runtime cities.");
+                // try invoke with a single string parameter (path) if available, else no params
+                var parameters = foundMethod.GetParameters();
+                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(string))
+                {
+                    string jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+                    foundMethod.Invoke(null, new object[] { jsonPath });
+                }
+                else
+                {
+                    foundMethod.Invoke(null, null);
+                }
+            }
+            else
+            {
+                TBLog.Info("ReloadCitiesFromJsonAndVerify: no direct loader method found by reflection; attempting to refresh via PersistCitiesToPluginFolder or instructing a restart.");
+                // as a fallback, try calling PersistCitiesToPluginFolder (non-destructive) or just log
+                var persistMethod = tbType.GetMethod("PersistCitiesToPluginFolder", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (persistMethod != null)
+                {
+                    try
+                    {
+                        persistMethod.Invoke(null, null);
+                        TBLog.Info("ReloadCitiesFromJsonAndVerify: called PersistCitiesToPluginFolder (may not reload runtime).");
+                    }
+                    catch (Exception pe)
+                    {
+                        TBLog.Warn("ReloadCitiesFromJsonAndVerify: calling PersistCitiesToPluginFolder failed: " + pe.Message);
+                    }
+                }
+            }
+
+            // 2) Inspect the runtime TravelButton.Cities field or property via reflection
+            // Expected: a static field/property named 'Cities' (List<City> or similar)
+            var field = tbType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            object citiesObj = null;
+            if (field != null)
+            {
+                citiesObj = field.GetValue(null);
+            }
+            else
+            {
+                var prop = tbType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null)
+                {
+                    citiesObj = prop.GetValue(null);
+                }
+            }
+
+            if (citiesObj == null)
+            {
+                TBLog.Warn("ReloadCitiesFromJsonAndVerify: could not locate TravelButton.Cities field/property via reflection. The runtime collection may be inaccessible. Consider restarting plugin to load JSON.");
+                // still try verifying JSON itself
+                return VerifyJsonContainsScene(sceneName, out _);
+            }
+
+            // Try to enumerate the runtime collection using reflection
+            var enumerable = citiesObj as System.Collections.IEnumerable;
+            if (enumerable == null)
+            {
+                TBLog.Warn("ReloadCitiesFromJsonAndVerify: TravelButton.Cities is not enumerable via reflection.");
+                return VerifyJsonContainsScene(sceneName, out _);
+            }
+
+            string norm = sceneName.Trim().ToLowerInvariant();
+            foreach (var item in enumerable)
+            {
+                if (item == null) continue;
+                // try common property names 'sceneName' or 'SceneName' or 'scene' or 'name'
+                var itemType = item.GetType();
+                string sceneVal = null;
+                var sceneProp = itemType.GetProperty("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+                if (sceneProp != null)
+                {
+                    sceneVal = sceneProp.GetValue(item) as string;
+                }
+                else
+                {
+                    var nameProp = itemType.GetProperty("name", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
+                    if (nameProp != null)
+                        sceneVal = nameProp.GetValue(item) as string;
+                }
+
+                if (!string.IsNullOrEmpty(sceneVal) && sceneVal.Trim().ToLowerInvariant() == norm)
+                {
+                    TBLog.Info($"ReloadCitiesFromJsonAndVerify: runtime TravelButton.Cities contains scene '{sceneName}'.");
+                    return true;
+                }
+            }
+
+            TBLog.Warn($"ReloadCitiesFromJsonAndVerify: runtime TravelButton.Cities does NOT contain scene '{sceneName}'. Falling back to verifying JSON file itself.");
+            // fallback: verify file contains it
+            return VerifyJsonContainsScene(sceneName, out _);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ReloadCitiesFromJsonAndVerify: unexpected error: " + ex.Message);
+            return VerifyJsonContainsScene(sceneName, out _);
+        }
+    }
+
 }
 
 public static class TravelButton
@@ -6084,5 +6394,575 @@ public static class TravelButton
             TBLog.Warn("NotifyVisitedFlagsChanged: unexpected error: " + ex);
         }
     }
+
+    /// <summary>
+    /// Best-effort: get player position from scene (returns null if not found).
+    /// </summary>
+    public static Vector3? GetPlayerPositionInScene()
+    {
+        try
+        {
+            // Try common tags first
+            var go = GameObject.FindWithTag("Player");
+            if (go != null) return go.transform.position;
+
+            // Fallback: try find objects named like PlayerChar*
+            foreach (var g in GameObject.FindObjectsOfType<GameObject>())
+            {
+                if (g == null || string.IsNullOrEmpty(g.name)) continue;
+                if (g.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase) ||
+                    g.name.Equals("Player", StringComparison.OrdinalIgnoreCase))
+                {
+                    return g.transform.position;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("GetPlayerPositionInScene failed: " + ex.Message);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Best-effort detection of an in-scene target GameObject name that could represent the city anchor.
+    /// Returns null when nothing sensible found.
+    /// </summary>
+    public static string DetectTargetGameObjectName(string sceneName)
+    {
+        if (string.IsNullOrEmpty(sceneName)) return null;
+        try
+        {
+            // Find objects whose name contains the sceneName (case-insensitive) and are in a valid loaded scene.
+            var all = Resources.FindObjectsOfTypeAll<GameObject>();
+            foreach (var g in all)
+            {
+                if (g == null || string.IsNullOrEmpty(g.name)) continue;
+                if (!g.scene.IsValid() || !g.scene.isLoaded) continue;
+                if (g.name.IndexOf(sceneName, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return g.name;
+                }
+            }
+
+            // fallback: find any GameObject whose name contains 'location' or 'town' and is loaded
+            foreach (var g in all)
+            {
+                if (g == null || string.IsNullOrEmpty(g.name)) continue;
+                if (!g.scene.IsValid() || !g.scene.isLoaded) continue;
+                var n = g.name.ToLowerInvariant();
+                if (n.Contains("location") || n.Contains("town") || n.Contains("village") || n.Contains("spawn"))
+                    return g.name;
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DetectTargetGameObjectName failed: " + ex.Message);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Store a newly discovered/visited scene into the canonical TravelButton_Cities.json.
+    /// - Backs up the file before modification.
+    /// - Appends a new city entry when no existing entry with matching sceneName is found.
+    /// - Validates JSON after writing; on failure restores from backup.
+    /// </summary>
+    /// <param name="newSceneName">Name of the scene (required)</param>
+    /// <param name="playerPos">Player coordinates (nullable)</param>
+    /// <param name="detectedTarget">Detected targetGameObjectName (nullable)</param>
+    /// <param name="sceneDesc">Optional description</param>
+    // Replace the existing StoreVisitedSceneToJson implementation with this version.
+    // This creates a single reusable backup file (TravelButton_Cities.json.bak) and reuses it
+    // for subsequent calls instead of creating timestamped backups every time.
+    // Insert/replace this method inside the existing TravelButton partial class (src/TravelButton.cs).
+    // This version:
+    // - skips blacklisted transient scenes
+    // - creates a single reusable backup file (TravelButton_Cities.json.bak)
+    // - defers writing coords by starting the plugin coroutine when coords are missing/invalid
+    // - validates the JSON structure and restores from the single backup on failure
+    // - uses atomic replace where possible (File.Replace)
+    // Replace the existing StoreVisitedSceneToJson with this implementation.
+    // Key fixes:
+    // - single reusable backup TravelButton_Cities.json.bak
+    // - if both json and .bak parse fail, preserve the original json into .bak and continue with a fresh root so new scene can be saved
+    // - defers coords detection to coroutine when coords are invalid
+    // Treat coords as invalid when any axis looks like the -5000 sentinel, or when zero or null.
+    private static bool IsInvalidCoords(Vector3? v)
+    {
+        if (!v.HasValue) return true;
+        var p = v.Value;
+        if (p == Vector3.zero) return true;
+
+        // If any axis is close to -5000 (placeholder), consider the coords invalid.
+        if (Math.Abs(p.x + 5000f) < 200f || Math.Abs(p.y + 5000f) < 200f || Math.Abs(p.z + 5000f) < 200f)
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Store a newly discovered/visited scene into the canonical TravelButton_Cities.json.
+    /// Safe-guards:
+    /// - single .bak backup preserved/used
+    /// - aborts if both canonical json and .bak are invalid (to avoid accidental overwrite)
+    /// - defers coords detection by starting plugin coroutine if coords invalid/missing
+    /// - verifies written file kept previous entries and restores .bak on verification failure
+    /// </summary>
+    public static void StoreVisitedSceneToJson(string newSceneName, Vector3? playerPos = null, string detectedTarget = null, string sceneDesc = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(newSceneName))
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: newSceneName is null/empty; skipping.");
+                return;
+            }
+
+            // 0) Blacklist: do not store transient/system scenes
+            var blacklist = new[] { "MainMenu_Empty", "LowMemory_TransitionScene" };
+            if (blacklist.Any(b => string.Equals(b, newSceneName, StringComparison.OrdinalIgnoreCase)))
+            {
+                TBLog.Info($"StoreVisitedSceneToJson: scene '{newSceneName}' is blacklisted; not storing.");
+                return;
+            }
+
+            string jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: canonical json path unknown; skipping.");
+                return;
+            }
+
+            // ensure directory exists
+            try
+            {
+                var dir = Path.GetDirectoryName(jsonPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch (Exception exDir)
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: failed creating json directory: " + exDir.Message);
+            }
+
+            string backupPath = jsonPath + ".bak";
+
+            // Ensure single .bak exists: create if missing by copying the canonical JSON
+            try
+            {
+                if (File.Exists(jsonPath) && !File.Exists(backupPath))
+                {
+                    File.Copy(jsonPath, backupPath, overwrite: false);
+                    TBLog.Info($"StoreVisitedSceneToJson: created single backup: {backupPath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: failed creating .bak (will continue): " + ex.Message);
+            }
+
+            // Load root from canonical json or bak (require at least one to parse)
+            JObject root = null;
+            JArray cities = null;
+
+            bool parsedFromJson = false;
+            if (File.Exists(jsonPath))
+            {
+                try
+                {
+                    var text = File.ReadAllText(jsonPath);
+                    root = string.IsNullOrWhiteSpace(text) ? new JObject() : JObject.Parse(text);
+                    parsedFromJson = true;
+                    TBLog.Info("StoreVisitedSceneToJson: parsed canonical JSON successfully.");
+                }
+                catch (Exception exParse)
+                {
+                    TBLog.Warn("StoreVisitedSceneToJson: failed parsing existing JSON: " + exParse.Message);
+                }
+            }
+
+            bool parsedFromBak = false;
+            if (!parsedFromJson && File.Exists(backupPath))
+            {
+                try
+                {
+                    var bakText = File.ReadAllText(backupPath);
+                    root = string.IsNullOrWhiteSpace(bakText) ? new JObject() : JObject.Parse(bakText);
+                    parsedFromBak = true;
+                    TBLog.Info("StoreVisitedSceneToJson: parsed .bak successfully and will use it as source.");
+                }
+                catch (Exception exBakParse)
+                {
+                    TBLog.Warn("StoreVisitedSceneToJson: existing .bak parse failed: " + exBakParse.Message);
+                }
+            }
+
+            // Abort if neither JSON nor .bak were parsable; avoid overwriting correct data.
+            if (!parsedFromJson && !parsedFromBak)
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: both canonical JSON and .bak are invalid - aborting write to avoid data loss.");
+                return;
+            }
+
+            if (root["cities"] == null || root["cities"].Type != JTokenType.Array)
+            {
+                cities = new JArray();
+                root["cities"] = cities;
+            }
+            else
+            {
+                cities = (JArray)root["cities"];
+            }
+
+            // Capture pre-existing sceneNames for post-write verification
+            var preExistingScenes = cities.Children<JObject>()
+                .Select(c => ((string)(c["sceneName"] ?? c["name"]))?.Trim().ToLowerInvariant())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+
+            string normScene = newSceneName.Trim();
+
+            // Check if scene already exists (case-insensitive)
+            bool exists = cities.Children<JObject>().Any(c =>
+            {
+                var sceneVal = (string)(c["sceneName"] ?? c["name"]);
+                return !string.IsNullOrEmpty(sceneVal) && string.Equals(sceneVal.Trim(), normScene, StringComparison.OrdinalIgnoreCase);
+            });
+
+            if (exists)
+            {
+                TBLog.Info($"StoreVisitedSceneToJson: scene '{newSceneName}' already present in JSON; skipping add.");
+                return;
+            }
+
+            // If coords missing/invalid, defer detection using plugin coroutine (if available)
+            if (IsInvalidCoords(playerPos))
+            {
+                if (TravelButtonPlugin.Instance != null)
+                {
+                    TBLog.Info($"StoreVisitedSceneToJson: coords absent/invalid for '{newSceneName}', deferring detection to coroutine.");
+                    try
+                    {
+                        TravelButtonPlugin.Instance.StartWaitForPlayerPlacementAndStore(newSceneName);
+                        return; // coroutine will call this method again with good coords
+                    }
+                    catch (Exception exStart)
+                    {
+                        TBLog.Warn("StoreVisitedSceneToJson: failed to start deferred coroutine; falling back to immediate write: " + exStart.Message);
+                        // fall through and write without coords
+                    }
+                }
+                else
+                {
+                    TBLog.Info("StoreVisitedSceneToJson: plugin instance not available to defer coords; proceeding with best-effort (coords will be null).");
+                }
+            }
+
+            // Build new city object
+            var newCity = new JObject
+            {
+                ["name"] = normScene,
+                ["sceneName"] = normScene,
+                ["coords"] = (playerPos.HasValue && !IsInvalidCoords(playerPos)) ? new JArray { JToken.FromObject(Math.Round(playerPos.Value.x, 3)), JToken.FromObject(Math.Round(playerPos.Value.y, 3)), JToken.FromObject(Math.Round(playerPos.Value.z, 3)) } : null,
+                ["price"] = 200,
+                ["targetGameObjectName"] = !string.IsNullOrEmpty(detectedTarget) ? detectedTarget : (normScene + "_Location"),
+                ["desc"] = sceneDesc ?? "",
+                ["visited"] = true
+            };
+
+            // Remove null properties
+            var cleanedCity = new JObject();
+            foreach (var prop in newCity.Properties())
+            {
+                if (prop.Value == null || prop.Value.Type == JTokenType.Null) continue;
+                cleanedCity[prop.Name] = prop.Value;
+            }
+
+            cities.Add(cleanedCity);
+
+            // Basic validation
+            bool valid = true;
+            try
+            {
+                if (root["cities"] == null || root["cities"].Type != JTokenType.Array) valid = false;
+                else
+                {
+                    foreach (var token in (JArray)root["cities"])
+                    {
+                        if (!(token is JObject jo))
+                        {
+                            valid = false; break;
+                        }
+                        var nm = (string)(jo["name"] ?? jo["sceneName"]);
+                        if (string.IsNullOrWhiteSpace(nm))
+                        {
+                            valid = false; break;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                valid = false;
+            }
+
+            if (!valid)
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: constructed JSON failed validation; aborting write. .bak preserved.");
+                return;
+            }
+
+            // Write to temp file then replace (prefer File.Replace to update .bak)
+            try
+            {
+                string tempPath = jsonPath + ".tmp";
+                File.WriteAllText(tempPath, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+
+                try
+                {
+                    if (File.Exists(backupPath))
+                    {
+                        // Replace jsonPath with tempPath, preserving previous json into backupPath
+                        File.Replace(tempPath, jsonPath, backupPath, ignoreMetadataErrors: true);
+                    }
+                    else
+                    {
+                        // Create bak from existing json if present, then copy temp over
+                        if (File.Exists(jsonPath))
+                        {
+                            try { File.Copy(jsonPath, backupPath, overwrite: true); } catch { /* ignore */ }
+                        }
+                        File.Copy(tempPath, jsonPath, overwrite: true);
+                    }
+
+                    if (File.Exists(tempPath)) File.Delete(tempPath);
+                    TBLog.Info($"StoreVisitedSceneToJson: appended new scene '{newSceneName}' to {jsonPath}");
+
+                    try { TravelButton.PersistCitiesToPluginFolder(); } catch { /* ignore */ }
+
+                    // --- Post-write verification: ensure preExistingScenes still present ---
+                    if (preExistingScenes != null && preExistingScenes.Count > 0)
+                    {
+                        try
+                        {
+                            var newText = File.ReadAllText(jsonPath);
+                            var verifyRoot = JObject.Parse(newText);
+                            var verifyCities = (verifyRoot["cities"] as JArray) ?? new JArray();
+                            var newSceneSet = new HashSet<string>(verifyCities.Children<JObject>()
+                                .Select(c => ((string)(c["sceneName"] ?? c["name"]))?.Trim().ToLowerInvariant())
+                                .Where(s => !string.IsNullOrEmpty(s)));
+
+                            var missing = preExistingScenes.Where(ps => !newSceneSet.Contains(ps)).ToList();
+                            if (missing.Count > 0)
+                            {
+                                TBLog.Warn($"StoreVisitedSceneToJson: verification failed - missing pre-existing scenes: {string.Join(", ", missing)}. Restoring .bak.");
+                                if (File.Exists(backupPath))
+                                {
+                                    try
+                                    {
+                                        File.Copy(backupPath, jsonPath, overwrite: true);
+                                        TBLog.Info("StoreVisitedSceneToJson: restored .bak to recover previous data.");
+                                    }
+                                    catch (Exception exRestore)
+                                    {
+                                        TBLog.Warn("StoreVisitedSceneToJson: failed to restore .bak during verification step: " + exRestore.Message);
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception exVerify)
+                        {
+                            TBLog.Warn("StoreVisitedSceneToJson: post-write verification failed: " + exVerify.Message);
+                            if (File.Exists(backupPath))
+                            {
+                                try
+                                {
+                                    File.Copy(backupPath, jsonPath, overwrite: true);
+                                    TBLog.Info("StoreVisitedSceneToJson: restored .bak after verification parse failure.");
+                                }
+                                catch (Exception exRestore)
+                                {
+                                    TBLog.Warn("StoreVisitedSceneToJson: failed to restore .bak after verification parse failure: " + exRestore.Message);
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception exReplace)
+                {
+                    TBLog.Warn("StoreVisitedSceneToJson: atomic replace/write failed: " + exReplace.Message);
+                    // try fallback direct copy, then attempt restore
+                    try
+                    {
+                        File.Copy(tempPath, jsonPath, overwrite: true);
+                        if (File.Exists(tempPath)) File.Delete(tempPath);
+                        TBLog.Info($"StoreVisitedSceneToJson: wrote JSON to {jsonPath} using fallback direct copy.");
+                    }
+                    catch (Exception exFallback)
+                    {
+                        TBLog.Warn("StoreVisitedSceneToJson: fallback direct write failed: " + exFallback.Message);
+                        if (File.Exists(backupPath))
+                        {
+                            try
+                            {
+                                File.Copy(backupPath, jsonPath, overwrite: true);
+                                TBLog.Info("StoreVisitedSceneToJson: restored .bak after write failures.");
+                            }
+                            catch (Exception exFinal)
+                            {
+                                TBLog.Warn("StoreVisitedSceneToJson: failed to restore .bak after write failures: " + exFinal.Message);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn("StoreVisitedSceneToJson: final write failed: " + exWrite.Message);
+                if (File.Exists(backupPath))
+                {
+                    try
+                    {
+                        File.Copy(backupPath, jsonPath, overwrite: true);
+                        TBLog.Info("StoreVisitedSceneToJson: restored .bak after final write failure.");
+                    }
+                    catch (Exception exRestore2)
+                    {
+                        TBLog.Warn("StoreVisitedSceneToJson: failed to restore .bak after final write failure: " + exRestore2.Message);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("StoreVisitedSceneToJson: unexpected error: " + ex.Message);
+        }
+    }
+
+    public static IEnumerator WaitForSceneReadiness(
+        string sceneName,
+        string requiredComponentTypeName,   // e.g. "TownController" or null
+        string requiredObjectNameContains,  // e.g. "BGM_TownCierzo" or null (case-insensitive)
+        Action<bool> onReady,               // invoked with true if ready, false on timeout
+        float maxWaitSeconds = 8f,
+        float pollInterval = 0.5f)
+    {
+        float elapsed = 0f;
+        yield return null; // allow one frame for scene to start initializing
+
+        while (elapsed < maxWaitSeconds)
+        {
+            try
+            {
+                bool compOk = false;
+                bool nameOk = false;
+
+                // 1) check component type (preferred)
+                if (!string.IsNullOrEmpty(requiredComponentTypeName))
+                {
+                    var types = AppDomain.CurrentDomain.GetAssemblies();
+                    foreach (var asm in types)
+                    {
+                        try
+                        {
+                            var t = asm.GetType(requiredComponentTypeName, false, true);
+                            if (t != null && typeof(UnityEngine.Component).IsAssignableFrom(t))
+                            {
+                                var found = UnityEngine.Object.FindObjectOfType(t);
+                                if (found != null)
+                                {
+                                    var go = ((Component)found).gameObject;
+                                    if (go.activeInHierarchy)
+                                    {
+                                        compOk = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* ignore assembly errors */ }
+                    }
+                }
+
+                // 2) check by name contains (fallback)
+                if (!string.IsNullOrEmpty(requiredObjectNameContains))
+                {
+                    var all = UnityEngine.Object.FindObjectsOfType<GameObject>();
+                    foreach (var go in all)
+                    {
+                        if (!go.activeInHierarchy) continue;
+                        if (go.name.IndexOf(requiredObjectNameContains, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            // optional: ensure object's world position is not sentinel
+                            var p = go.transform.position;
+                            bool notSentinel = !(Math.Abs(p.x + 5000f) < 200f || Math.Abs(p.y + 5000f) < 200f || Math.Abs(p.z + 5000f) < 200f);
+                            if (notSentinel)
+                            {
+                                nameOk = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Decide "ready" policy: prefer component check when provided, otherwise use name check
+                bool ready = false;
+                if (!string.IsNullOrEmpty(requiredComponentTypeName))
+                    ready = compOk;
+                else if (!string.IsNullOrEmpty(requiredObjectNameContains))
+                    ready = nameOk;
+                else
+                {
+                    // If no requirement given, consider scene "ready" when Camera.main and a player object exist
+                    ready = (Camera.main != null && GetPlayerObject() != null);
+                }
+
+                if (ready)
+                {
+                    onReady?.Invoke(true);
+                    yield break;
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"WaitForSceneReadiness: exception while checking readiness: {ex.Message}");
+            }
+
+            yield return new WaitForSeconds(pollInterval);
+            elapsed += pollInterval;
+        }
+
+        // timed out
+        onReady?.Invoke(false);
+    }
+
+    // Helper to find the player GameObject used in other parts of plugin.
+    private static GameObject GetPlayerObject()
+    {
+        // try tag
+        var byTag = GameObject.FindWithTag("Player");
+        if (byTag != null) return byTag;
+
+        // fallback: heuristics by name
+        var all = UnityEngine.Object.FindObjectsOfType<GameObject>();
+        foreach (var go in all)
+        {
+            if (go.name.StartsWith("PlayerChar") || go.name.IndexOf("Player", StringComparison.OrdinalIgnoreCase) >= 0)
+                return go;
+        }
+        return null;
+    }
+
+    // Scene readiness map inside TravelButton (add near top of file)
+    public static readonly Dictionary<string, string> SceneReadinessComponentMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        // If you know a controller type add that (preferred).
+        // For Chersonese we don't have a stable controller type in the dump, so we will use "Environment" object fallback.
+        ["ChersoneseNewTerrain"] = null,
+        ["CierzoNewTerrain"] = null,
+        // add other scenes as you identify authoritative component names
+    };
+
 
 }
