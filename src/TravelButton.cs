@@ -260,6 +260,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         DebugConfig.IsDebug = true;
 
+        // avoid creating multiple hooks
+        if (GameObject.Find("SceneLoadHook") == null)
+        {
+            var hookGO = new GameObject("SceneLoadHook");
+            hookGO.AddComponent<SceneLoadHook>();
+            UnityEngine.Object.DontDestroyOnLoad(hookGO);
+        }
+
         // Set the static instance reference
         Instance = this;
 
