@@ -27,3 +27,9 @@ Files included
 Notes
 - The plugin uses BepInEx config entries and a simple OnGUI overlay.
 - Use Harmony patches carefully — commented example provided in the code.
+
+## Tests and Recordings
+
+Manual test runs, recordings, and logs demonstrating behavior for the `cfgUseTransitionScene` config key are available in `dist/TESTS.md`.
+
+Please add the recorded MP4s and log files under `dist/recordings/` and `dist/logs/` respectively.
