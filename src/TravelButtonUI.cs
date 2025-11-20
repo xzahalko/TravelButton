@@ -14,6 +14,8 @@
 // Use these logs to check travel_config.json coordinates and city.targetGameObjectName values,
 // and to correlate TravelButtonPlugin.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
 using MapMagic;
+using Newtonsoft.Json.Linq;
+using NodeCanvas.Tasks.Actions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -1861,7 +1863,7 @@ public partial class TravelButtonUI : MonoBehaviour
     {
         TBLog.Info("OpenTravelDialog: invoked.");
 
-        PrepareVisitedLookup();
+        VerifyJsonAndRuntimeCitiesOnDialogOpen();
 
         try
         {
@@ -2778,11 +2780,15 @@ public partial class TravelButtonUI : MonoBehaviour
     // Teleportation logic otherwise left unchanged.
     // Replace TryTeleportThenCharge with this implementation.
     // Call StartCoroutine(TryTeleportThenCharge(city, cost)) where needed.
+
+    // Replace the existing TryTeleportThenCharge implementation with this method.
+    // IMPORTANT: Put this inside the same class that previously contained TryTeleportThenCharge.
+    // Do NOT paste this at file scope (outside any class) or inside another method.
     private IEnumerator TryTeleportThenCharge(TravelButton.City city, int cost)
     {
         float entryTime = Time.realtimeSinceStartup;
-        LogCityConfig(city?.name);
-        TBLog.Info($"TryTeleportThenCharge: Enter (t={entryTime:F3}) city='{city?.name ?? "<null>"}' cost={cost}");
+        try { LogCityConfig(city?.name); } catch { }
+        TBLog.Info(string.Format("TryTeleportThenCharge: Enter (t={0:F3}) city='{1}' cost={2}", entryTime, city?.name ?? "<null>", cost));
 
         if (city == null)
         {
@@ -2848,34 +2854,9 @@ public partial class TravelButtonUI : MonoBehaviour
         // Determine coords/anchor availability (no yields)
         Vector3 coordsHint = Vector3.zero;
         bool haveCoordsHint = false;
-        bool haveTargetGameObject = false;
-        bool targetGameObjectFound = false;
         bool isFaded = false;
-        /*        try
-                {
-                    if (!string.IsNullOrEmpty(city.targetGameObjectName))
-                    {
-                        haveTargetGameObject = true;
-                        var tgo = GameObject.Find(city.targetGameObjectName);
-                        if (tgo != null)
-                        {
-                            targetGameObjectFound = true;
-                            coordsHint = tgo.transform.position;
-                            haveCoordsHint = true;
-                            TBLog.Info($"TryTeleportThenCharge: Found target GameObject '{city.targetGameObjectName}' at {coordsHint} - will prefer anchor.");
-                        }
-                        else
-                        {
-                            TBLog.Info($"TryTeleportThenCharge: targetGameObjectName '{city.targetGameObjectName}' provided, but GameObject not found in scene.");
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("TryTeleportThenCharge: error checking targetGameObjectName: " + ex);
-                }
-        */
-        if (!haveCoordsHint && city.coords != null && city.coords.Length >= 3)
+
+        if (city.coords != null && city.coords.Length >= 3)
         {
             coordsHint = new Vector3(city.coords[0], city.coords[1], city.coords[2]);
             haveCoordsHint = true;
@@ -2908,7 +2889,7 @@ public partial class TravelButtonUI : MonoBehaviour
             }
         }
 
-        TBLog.Info($"TryTeleportThenCharge: city='{city.name}', haveTargetGameObject={haveTargetGameObject}, targetGameObjectFound={targetGameObjectFound}, haveCoordsHint={haveCoordsHint}, coordsHint={coordsHint}, sceneName='{city.sceneName}'");
+        TBLog.Info($"TryTeleportThenCharge: city='{city.name}', haveCoordsHint={haveCoordsHint}, coordsHint={coordsHint}, sceneName='{city.sceneName}'");
 
         var activeScene2 = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         bool targetSceneSpecified2 = !string.IsNullOrEmpty(city.sceneName);
@@ -2935,21 +2916,14 @@ public partial class TravelButtonUI : MonoBehaviour
             catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: EnsureInstance threw: " + ex); tm = TeleportManager.Instance; }
 
             TBLog.Info($"TryTeleportThenCharge: tm resolved: {(tm != null ? "non-null" : "null")}");
-            if (tm != null)
-            {
-                try { TBLog.Info($"TryTeleportThenCharge: tm info - instance? {(TeleportManager.Instance != null ? "Instance exists" : "Instance null")}"); } catch { }
-            }
-
             if (tm == null)
             {
                 TBLog.Warn("TryTeleportThenCharge: TeleportManager not available; aborting and restoring UI.");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                // immediately restore UI/menu state + input focus
                 try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
                 try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (fast abort)"); } catch { }
                 isTeleporting = false;
                 isFaded = false;
-                // close dialog & inventory on abort
                 CloseDialogAndInventory_Safe();
                 yield break;
             }
@@ -2985,7 +2959,6 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("TryTeleportThenCharge: subscription failed; restoring UI (fast path)");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                // immediately restore UI/menu state + input focus
                 try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
                 try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (subscribe fail)"); } catch { }
                 isTeleporting = false;
@@ -3002,7 +2975,6 @@ public partial class TravelButtonUI : MonoBehaviour
             bool coordsOk = TeleportManagerSafePlace.ComputeSafePlacementCoords(this, coordsHint, true, out correctedCoords);
             if (!coordsOk)
             {
-                // fallback to grounded coords if compute failed
                 correctedCoordsFinal = groundedCoords;
                 TBLog.Info($"ComputeSafePlacementCoords: failed – using groundedCoords={correctedCoordsFinal}");
             }
@@ -3031,7 +3003,6 @@ public partial class TravelButtonUI : MonoBehaviour
                 TBLog.Warn("TryTeleportThenCharge: StartTeleport rejected the request.");
                 try { if (tm != null) tm.OnTeleportFinished -= onFinished; TBLog.Info("TryTeleportThenCharge: unsubscribed OnTeleportFinished after StartTeleport rejection"); } catch { }
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                // immediately restore UI/menu state + input focus
                 try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
                 try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (start rejected)"); } catch { }
                 isTeleporting = false;
@@ -3089,7 +3060,6 @@ public partial class TravelButtonUI : MonoBehaviour
             isFaded = false;
             yield return new WaitForSecondsRealtime(blackHoldSeconds);
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            // immediately restore UI/menu state + input focus
             try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
@@ -3114,7 +3084,6 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("TryTeleportThenCharge: TeleportManager not available for scene-load; aborting.");
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                // immediately restore UI/menu state + input focus
                 try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
                 try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (tm null)"); } catch { }
                 isTeleporting = false;
@@ -3126,7 +3095,6 @@ public partial class TravelButtonUI : MonoBehaviour
             bool finishedLoad = false;
             bool loadSuccess = false;
 
-            // compute a corrected placement coordinate synchronously
             // compute a corrected placement coordinate synchronously
             Vector3 correctedCoords;
             Vector3 correctedCoordsFinal;
@@ -3147,6 +3115,95 @@ public partial class TravelButtonUI : MonoBehaviour
 
             // use correctedCoords from here on when starting the teleport/placement
             TBLog.Info($"TryTeleportThenCharge: calling tm.StartSceneLoad(scene='{city.sceneName}', correctedCoords={correctedCoordsFinal})");
+
+            // Insert this snippet into TryTeleportThenCharge (before you call tm.StartSceneLoad for the target scene).
+            // It avoids assuming StartSceneLoad returns bool (some builds return void), and polls the active scene instead.
+
+            // Two-step transition: load LowMemory_TransitionScene first (guarded by config).
+            if (!string.Equals(city.sceneName, "LowMemory_TransitionScene", StringComparison.OrdinalIgnoreCase)
+                && TravelButtonPlugin.cfgUseTransitionScene.Value)
+            {
+                TBLog.Info("TwoStepTeleport: attempting transition via LowMemory_TransitionScene first.");
+
+                var sentinel = new UnityEngine.Vector3(-5000f, -5000f, -5000f);
+                var transitionSceneName = "LowMemory_TransitionScene";
+
+                bool acceptedLowLoad = false;
+                bool lowLoadSuccess = false;
+                bool lowLoadFinished = false;
+
+                try
+                {
+                    acceptedLowLoad = tm.StartSceneLoad(transitionSceneName, sentinel,
+                        (UnityEngine.SceneManagement.Scene loadedScene, UnityEngine.AsyncOperation asyncOp, bool ok) =>
+                        {
+                            try
+                            {
+                                TBLog.Info($"TwoStepTeleport: StartSceneLoad callback for transition: ok={ok}, loaded='{(loadedScene.IsValid() ? loadedScene.name : "<invalid>")}'");
+                            }
+                            catch { }
+
+                            lowLoadSuccess = ok;
+                            lowLoadFinished = true;
+
+                            if (!ok) TBLog.Warn("TwoStepTeleport: LowMemory_TransitionScene failed to load (callback).");
+                        });
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("TwoStepTeleport: StartSceneLoad (transition) threw: " + ex);
+                    try
+                    {
+                        // fallback: try calling again but ensure the callback uses the transition-local flags
+                        tm.StartSceneLoad(transitionSceneName, sentinel, (loadedScene, asyncOp, ok) =>
+                        {
+                            try { TBLog.Info($"TwoStepTeleport: fallback StartSceneLoad callback for transition='{transitionSceneName}' ok={ok}, loadedScene.name={(loadedScene.IsValid() ? loadedScene.name : "<invalid>")}"); } catch { }
+                            lowLoadSuccess = ok;
+                            lowLoadFinished = true;
+                            if (!ok) TBLog.Warn($"TwoStepTeleport: transition '{transitionSceneName}' failed to load (fallback).");
+                        });
+                        // can't observe a returned bool here; rely on active-scene polling below
+                    }
+                    catch (Exception inner)
+                    {
+                        TBLog.Warn("TwoStepTeleport: fallback StartSceneLoad (no-callback/callback) also threw: " + inner);
+                    }
+                }
+
+                // Let the load coroutine kick off
+                yield return new UnityEngine.WaitForSeconds(0.25f);
+
+                // Wait for the transition to become active (or callback to finish) with timeout
+                float waited = 0f;
+                const float maxWait = 8f;
+                const float pollInterval = 0.05f;
+                while (waited < maxWait)
+                {
+                    if (lowLoadFinished && lowLoadSuccess)
+                    {
+                        TBLog.Info($"TwoStepTeleport: transition callback signalled success after {waited:F2}s.");
+                        break;
+                    }
+
+                    var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                    if (string.Equals(active.name, transitionSceneName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        TBLog.Info($"TwoStepTeleport: transition scene active after {waited:F2}s.");
+                        break;
+                    }
+
+                    waited += pollInterval;
+                    yield return null;
+                }
+
+                if (waited >= maxWait)
+                {
+                    TBLog.Warn("TwoStepTeleport: transition scene did not become active within timeout; proceeding to target load.");
+                }
+
+                if (!acceptedLowLoad) TBLog.Warn("TwoStepTeleport: StartSceneLoad returned false or was not accepted for transition.");
+            }
+
             bool acceptedLoad = false;
             try
             {
@@ -3220,13 +3277,52 @@ public partial class TravelButtonUI : MonoBehaviour
 
             TBLog.Info("TryTeleportThenCharge: scene loaded successfully - performing placement attempt using AttemptTeleportToPositionSafe");
 
+            // Add immediately here (use sceneNameLocal or city.sceneName as appropriate)
+            try
+            {
+                // debug dump to inspect controllers/FX present right after load
+                DumpSceneObjectsForDebug(city.sceneName ?? city.name);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("TryTeleportThenCharge: DumpSceneObjectsForDebug threw: " + ex.Message);
+            }
+
             bool placed = false;
             try
             {
                 placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoordsFinal);
+                // after placement success
+                TravelButtonPlugin.Instance.StartCoroutine(ResetNearbyParticleSystemsCoroutine(correctedCoordsFinal, 40f, 0.45f));
                 TBLog.Info($"TryTeleportThenCharge: AttemptTeleportToPositionSafe returned placed={placed} for correctedCoords={correctedCoordsFinal}");
             }
             catch (Exception ex) { TBLog.Warn("TryTeleportThenCharge: AttemptTeleportToPositionSafe threw: " + ex); placed = false; }
+
+            // Prepare local copies for readiness check / store callback to avoid closure capturing mutated vars
+            string sceneNameLocal = string.IsNullOrEmpty(city.sceneName) ? city.name : city.sceneName;
+            Vector3 storePosLocal = correctedCoordsFinal;
+            string detectedTargetLocal = null;
+            try { detectedTargetLocal = TravelButton.DetectTargetGameObjectName(sceneNameLocal); } catch { detectedTargetLocal = null; }
+
+            // Wait for scene readiness before finalizing (avoid jumping in game phase)
+            string readinessComponent = null;
+            SceneReadinessComponentMap.TryGetValue(sceneNameLocal, out readinessComponent);
+
+            // prefer component name if not null, otherwise fall back to waiting for "Environment"
+            string nameFallback = sceneNameLocal.Equals("ChersoneseNewTerrain", StringComparison.OrdinalIgnoreCase)
+                ? "Environment"
+                : city.targetGameObjectName;
+
+            yield return StartCoroutine(
+                TravelButton.WaitForSceneReadiness(
+                    sceneNameLocal,
+                    readinessComponent,         // null in this map entry
+                    nameFallback,               // "Environment" for Chersonese
+                    (ok) => { /* existing inline callback that stores JSON */ },
+                    maxWaitSeconds: 15f,        // increased timeout
+                    pollInterval: 0.5f
+                )
+            );
 
             if (!placed)
             {
@@ -3235,7 +3331,6 @@ public partial class TravelButtonUI : MonoBehaviour
                 yield return new WaitForSecondsRealtime(blackHoldSeconds);
                 CloseDialogAndInventory_Safe();
                 yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-                // immediately restore UI/menu state + input focus
                 try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
                 try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (placement failed)"); } catch { }
                 isTeleporting = false;
@@ -3274,7 +3369,6 @@ public partial class TravelButtonUI : MonoBehaviour
             isFaded = false;
             yield return new WaitForSecondsRealtime(blackHoldSeconds);
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            // immediately restore UI/menu state + input focus
             try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
@@ -3325,7 +3419,6 @@ public partial class TravelButtonUI : MonoBehaviour
             yield return new WaitForSecondsRealtime(blackHoldSeconds);
             CloseDialogAndInventory_Safe();
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            // immediately restore UI/menu state + input focus
             try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             yield break;
         }
@@ -3344,7 +3437,6 @@ public partial class TravelButtonUI : MonoBehaviour
             yield return new WaitForSecondsRealtime(blackHoldSeconds);
             CloseDialogAndInventory_Safe();
             yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-            // immediately restore UI/menu state + input focus
             try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
             try { EnableDialogButtons(); TBLog.Info("TryTeleportThenCharge: dialog buttons re-enabled (helper timeout)"); } catch { }
             isTeleporting = false;
@@ -3395,7 +3487,6 @@ public partial class TravelButtonUI : MonoBehaviour
         TBLog.Info("TryTeleportThenCharge: finishing and fading in UI");
         yield return new WaitForSecondsRealtime(blackHoldSeconds);
         yield return TravelDialog.ScreenFade(1f, 0f, 0.35f);
-        // immediately restore UI/menu state + input focus
         try { RestoreDialogAndInventory_Safe(); } catch (Exception ex) { TBLog.Warn("RestoreDialogAndInventory_Safe invocation threw: " + ex); }
         yield break;
     }
@@ -6621,4 +6712,194 @@ public partial class TravelButtonUI : MonoBehaviour
             TBLog.Warn("LogActiveSceneInfo failed: " + ex.Message);
         }
     }
+
+    // Add this helper to your TravelButton partial class (src/TravelButton.cs).
+    // Call TravelButton.VerifyJsonAndRuntimeCitiesOnDialogOpen() at the start of OpenTravelDialog
+    // (right after you create the TravelDialogCanvas) to verify the JSON and attempt a runtime reload.
+    public static void VerifyJsonAndRuntimeCitiesOnDialogOpen()
+    {
+        try
+        {
+            string jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath))
+            {
+                TBLog.Info("VerifyJsonAndRuntimeCitiesOnDialogOpen: no canonical JSON found to verify.");
+                return;
+            }
+
+            var txt = File.ReadAllText(jsonPath);
+            if (string.IsNullOrWhiteSpace(txt))
+            {
+                TBLog.Info("VerifyJsonAndRuntimeCitiesOnDialogOpen: JSON file is empty.");
+                return;
+            }
+
+            JObject root;
+            try
+            {
+                root = JObject.Parse(txt);
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("VerifyJsonAndRuntimeCitiesOnDialogOpen: failed parsing JSON: " + ex.Message);
+                return;
+            }
+
+            var cities = (root["cities"] as JArray) ?? new JArray();
+            foreach (var c in cities.Children<JObject>())
+            {
+                var sceneName = ((string)(c["sceneName"] ?? c["name"]))?.Trim();
+                if (string.IsNullOrEmpty(sceneName)) continue;
+
+                bool runtimeHas = false;
+                try
+                {
+                    runtimeHas = TravelButtonPlugin.ReloadCitiesFromJsonAndVerify(sceneName);
+                }
+                catch (Exception exVerify)
+                {
+                    TBLog.Warn($"VerifyJsonAndRuntimeCitiesOnDialogOpen: error verifying scene '{sceneName}': " + exVerify.Message);
+                }
+
+                if (!runtimeHas)
+                {
+                    TBLog.Warn($"OpenTravelDialog: runtime TravelButton.Cities does not contain '{sceneName}' after reload attempt. JSON contains it but runtime may need restart.");
+                }
+                else
+                {
+                    TBLog.Info($"OpenTravelDialog: verified runtime contains scene '{sceneName}'.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("VerifyJsonAndRuntimeCitiesOnDialogOpen: unexpected error: " + ex.Message);
+        }
+    }
+
+    // Replace the DumpSceneObjectsForDebug method with this implementation.
+    // This avoids a compile-time dependency on UnityEngine.ParticleSystemModule by
+    // detecting particle systems dynamically via component type name checks.
+    public static void DumpSceneObjectsForDebug(string sceneName)
+    {
+        try
+        {
+            TBLog.Info($"DumpSceneObjectsForDebug: scene='{sceneName}'");
+            var gos = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            foreach (var go in gos)
+            {
+                try
+                {
+                    if (go == null) continue;
+                    if (!go.scene.IsValid()) continue;
+                    if (!string.Equals(go.scene.name, sceneName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string info = $"{go.name} active={go.activeInHierarchy} root={(go.transform.root != null ? go.transform.root.name : "<none>")}";
+
+                    bool nameLooksLikeFx =
+                        (!string.IsNullOrEmpty(go.name) &&
+                         (go.name.IndexOf("Fire", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          go.name.IndexOf("FX", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          go.name.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          go.name.IndexOf("VFX", StringComparison.OrdinalIgnoreCase) >= 0));
+
+                    bool hasControllerName =
+                        (!string.IsNullOrEmpty(go.name) &&
+                         go.name.IndexOf("Controller", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    // Detect ParticleSystem-like components without referencing the ParticleSystem type.
+                    // We examine component type names for "ParticleSystem" or "VFX" etc.
+                    bool hasParticleLikeComponent = false;
+                    var comps = go.GetComponents<Component>();
+                    if (comps != null && comps.Length > 0)
+                    {
+                        foreach (var c in comps)
+                        {
+                            if (c == null) continue;
+                            var tname = c.GetType().Name ?? string.Empty;
+                            if (tname.IndexOf("ParticleSystem", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tname.IndexOf("VFX", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tname.IndexOf("ParticleEmit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                tname.IndexOf("ParticleEmitter", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                hasParticleLikeComponent = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (nameLooksLikeFx || hasControllerName || hasParticleLikeComponent)
+                    {
+                        string compList = "(no components)";
+                        try
+                        {
+                            compList = string.Join(",", comps.Select(c => c == null ? "<null>" : c.GetType().Name));
+                        }
+                        catch { compList = "(error enumerating components)"; }
+
+                        TBLog.Info("DumpSceneObjectsForDebug: " + info + " components=" + compList);
+                    }
+                }
+                catch (Exception inner)
+                {
+                    // Log and continue scanning other objects
+                    TBLog.Warn("DumpSceneObjectsForDebug: per-object error: " + inner.Message);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpSceneObjectsForDebug: error: " + ex.Message);
+        }
+    }
+
+    private static IEnumerator ResetNearbyParticleSystemsCoroutine(Vector3 center, float radius = 40f, float initialDelay = 0.5f)
+    {
+        yield return new WaitForSeconds(initialDelay);
+
+        try
+        {
+            var allGOs = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            foreach (var go in allGOs)
+            {
+                if (go == null || !go.activeInHierarchy) continue;
+                var pos = go.transform.position;
+                if (Vector3.Distance(pos, center) > radius) continue;
+
+                // look for components whose type name suggests a particle/VFX system
+                var comps = go.GetComponents<Component>();
+                foreach (var c in comps)
+                {
+                    if (c == null) continue;
+                    var tname = c.GetType().Name;
+                    if (tname.IndexOf("ParticleSystem", StringComparison.OrdinalIgnoreCase) >= 0
+                        || tname.IndexOf("VFX", StringComparison.OrdinalIgnoreCase) >= 0
+                        || tname.IndexOf("Vfx", StringComparison.OrdinalIgnoreCase) >= 0
+                        || tname.IndexOf("VFXSystem", StringComparison.OrdinalIgnoreCase) >= 0
+                        || tname.IndexOf("VFXPlay", StringComparison.OrdinalIgnoreCase) >= 0
+                        )
+                    {
+                        try
+                        {
+                            // call Clear() and Play() if available via reflection
+                            var miClear = c.GetType().GetMethod("Clear", Type.EmptyTypes);
+                            var miStop = c.GetType().GetMethod("Stop", Type.EmptyTypes);
+                            var miPlay = c.GetType().GetMethod("Play", Type.EmptyTypes);
+
+                            // sometimes Clear exists on ParticleSystem but not custom wrappers; be tolerant
+                            miClear?.Invoke(c, null);
+                            miStop?.Invoke(c, null);
+                            miPlay?.Invoke(c, null);
+                        }
+                        catch { /* ignore per-component failures */ }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ResetNearbyParticleSystemsCoroutine: error: " + ex.Message);
+        }
+    }
+
 }
