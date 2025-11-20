@@ -603,4 +603,83 @@ public static class TeleportHelpers
             return false;
         }
     }
+
+    public static void StopNearbyFXAroundPlayer(float radiusMeters = 20f)
+    {
+        try
+        {
+            var player = GameObject.FindWithTag("Player")
+                         ?? Array.Find(UnityEngine.Object.FindObjectsOfType<GameObject>(), g => g.name != null && g.name.StartsWith("PlayerChar", StringComparison.OrdinalIgnoreCase));
+            if (player == null)
+            {
+                TBLog.Warn("StopNearbyFXAroundPlayer: player not found.");
+                return;
+            }
+
+            Vector3 ppos = player.transform.position;
+            int attempted = 0;
+
+            foreach (var go in UnityEngine.Object.FindObjectsOfType<GameObject>())
+            {
+                if (go == null) continue;
+                try
+                {
+                    if (Vector3.Distance(ppos, go.transform.position) > radiusMeters) continue;
+
+                    bool hasParticleLike = false;
+                    foreach (var comp in go.GetComponents(typeof(Component)))
+                    {
+                        if (comp == null) continue;
+                        var tn = comp.GetType().Name;
+                        if (tn.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) >= 0
+                            || tn.IndexOf("VFX", StringComparison.OrdinalIgnoreCase) >= 0
+                            || tn.IndexOf("Fire", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasParticleLike = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasParticleLike) continue;
+
+                    // Stop / Clear particle-like comps under this root
+                    foreach (var tr in go.GetComponentsInChildren<Transform>(true))
+                    {
+                        foreach (var comp in tr.gameObject.GetComponents(typeof(Component)))
+                        {
+                            if (comp == null) continue;
+                            var tn = comp.GetType().Name;
+                            if (tn.IndexOf("Particle", StringComparison.OrdinalIgnoreCase) >= 0
+                                || tn.IndexOf("VFX", StringComparison.OrdinalIgnoreCase) >= 0
+                                || tn.IndexOf("Fire", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                try { var mClear = comp.GetType().GetMethod("Clear", new Type[] { typeof(bool) }); if (mClear != null) mClear.Invoke(comp, new object[] { true }); } catch { }
+                                try
+                                {
+                                    var mSim = comp.GetType().GetMethod("Simulate", new Type[] { typeof(float), typeof(bool), typeof(bool) })
+                                               ?? comp.GetType().GetMethod("Simulate", new Type[] { typeof(float), typeof(bool) });
+                                    if (mSim != null)
+                                    {
+                                        var pcount = mSim.GetParameters().Length;
+                                        if (pcount == 3) mSim.Invoke(comp, new object[] { 0f, true, true });
+                                        else mSim.Invoke(comp, new object[] { 0f, true });
+                                    }
+                                }
+                                catch { }
+                                try { var mStop = comp.GetType().GetMethod("Stop", new Type[] { typeof(bool) }) ?? comp.GetType().GetMethod("Stop"); if (mStop != null) { if (mStop.GetParameters().Length == 1) mStop.Invoke(comp, new object[] { true }); else mStop.Invoke(comp, null); } } catch { }
+                            }
+                        }
+                    }
+                    attempted++;
+                }
+                catch { /* ignore individual GO errors */ }
+            }
+
+            TBLog.Info($"StopNearbyFXAroundPlayer: attempted to clear particle-like comps on {attempted} roots within {radiusMeters}m.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("StopNearbyFXAroundPlayer: exception: " + ex.Message);
+        }
+    }
 }

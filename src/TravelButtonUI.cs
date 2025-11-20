@@ -3281,6 +3281,27 @@ public partial class TravelButtonUI : MonoBehaviour
             }
 
             // --- Post-load stabilization: call this after the final scene is reported loaded (success) ---
+ //onza
+            // after final scene active, stop specific FX root names (reflection safe)
+            string[] stopRoots = new[] { "CenterNewFire", "FireFX", "Embers", "Prefab_fx_fire1x4" };
+            foreach (var name in stopRoots)
+            {
+                try
+                {
+                    var go = UnityEngine.GameObject.Find(name);
+                    if (go != null)
+                    {
+                        // try to disable ParticleSystem components on the root & children
+                        var ps = go.GetComponentsInChildren<UnityEngine.ParticleSystem>(true);
+                        foreach (var p in ps) { p.Clear(true); p.Stop(true, UnityEngine.ParticleSystemStopBehavior.StopEmittingAndClear); }
+                        // optionally disable GameObject
+                        // go.SetActive(false);
+                        TBLog.Info($"TwoStepTeleport: stopped FX root '{name}' (ps={ps.Length})");
+                    }
+                }
+                catch { }
+            }
+//onza
 
 //onza
             // ensure the loaded scene is active and unload transition scene
@@ -3379,7 +3400,7 @@ public partial class TravelButtonUI : MonoBehaviour
             TBLog.Info("TryTeleportThenCharge: scene loaded successfully - performing placement attempt using AttemptTeleportToPositionSafe");
 //onza
             // Add immediately here (use sceneNameLocal or city.sceneName as appropriate)
-            try
+/*            try
             {
                 // debug dump to inspect controllers/FX present right after load
                 DumpSceneObjectsForDebug(city.sceneName ?? city.name);
@@ -3388,11 +3409,13 @@ public partial class TravelButtonUI : MonoBehaviour
             {
                 TBLog.Warn("TryTeleportThenCharge: DumpSceneObjectsForDebug threw: " + ex.Message);
             }
-
+*/
             bool placed = false;
             try
             {
-                placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoordsFinal);
+                //                placed = TravelButtonUI.AttemptTeleportToPositionSafe(correctedCoordsFinal);
+                placed = TeleportHelpersSimplified.AttemptTeleportToTargetAnchor(city.targetGameObjectName);
+
                 // after placement success
                 TravelButtonPlugin.Instance.StartCoroutine(ResetNearbyParticleSystemsCoroutine(correctedCoordsFinal, 40f, 0.45f));
                 TBLog.Info($"TryTeleportThenCharge: AttemptTeleportToPositionSafe returned placed={placed} for correctedCoords={correctedCoordsFinal}");
