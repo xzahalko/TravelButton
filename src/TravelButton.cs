@@ -3199,6 +3199,10 @@ public static class TravelButton
 
         public string sceneName;
 
+        public string variantNormalName;
+        public string variantDestroyedName;
+        public string lastKnownVariant;
+
         public City(string name)
         {
             this.name = name;
@@ -3208,6 +3212,23 @@ public static class TravelButton
             this.enabled = false;
             bool visited = false; 
             this.sceneName = null;
+        }
+
+        public static void UpdateCityVariantAndSave(string jsonPath, string sceneName, string newVariant)
+        {
+            var json = System.IO.File.ReadAllText(jsonPath);
+            var cities = JsonConvert.DeserializeObject<List<City>>(json);
+
+            var city = cities.FirstOrDefault(c => string.Equals(c.sceneName, sceneName, StringComparison.OrdinalIgnoreCase));
+            if (city != null)
+            {
+                if (city.lastKnownVariant != newVariant)
+                {
+                    city.lastKnownVariant = newVariant;
+                    System.IO.File.WriteAllText(jsonPath, JsonConvert.SerializeObject(cities, Formatting.Indented));
+                    TBLog.Info($"Updated city {city.name} lastKnownVariant -> {newVariant}");
+                }
+            }
         }
 
         // Compatibility properties expected by older code:

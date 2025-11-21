@@ -14,6 +14,7 @@
 // Use these logs to check travel_config.json coordinates and city.targetGameObjectName values,
 // and to correlate TravelButtonPlugin.LogCityAnchorsFromLoadedScenes() output to anchor names in scenes.
 using MapMagic;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NodeCanvas.Tasks.Actions;
 using System;
@@ -26,6 +27,7 @@ using System.Reflection;
 using System.Text;
 using uNature.Core.Terrains;
 using UnityEngine;
+using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
@@ -33,7 +35,7 @@ using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using static MapMagic.SpatialHash;
 using static TravelButton;
-using UnityEngine;
+using static UnityEngine.GUI;
 
 /// <summary>
 /// UI helper MonoBehaviour responsible for injecting a Travel button into the Inventory UI.
@@ -117,7 +119,6 @@ public partial class TravelButtonUI : MonoBehaviour
     {
         public List<CityEntry> cities;
     }
-
 
     private void StartInventoryVisibilityMonitor()
     {
@@ -2776,12 +2777,6 @@ public partial class TravelButtonUI : MonoBehaviour
         return false;
     }
 
-    public static class TeleportActivationHelper
-    {
-        // Set this before calling StartSceneLoad to indicate the next scene activation we want to intercept.
-        public static string PendingSceneActivation = null;
-    }
-
     // Modified TryTeleportThenCharge: call CheckChargePossibleAndRefund at start,
     // and stop using TeleportManager.EnsureInstance(); instead use TeleportManager.Instance (no creation).
     // Teleportation logic otherwise left unchanged.
@@ -3144,9 +3139,6 @@ public partial class TravelButtonUI : MonoBehaviour
 
                 try
                 {
-                    // mark the next activation so the Harmony prefix knows to run helpers
-                    TeleportActivationHelper.PendingSceneActivation = city.sceneName;
-
                     acceptedLowLoad = tm.StartSceneLoad(transitionSceneName, sentinel,
                         (UnityEngine.SceneManagement.Scene loadedScene, UnityEngine.AsyncOperation asyncOp, bool ok) =>
                         {
@@ -3254,6 +3246,16 @@ public partial class TravelButtonUI : MonoBehaviour
 
                         try
                         {
+                            ExtraSceneStateSetter.Apply(loadedScene, "CierzoNewTerrain", "Cierzo");
+                            TBLog.Info($"StartSceneLoad callback: extra scene state helpers applied for '{loadedScene.name}'.");
+                        }
+                        catch (Exception exHelpers)
+                        {
+                            TBLog.Warn("StartSceneLoad callback: pre-activation helpers failed: " + exHelpers);
+                        }
+                        
+                        try
+                        {
                             if (loadedScene.IsValid())
                             {
                                 NodeCanvasVariantHelper.PreferNormalVariantInBlackboards(loadedScene, "NormalCierzo", "DestroyedCierzo");
@@ -3268,6 +3270,7 @@ public partial class TravelButtonUI : MonoBehaviour
                         {
                             TBLog.Warn("TryTeleportThenCharge: NodeCanvasVariantHelper failed in callback: " + exBb);
                         }
+                        
 
                         try
                         {
@@ -3636,9 +3639,10 @@ public partial class TravelButtonUI : MonoBehaviour
                         }
             */
 
-//onza stabilizer
+            //onza stabilizer
             // after SetActiveScene and a few yields:
             var loadedScene = UnityEngine.SceneManagement.SceneManager.GetSceneByName(city.sceneName);
+            DetectSceneVariant(loadedScene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
 
             for (int i = 0; i < 3; i++) yield return null;
             var summary = SceneStabilizer.StabilizeSceneBeforePlacement(loadedScene, correctedCoords, 20f);
@@ -7262,6 +7266,35 @@ public partial class TravelButtonUI : MonoBehaviour
         {
             TBLog.Warn("ResetNearbyParticleSystemsCoroutine: error: " + ex.Message);
         }
+    }
+
+    public enum SceneVariant { Unknown, Normal, Destroyed }
+
+    public static SceneVariant DetectSceneVariant(Scene scene, string normalName = "NormalCierzo", string destroyedName = "DestroyedCierzo")
+    {
+        if (!scene.IsValid() || !scene.isLoaded) return SceneVariant.Unknown;
+
+        GameObject normalGo = null;
+        GameObject destroyedGo = null;
+
+        foreach (var root in scene.GetRootGameObjects())
+        {
+            if (root == null) continue;
+            if (normalGo == null) normalGo = root.GetComponentsInChildren<Transform>(true)
+                .FirstOrDefault(t => string.Equals(t.name, normalName, StringComparison.Ordinal))?.gameObject;
+            if (destroyedGo == null) destroyedGo = root.GetComponentsInChildren<Transform>(true)
+                .FirstOrDefault(t => string.Equals(t.name, destroyedName, StringComparison.Ordinal))?.gameObject;
+            if (normalGo != null && destroyedGo != null) break;
+        }
+
+        // Prefer active normal variant
+        if (normalGo != null && normalGo.activeInHierarchy) return SceneVariant.Normal;
+        if (destroyedGo != null && destroyedGo.activeInHierarchy) return SceneVariant.Destroyed;
+
+        // Fallback: check NodeCanvas blackboards or objectReferences if available (best-effort)
+        // If you detect a Normal reference anywhere, return Normal, etc.
+
+        return SceneVariant.Unknown;
     }
 
 }
