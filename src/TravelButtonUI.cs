@@ -3642,7 +3642,8 @@ public partial class TravelButtonUI : MonoBehaviour
             //onza stabilizer
             // after SetActiveScene and a few yields:
             var loadedScene = UnityEngine.SceneManagement.SceneManager.GetSceneByName(city.sceneName);
-            DetectSceneVariant(loadedScene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
+//            DetectSceneVariant(loadedScene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
+//            ExtraSceneVariantDiagnostics.DetectAndDump(loadedScene);
 
             for (int i = 0; i < 3; i++) yield return null;
             var summary = SceneStabilizer.StabilizeSceneBeforePlacement(loadedScene, correctedCoords, 20f);

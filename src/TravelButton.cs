@@ -17,6 +17,7 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using static MapMagic.ObjectPool;
 using static TravelButton;
 using static TravelButtonUI;
 
@@ -366,7 +367,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         // in Awake/Init:
         cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", true, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
-
+        /*
+        try
+        {
+            SceneVariantAutoPersist.EnsureExists();
+        }
+        catch (Exception ex)
+        {
+            try { LogSource?.LogWarning(Prefix + "Failed to load EnsureExists during Initialize: " + ex.Message); } catch { }
+        }
+        */
     }
 
     // Add OnDestroy to clean up the watcher and any resources:
@@ -447,6 +457,29 @@ public class TravelButtonPlugin : BaseUnityPlugin
             catch (Exception exMark)
             {
                 TBLog.Warn("OnSceneLoaded: MarkCityVisitedByScene failed: " + exMark.Message);
+            }
+
+            try
+            {
+                // run the confidence-aware detector
+                var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, sceneName);
+
+                // optionally run the heavier diagnostics only if confidence is decent
+                string finalVariantStr = "Unknown";
+                if (confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium)
+                {
+                    var diag = ExtraSceneVariantDiagnostics.DetectAndDump(scene); // writes diagnostic file, returns enum
+                    finalVariantStr = diag.ToString();
+                }
+
+                // persist only if confidence meets CitiesJsonManager expectations
+                bool persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
+
+                TBLog.Info($"OnSceneLoaded: variant detection for '{scene.name}' -> normal='{normal}' destroyed='{destroyed}' confidence={confidence} persisted={persisted}");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("OnSceneLoaded: inline variant detection/persist failed: " + ex.Message);
             }
         }
         catch (Exception ex)

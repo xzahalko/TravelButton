@@ -240,7 +240,7 @@ public static class ExtraSceneStateSetter
     // Replace Destroyed variant references inside collection fields such as _objectReferences
     // and also attempt to fix serialized blackboard strings (JSON-style).
     // Returns number of replacements attempted.
-    static int ReplaceObjectReferencesAndSerializedBlackboards(Scene scene, string normalName, string destroyedName)
+    public static int ReplaceObjectReferencesAndSerializedBlackboards(Scene scene, string normalName, string destroyedName)
     {
         int changes = 0;
         try
