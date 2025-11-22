@@ -33,6 +33,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using static ExtraSceneVariantDetection;
 using static MapMagic.SpatialHash;
 using static TravelButton;
 using static UnityEngine.GUI;
@@ -3642,7 +3643,7 @@ public partial class TravelButtonUI : MonoBehaviour
             //onza stabilizer
             // after SetActiveScene and a few yields:
             var loadedScene = UnityEngine.SceneManagement.SceneManager.GetSceneByName(city.sceneName);
-//            DetectSceneVariant(loadedScene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
+            DetectSceneVariant(loadedScene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
 //            ExtraSceneVariantDiagnostics.DetectAndDump(loadedScene);
 
             for (int i = 0; i < 3; i++) yield return null;
@@ -7298,4 +7299,105 @@ public partial class TravelButtonUI : MonoBehaviour
         return SceneVariant.Unknown;
     }
 
+    // anywhere (e.g. in a debug MonoBehaviour)
+    public static (string normalName, string destroyedName, ExtraSceneVariantDetection.VariantConfidence confidence) DumpDiagnostics(UnityEngine.SceneManagement.Scene scene)
+    {
+        try
+        {
+            if (!scene.IsValid() || !scene.isLoaded)
+            {
+                Debug.Log("[VariantDetectDiag] scene invalid or not loaded: " + (scene.name ?? "<null>"));
+                return (null, null, ExtraSceneVariantDetection.VariantConfidence.Unknown);
+            }
+
+            // 1) Use the public detector as the "fast" check
+            var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, scene.name);
+            Debug.Log($"[VariantDetectDiag] DetectVariantNamesWithConfidence -> normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidence}");
+
+            var fast = VariantDetectDiagnostics.DumpDiagnostics(scene); Debug.Log($"[VariantDetectDiag] fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
+
+            // 2) Gather scene names (bounded) for diagnostics (reimplements GatherSceneNamesBounded locally)
+            var set = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+            int scanned = 0;
+            const int MaxObjects = 10000;
+            const int MaxDepth = 12;
+
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                if (root == null) continue;
+                void Traverse(UnityEngine.Transform t, int depth)
+                {
+                    if (t == null || string.IsNullOrEmpty(t.name)) return;
+                    set.Add(t.name);
+                    scanned++;
+                    if (scanned >= MaxObjects) return;
+                    if (depth >= MaxDepth) return;
+                    for (int i = 0; i < t.childCount; ++i)
+                    {
+                        Traverse(t.GetChild(i), depth + 1);
+                        if (scanned >= MaxObjects) return;
+                    }
+                }
+                Traverse(root.transform, 0);
+                if (scanned >= MaxObjects) break;
+            }
+
+            var names = set.ToList();
+            Debug.Log($"[VariantDetectDiag] Gathered {names.Count} unique object names (sample up to 50):");
+            for (int i = 0; i < names.Count && i < 50; i++)
+                Debug.Log($"[VariantDetectDiag]   name[{i}] = '{names[i]}'");
+
+            // 3) Token derivation diagnostics (lightweight): split by non-alnum and camel-case, count token frequencies
+            var tokenFreq = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var n in names)
+            {
+                if (string.IsNullOrWhiteSpace(n)) continue;
+
+                // split on non-alphanumeric
+                var parts = RegexHelpers.SplitNonAlnumRegex.Split(n);
+                foreach (var p in parts)
+                {
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+                    // further split camel-case
+                    var matches = RegexHelpers.SplitCamelCaseTokenRegex.Matches(p);
+                    if (matches != null && matches.Count > 0)
+                    {
+                        foreach (System.Text.RegularExpressions.Match m in matches)
+                        {
+                            var tok = m.Value;
+                            if (string.IsNullOrWhiteSpace(tok)) continue;
+                            tokenFreq.TryGetValue(tok, out var c); tokenFreq[tok] = c + 1;
+                        }
+                    }
+                    else
+                    {
+                        tokenFreq.TryGetValue(p, out var c); tokenFreq[p] = c + 1;
+                    }
+                }
+            }
+
+            var topTokens = tokenFreq.OrderByDescending(kv => kv.Value).Take(60).ToList();
+            Debug.Log($"[VariantDetectDiag] Top tokens (count {topTokens.Count}): {string.Join(", ", topTokens.Select(kv => kv.Key + ":" + kv.Value))}");
+
+            // 4) Plausibility checks (lightweight) for a sample of names
+            int sampleCount = Math.Min(30, names.Count);
+            for (int i = 0; i < sampleCount; i++)
+            {
+                var s = names[i];
+                bool hasAlpha = RegexHelpers.ContainsAlphaPattern.IsMatch(s);
+                bool looksCoord = RegexHelpers.CoordinatePattern.IsMatch(s);
+                bool mostlyNonAlpha = RegexHelpers.NonAlphaPattern.IsMatch(s);
+                bool plausible = hasAlpha && !looksCoord && !mostlyNonAlpha && s.Length >= 2 && s.Length <= 200;
+                Debug.Log($"[VariantDetectDiag] Plausible? {plausible,-5} | hasAlpha={hasAlpha} looksCoord={looksCoord} mostlyNonAlpha={mostlyNonAlpha} | '{s}'");
+            }
+
+            // 5) Return the detection triple so caller can use it directly
+            return (normal, destroyed, confidence);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[VariantDetectDiag] exception: " + ex);
+            return (null, null, ExtraSceneVariantDetection.VariantConfidence.Unknown);
+        }
+    }
 }

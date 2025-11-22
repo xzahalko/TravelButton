@@ -46,7 +46,8 @@ public static class CitiesJsonManager
         }
     }
 
-    public static bool UpdateCityVariantData(string sceneName, string normalName, string destroyedName, string lastKnownVariant)
+    // Replace your current UpdateCityVariantData method with this instrumented version
+    public static bool UpdateCityVariantData(string sceneName, string normalName, string destroyedName, string lastKnownVariant, bool debugForcePersist = false)
     {
         try
         {
@@ -57,9 +58,11 @@ public static class CitiesJsonManager
                 return false;
             }
 
-            Debug.Log($"[CitiesJsonManager] Loading cities JSON from: {path}");
-            var text = File.ReadAllText(path);
-            JToken root = JToken.Parse(text);
+            Debug.Log($"[CitiesJsonManager] (Diag) Loading cities JSON from: {path}");
+            string originalText = File.ReadAllText(path);
+            Debug.Log($"[CitiesJsonManager] (Diag) Original file length={originalText?.Length ?? 0}");
+
+            JToken root = JToken.Parse(originalText);
 
             // Normalize root -> cities array
             JArray citiesArray = null;
@@ -79,7 +82,7 @@ public static class CitiesJsonManager
             }
             else
             {
-                Debug.LogWarning("[CitiesJsonManager] Unexpected JSON root type.");
+                Debug.LogWarning("[CitiesJsonManager] (Diag) Unexpected JSON root type.");
                 return false;
             }
 
@@ -91,98 +94,180 @@ public static class CitiesJsonManager
 
             if (cityToken == null)
             {
-                Debug.Log($"[CitiesJsonManager] No city entry found with sceneName='{sceneName}' in {path}.");
+                Debug.Log($"[CitiesJsonManager] (Diag) No city entry found with sceneName='{sceneName}' in {path}.");
                 return false;
             }
 
+            Debug.Log($"[CitiesJsonManager] (Diag) Found city token: {cityToken.ToString(Formatting.None)}");
+
             bool changed = false;
+
+            // For diagnostics, always compute current values and log them
+            string curNormal = cityToken["variantNormalName"]?.ToString();
+            string curDestroyed = cityToken["variantDestroyedName"]?.ToString();
+            string curLast = cityToken["lastKnownVariant"]?.ToString();
+
+            Debug.Log($"[CitiesJsonManager] (Diag) Current: variantNormalName='{curNormal ?? "<null>"}' variantDestroyedName='{curDestroyed ?? "<null>"}' lastKnownVariant='{curLast ?? "<null>"}'");
+            Debug.Log($"[CitiesJsonManager] (Diag) Incoming: normalName='{normalName ?? "<null>"}' destroyedName='{destroyedName ?? "<null>"}' lastKnownVariant='{lastKnownVariant ?? "<null>"}' forcePersist={debugForcePersist}");
 
             // Validate names with heuristics to avoid procedural/coordinate labels
             bool normalPlausible = IsPlausibleVariantName(normalName);
             bool destroyedPlausible = IsPlausibleVariantName(destroyedName);
 
-            // Only update name fields when plausible
-            if (normalPlausible)
+            // Decide persist of normalName
+            if (!string.IsNullOrEmpty(normalName) && (debugForcePersist || normalPlausible))
             {
-                var cur = cityToken["variantNormalName"]?.ToString();
-                if (!string.Equals(cur, normalName, StringComparison.Ordinal))
+                if (!string.Equals(curNormal, normalName, StringComparison.Ordinal))
                 {
                     cityToken["variantNormalName"] = normalName;
-                    Debug.Log($"[CitiesJsonManager] Updating variantNormalName for scene '{sceneName}' -> '{normalName}' (was '{cur ?? "<null>"}').");
+                    Debug.Log($"[CitiesJsonManager] (Diag) Will update variantNormalName: '{curNormal ?? "<null>"}' -> '{normalName}'");
                     changed = true;
+                }
+                else
+                {
+                    Debug.Log("[CitiesJsonManager] (Diag) variantNormalName unchanged.");
                 }
             }
             else if (!string.IsNullOrEmpty(normalName))
             {
-                Debug.Log($"[CitiesJsonManager] Skipping persist of variantNormalName='{normalName}' for scene '{sceneName}' (deemed implausible).");
+                Debug.Log($"[CitiesJsonManager] (Diag) Skipping variantNormalName persist (implausible): '{normalName}'");
             }
 
-            if (destroyedPlausible)
+            // Decide persist of destroyedName
+            if (!string.IsNullOrEmpty(destroyedName) && (debugForcePersist || destroyedPlausible))
             {
-                var cur = cityToken["variantDestroyedName"]?.ToString();
-                if (!string.Equals(cur, destroyedName, StringComparison.Ordinal))
+                if (!string.Equals(curDestroyed, destroyedName, StringComparison.Ordinal))
                 {
                     cityToken["variantDestroyedName"] = destroyedName;
-                    Debug.Log($"[CitiesJsonManager] Updating variantDestroyedName for scene '{sceneName}' -> '{destroyedName}' (was '{cur ?? "<null>"}').");
+                    Debug.Log($"[CitiesJsonManager] (Diag) Will update variantDestroyedName: '{curDestroyed ?? "<null>"}' -> '{destroyedName}'");
                     changed = true;
+                }
+                else
+                {
+                    Debug.Log("[CitiesJsonManager] (Diag) variantDestroyedName unchanged.");
                 }
             }
             else if (!string.IsNullOrEmpty(destroyedName))
             {
-                Debug.Log($"[CitiesJsonManager] Skipping persist of variantDestroyedName='{destroyedName}' for scene '{sceneName}' (deemed implausible).");
+                Debug.Log($"[CitiesJsonManager] (Diag) Skipping variantDestroyedName persist (implausible): '{destroyedName}'");
             }
 
-            // lastKnownVariant: only write if meaningful
+            // Decide persist of lastKnownVariant
             if (!string.IsNullOrEmpty(lastKnownVariant))
             {
-                if (SkipUnknownLastKnownVariant && string.Equals(lastKnownVariant, "Unknown", StringComparison.OrdinalIgnoreCase))
+                if (SkipUnknownLastKnownVariant && string.Equals(lastKnownVariant, "Unknown", StringComparison.OrdinalIgnoreCase) && !debugForcePersist)
                 {
-                    Debug.Log($"[CitiesJsonManager] Skipping persist of lastKnownVariant='Unknown' for scene '{sceneName}'.");
+                    Debug.Log($"[CitiesJsonManager] (Diag) Skipping persist of lastKnownVariant='Unknown'");
                 }
                 else
                 {
-                    var cur = cityToken["lastKnownVariant"]?.ToString();
-                    if (!string.Equals(cur, lastKnownVariant, StringComparison.Ordinal))
+                    if (!string.Equals(curLast, lastKnownVariant, StringComparison.Ordinal))
                     {
                         cityToken["lastKnownVariant"] = lastKnownVariant;
-                        Debug.Log($"[CitiesJsonManager] Updating lastKnownVariant for scene '{sceneName}' -> '{lastKnownVariant}' (was '{cur ?? "<null>"}').");
+                        Debug.Log($"[CitiesJsonManager] (Diag) Will update lastKnownVariant: '{curLast ?? "<null>"}' -> '{lastKnownVariant}'");
                         changed = true;
+                    }
+                    else
+                    {
+                        Debug.Log("[CitiesJsonManager] (Diag) lastKnownVariant unchanged.");
                     }
                 }
             }
 
-            if (!changed)
+            if (!changed && !debugForcePersist)
             {
-                Debug.Log("[CitiesJsonManager] No changes required to city data (or changes skipped as implausible).");
+                Debug.Log("[CitiesJsonManager] (Diag) No changes required to city data (or changes skipped as implausible).");
                 return true;
             }
 
-            // write atomically
-            string newText;
-            if (rootWasObjectWithCities)
+            // If we are here and debugForcePersist==true, we may force fields even if they are implausible.
+            if (debugForcePersist)
             {
-                newText = root.ToString(Formatting.Indented);
-            }
-            else if (root.Type == JTokenType.Array)
-            {
-                newText = citiesArray.ToString(Formatting.Indented);
-            }
-            else
-            {
-                // we constructed array from single object; write array form
-                newText = citiesArray.ToString(Formatting.Indented);
+                // Ensure fields are present even if empty string values supplied
+                var cityObj = cityToken as JObject;
+                if (cityObj != null)
+                {
+                    if (cityObj["variantNormalName"] == null) cityObj["variantNormalName"] = curNormal ?? "";
+                    if (cityObj["variantDestroyedName"] == null) cityObj["variantDestroyedName"] = curDestroyed ?? "";
+                    if (cityObj["lastKnownVariant"] == null) cityObj["lastKnownVariant"] = curLast ?? "";
+                }
+                else
+                {
+                    Debug.LogWarning("[CitiesJsonManager] (Diag) cityToken is not a JObject; cannot ensure fields.");
+                }
+                // (we already set any changes above)
             }
 
+            // Prepare new text
+            string newText;
+            if (rootWasObjectWithCities)
+                newText = root.ToString(Formatting.Indented);
+            else
+                newText = citiesArray.ToString(Formatting.Indented);
+
+            Debug.Log($"[CitiesJsonManager] (Diag) New JSON length={newText.Length}. Attempting atomic write...");
+
             var tmp = path + ".tmp";
-            File.WriteAllText(tmp, newText);
-            // Replace ensures atomic swap across most platforms
-            File.Replace(tmp, path, null);
-            Debug.Log($"[CitiesJsonManager] Updated cities JSON at {path}.");
+            try
+            {
+                File.WriteAllText(tmp, newText);
+                Debug.Log($"[CitiesJsonManager] (Diag) Wrote temp file: {tmp}");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[CitiesJsonManager] (Diag) Failed to write temp file '{tmp}': {ex}");
+                return false;
+            }
+
+            bool replaced = false;
+            try
+            {
+                File.Replace(tmp, path, null);
+                replaced = true;
+                Debug.Log($"[CitiesJsonManager] (Diag) File.Replace succeeded for {path}");
+            }
+            catch (Exception exReplace)
+            {
+                Debug.LogWarning($"[CitiesJsonManager] (Diag) File.Replace failed: {exReplace}. Attempting fallback File.Copy");
+                try
+                {
+                    File.Copy(tmp, path, true);
+                    replaced = true;
+                    Debug.Log($"[CitiesJsonManager] (Diag) Fallback File.Copy succeeded for {path}");
+                }
+                catch (Exception exCopy)
+                {
+                    Debug.LogWarning($"[CitiesJsonManager] (Diag) Fallback File.Copy failed: {exCopy}. Attempting File.WriteAllText final fallback");
+                    try
+                    {
+                        File.WriteAllText(path, newText);
+                        replaced = true;
+                        Debug.Log($"[CitiesJsonManager] (Diag) Final fallback File.WriteAllText succeeded for {path}");
+                    }
+                    catch (Exception exWrite)
+                    {
+                        Debug.LogWarning($"[CitiesJsonManager] (Diag) Final fallback File.WriteAllText failed: {exWrite}");
+                        replaced = false;
+                    }
+                }
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+
+            if (!replaced)
+            {
+                Debug.LogWarning($"[CitiesJsonManager] (Diag) Failed to persist updated JSON to '{path}'.");
+                return false;
+            }
+
+            Debug.Log($"[CitiesJsonManager] (Diag) Successfully updated JSON at {path}.");
             return true;
         }
         catch (Exception ex)
         {
-            Debug.LogWarning("[CitiesJsonManager] Exception updating JSON: " + ex);
+            Debug.LogWarning("[CitiesJsonManager] (Diag) Exception updating JSON: " + ex);
             return false;
         }
     }
@@ -195,7 +280,7 @@ public static class CitiesJsonManager
 
         // Reject obvious procedural chunk labels / placeholders
         var lower = s.ToLowerInvariant();
-        if (lower.Contains("default chunk") || lower.Contains("chunk") && Regex.IsMatch(lower, @"chunk\s*[:\(]")) return false;
+        if (lower.Contains("default chunk") || (lower.Contains("chunk") && Regex.IsMatch(lower, @"chunk\s*[:\(]"))) return false;
         if (lower.Contains("defaultchunk") || lower.StartsWith("chunk_")) return false;
         if (lower.Contains("default chunk :") || lower.Contains("debug") || lower.Contains("placeholder")) return false;
 

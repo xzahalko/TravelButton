@@ -397,17 +397,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
     }
 
     // handler
+    // OnSceneLoaded + deferred detection helper (place in your TravelButton plugin class file)
     private static void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
     {
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             string sceneName = scene.name ?? "";
             if (string.IsNullOrEmpty(sceneName)) return;
 
+            TBLog.Info($"OnSceneLoaded START: scene='{sceneName}' isLoaded={scene.isLoaded} rootCount={scene.rootCount} mode={mode}");
+
             // Log active scene info (diagnostic)
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 LogActiveSceneInfo();
+                sw.Stop();
+                TBLog.Info($"OnSceneLoaded: LogActiveSceneInfo completed in {sw.ElapsedMilliseconds} ms");
             }
             catch (Exception exLog)
             {
@@ -418,7 +425,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
             UnityEngine.Vector3? playerPos = null;
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 playerPos = TravelButton.GetPlayerPositionInScene();
+                sw.Stop();
+                TBLog.Info($"OnSceneLoaded: GetPlayerPositionInScene -> {(playerPos.HasValue ? playerPos.Value.ToString("F3") : "<null>")} (took {sw.ElapsedMilliseconds} ms)");
             }
             catch (Exception exPos)
             {
@@ -429,7 +439,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
             string detectedTarget = null;
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 detectedTarget = TravelButton.DetectTargetGameObjectName(sceneName);
+                sw.Stop();
+                TBLog.Info($"OnSceneLoaded: DetectTargetGameObjectName -> '{detectedTarget ?? "<null>"}' (took {sw.ElapsedMilliseconds} ms)");
             }
             catch (Exception exDetect)
             {
@@ -442,7 +455,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Record discovered scene into canonical JSON (safe, idempotent)
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 TravelButton.StoreVisitedSceneToJson(sceneName, playerPos, detectedTarget, sceneDesc);
+                sw.Stop();
+                TBLog.Info($"OnSceneLoaded: StoreVisitedSceneToJson completed (took {sw.ElapsedMilliseconds} ms)");
             }
             catch (Exception exStore)
             {
@@ -452,39 +468,159 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Existing visit marking logic
             try
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 MarkCityVisitedByScene(sceneName);
+                sw.Stop();
+                TBLog.Info($"OnSceneLoaded: MarkCityVisitedByScene completed (took {sw.ElapsedMilliseconds} ms)");
             }
             catch (Exception exMark)
             {
                 TBLog.Warn("OnSceneLoaded: MarkCityVisitedByScene failed: " + exMark.Message);
             }
 
+            // Defer variant detection to avoid timing issues (recommended).
+            // Start a coroutine on your persistent MonoBehaviour instance; this will run
+            // after one frame + a small realtime delay so scene objects finish initializing.
+            // schedule deferred detection (replace existing scheduling block)
             try
             {
-                // run the confidence-aware detector
-                var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, sceneName);
-
-                // optionally run the heavier diagnostics only if confidence is decent
-                string finalVariantStr = "Unknown";
-                if (confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium)
-                {
-                    var diag = ExtraSceneVariantDiagnostics.DetectAndDump(scene); // writes diagnostic file, returns enum
-                    finalVariantStr = diag.ToString();
-                }
-
-                // persist only if confidence meets CitiesJsonManager expectations
-                bool persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
-
-                TBLog.Info($"OnSceneLoaded: variant detection for '{scene.name}' -> normal='{normal}' destroyed='{destroyed}' confidence={confidence} persisted={persisted}");
+                TravelButtonRunner.Instance.StartSafeCoroutine(DelayedVariantDetect(scene, 0.08f));
+                TBLog.Info("OnSceneLoaded: scheduled DelayedVariantDetect via TravelButtonRunner.");
             }
-            catch (Exception ex)
+            catch (Exception exSchedule)
             {
-                TBLog.Warn("OnSceneLoaded: inline variant detection/persist failed: " + ex.Message);
+                TBLog.Warn("OnSceneLoaded: Failed to schedule deferred detection: " + exSchedule.Message);
+                // fallback: run inline detection
+                try { RunVariantDetectionInline(scene, scene.name); } catch { }
             }
+
+            totalSw.Stop();
+            TBLog.Info($"OnSceneLoaded END: scene='{sceneName}' totalElapsed={totalSw.ElapsedMilliseconds} ms");
         }
         catch (Exception ex)
         {
             TBLog.Warn("OnSceneLoaded: " + ex.Message);
+        }
+    }
+
+
+    private static System.Collections.IEnumerator DelayedVariantDetect(UnityEngine.SceneManagement.Scene scene, float waitSeconds = 0.08f)
+    {
+        // wait a frame so Unity finishes Awake/Start for scene objects
+        yield return null;
+        if (waitSeconds > 0f) yield return new UnityEngine.WaitForSecondsRealtime(waitSeconds);
+
+        try
+        {
+            TBLog.Info($"DelayedVariantDetect: running detection for scene '{scene.name}'");
+
+            // public quick detection
+            var detectSw = System.Diagnostics.Stopwatch.StartNew();
+            var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, scene.name);
+            detectSw.Stop();
+            TBLog.Info($"DelayedVariantDetect: DetectVariantNamesWithConfidence -> normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidence} (took {detectSw.ElapsedMilliseconds} ms)");
+
+            // print diagnostics from the helper
+            try
+            {
+                var fast = VariantDetectDiagnostics.DumpDiagnostics(scene);
+                Debug.Log($"[VariantDetectDiag] DumpDiagnostics fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
+            }
+            catch (Exception exDump)
+            {
+                Debug.LogWarning("[VariantDetectDiag] DumpDiagnostics threw: " + exDump);
+            }
+
+            // optionally run heavy dump if confidence is low (safe)
+            if (confidence < ExtraSceneVariantDetection.VariantConfidence.Medium)
+            {
+                try
+                {
+                    TBLog.Info("DelayedVariantDetect: confidence low — running DetectAndDump for offline diagnostics.");
+                    var diag = ExtraSceneVariantDiagnostics.DetectAndDump(scene);
+                    TBLog.Info("DelayedVariantDetect: DetectAndDump returned: " + diag);
+                }
+                catch (Exception exDiag)
+                {
+                    TBLog.Warn("DelayedVariantDetect: DetectAndDump failed: " + exDiag.Message);
+                }
+            }
+
+            // Persist detection (using existing manager)
+            bool persisted = false;
+            try
+            {
+                var persistSw = System.Diagnostics.Stopwatch.StartNew();
+                var finalVariantStr = confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium
+                    ? ExtraSceneVariantDiagnostics.DetectAndDump(scene).ToString()
+                    : "Unknown";
+                persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
+                persistSw.Stop();
+                TBLog.Info($"DelayedVariantDetect: UpdateCityVariantData returned {persisted} (took {persistSw.ElapsedMilliseconds} ms)");
+            }
+            catch (Exception exPersist)
+            {
+                TBLog.Warn("DelayedVariantDetect: UpdateCityVariantData threw exception: " + exPersist.Message);
+            }
+
+            if (!persisted)
+            {
+                TBLog.Info($"DelayedVariantDetect: Persist failed - CitiesJsonPath='{TravelButtonPlugin.GetCitiesJsonPath() ?? "<null>"}'");
+                try
+                {
+                    var path = TravelButtonPlugin.GetCitiesJsonPath();
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        var fi = new System.IO.FileInfo(path);
+                        TBLog.Info($"DelayedVariantDetect: CitiesJson file exists={fi.Exists}, length={(fi.Exists ? fi.Length.ToString() : "N/A")}, readonly={(fi.Exists ? fi.IsReadOnly.ToString() : "N/A")}");
+                        var dir = System.IO.Path.GetDirectoryName(path);
+                        var tmp = System.IO.Path.Combine(dir ?? System.IO.Path.GetTempPath(), $"TravelButton_write_test_{Guid.NewGuid():N}.tmp");
+                        System.IO.File.WriteAllText(tmp, "ping");
+                        System.IO.File.Delete(tmp);
+                        TBLog.Info($"DelayedVariantDetect: Temp write to dir '{dir}' succeeded");
+                    }
+                }
+                catch (Exception exDiag)
+                {
+                    TBLog.Warn("DelayedVariantDetect: Extra persist diagnostics failed: " + exDiag.Message);
+                }
+            }
+
+            TBLog.Info($"DelayedVariantDetect: finished for scene '{scene.name}' persisted={persisted}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DelayedVariantDetect: " + ex.Message);
+        }
+    }
+
+    // Fallback inline detection if scheduling coroutine isn't possible. Keeps same detection+persist steps.
+    // Call only as a fallback from OnSceneLoaded.
+    private static void RunVariantDetectionInline(UnityEngine.SceneManagement.Scene scene, string sceneName)
+    {
+        try
+        {
+            var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, sceneName);
+            TBLog.Info($"RunVariantDetectionInline: detected normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidence}");
+            string finalVariantStr = "Unknown";
+            if (confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium)
+            {
+                try
+                {
+                    finalVariantStr = ExtraSceneVariantDiagnostics.DetectAndDump(scene).ToString();
+                }
+                catch (Exception exDiag)
+                {
+                    TBLog.Warn("RunVariantDetectionInline: DetectAndDump failed: " + exDiag.Message);
+                }
+            }
+
+            bool persisted = CitiesJsonManager.UpdateCityVariantData(sceneName, normal, destroyed, finalVariantStr, confidence);
+            TBLog.Info($"RunVariantDetectionInline: UpdateCityVariantData returned {persisted}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("RunVariantDetectionInline: " + ex.Message);
         }
     }
 
@@ -7027,4 +7163,23 @@ public static class TravelButton
     };
 
 
+}
+
+public class TravelButtonRunner : MonoBehaviour
+{
+    static TravelButtonRunner _instance;
+    public static TravelButtonRunner Instance
+    {
+        get
+        {
+            if (_instance != null) return _instance;
+            var go = new GameObject("TravelButtonRunner");
+            UnityEngine.Object.DontDestroyOnLoad(go);
+            _instance = go.AddComponent<TravelButtonRunner>();
+            return _instance;
+        }
+    }
+
+    // convenience wrapper
+    public Coroutine StartSafeCoroutine(IEnumerator coro) => StartCoroutine(coro);
 }

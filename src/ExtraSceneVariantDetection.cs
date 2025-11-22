@@ -22,7 +22,7 @@ public static class ExtraSceneVariantDetection
         return (normal, destroyed);
     }
 
-    static bool IsPlausibleVariantName(string name)
+    public static bool IsPlausibleVariantName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         var s = name.Trim();
@@ -75,7 +75,7 @@ public static class ExtraSceneVariantDetection
             new Regex(@"([A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+)", RegexOptions.Compiled);
     }
 
-    static HashSet<string> GatherSceneNamesBounded(Scene scene, int maxObjects, int maxDepth)
+    public static HashSet<string> GatherSceneNamesBounded(Scene scene, int maxObjects, int maxDepth)
     {
         var set = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
         int scanned = 0;
@@ -135,7 +135,7 @@ public static class ExtraSceneVariantDetection
     }
 
     // Derive token candidates by finding name pairs that differ only by one (small) substring.
-    static (List<string> normalTokens, List<string> destroyedTokens) DeriveTokensFromNamePairs(IEnumerable<string> namesEnumerable, string baseHint)
+    public static (List<string> normalTokens, List<string> destroyedTokens) DeriveTokensFromNamePairs(IEnumerable<string> namesEnumerable, string baseHint)
     {
         var names = namesEnumerable.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (names.Count < 2) return (null, null);
@@ -270,5 +270,109 @@ public static class ExtraSceneVariantDetection
         // take first token
         var parts = Regex.Split(s, @"[^A-Za-z0-9]+").Where(x => !string.IsNullOrEmpty(x)).ToArray();
         return parts.Length > 0 ? parts[0] : null;
+    }
+}
+
+public static class VariantDetectDiagnostics
+{
+    // Returns the detected normal/destroyed values and the confidence as string for logging
+    public static (string normalName, string destroyedName, string confidence) DumpDiagnostics(UnityEngine.SceneManagement.Scene scene)
+    {
+        try
+        {
+            if (!scene.IsValid() || !scene.isLoaded)
+            {
+                Debug.Log("[VariantDetectDiag] scene invalid or not loaded: " + (scene.name ?? "<null>"));
+                return (null, null, "Unknown");
+            }
+
+            Debug.Log($"[VariantDetectDiag] Dump for scene='{scene.name}'");
+
+            // public detector quick result
+            var (normal, destroyed, confidenceEnum) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, scene.name);
+            Debug.Log($"[VariantDetectDiag] DetectVariantNamesWithConfidence -> normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidenceEnum}");
+
+            // Gather scene object names (bounded)
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int scanned = 0;
+            const int MaxObjects = 10000;
+            const int MaxDepth = 12;
+
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                if (root == null) continue;
+                void Traverse(Transform t, int depth)
+                {
+                    if (t == null) return;
+                    if (!string.IsNullOrEmpty(t.name)) set.Add(t.name);
+                    scanned++;
+                    if (scanned >= MaxObjects) return;
+                    if (depth >= MaxDepth) return;
+                    for (int i = 0; i < t.childCount; ++i)
+                    {
+                        Traverse(t.GetChild(i), depth + 1);
+                        if (scanned >= MaxObjects) return;
+                    }
+                }
+                Traverse(root.transform, 0);
+                if (scanned >= MaxObjects) break;
+            }
+
+            var names = set.ToList();
+            Debug.Log($"[VariantDetectDiag] Gathered {names.Count} unique object names (sample up to 50):");
+            for (int i = 0; i < names.Count && i < 50; i++)
+                Debug.Log($"[VariantDetectDiag]   name[{i}] = '{names[i]}'");
+
+            // Tokenize & frequency (split non-alnum + camel-case)
+            var tokenFreq = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var splitNonAlnum = new Regex(@"[^A-Za-z0-9]+");
+            var splitCamel = new Regex(@"([A-Z]+(?=$|[A-Z][a-z])|[A-Z]?[a-z]+|[0-9]+)");
+
+            foreach (var n in names)
+            {
+                if (string.IsNullOrWhiteSpace(n)) continue;
+                var parts = splitNonAlnum.Split(n);
+                foreach (var p in parts)
+                {
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+                    var matches = splitCamel.Matches(p);
+                    if (matches != null && matches.Count > 0)
+                    {
+                        foreach (Match m in matches)
+                        {
+                            var tok = m.Value;
+                            if (string.IsNullOrWhiteSpace(tok)) continue;
+                            tokenFreq.TryGetValue(tok, out var c); tokenFreq[tok] = c + 1;
+                        }
+                    }
+                    else
+                    {
+                        tokenFreq.TryGetValue(p, out var c); tokenFreq[p] = c + 1;
+                    }
+                }
+            }
+
+            var topTokens = tokenFreq.OrderByDescending(kv => kv.Value).Take(60).ToList();
+            Debug.Log($"[VariantDetectDiag] Top tokens (count {topTokens.Count}): {string.Join(", ", topTokens.Select(kv => kv.Key + ":" + kv.Value))}");
+
+            // Plausibility check sample
+            int sampleCount = Math.Min(30, names.Count);
+            for (int i = 0; i < sampleCount; i++)
+            {
+                var s = names[i];
+                bool hasAlpha = Regex.IsMatch(s, @"[A-Za-z]");
+                bool looksCoord = Regex.IsMatch(s, @"\(\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*\)");
+                bool mostlyNonAlpha = Regex.IsMatch(s, @"^[^A-Za-z]+$");
+                bool plausible = hasAlpha && !looksCoord && !mostlyNonAlpha && s.Length >= 2 && s.Length <= 200;
+                Debug.Log($"[VariantDetectDiag] Plausible? {plausible,-5} | hasAlpha={hasAlpha} looksCoord={looksCoord} mostlyNonAlpha={mostlyNonAlpha} | '{s}'");
+            }
+
+            return (normal, destroyed, confidenceEnum.ToString());
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[VariantDetectDiag] exception: " + ex);
+            return (null, null, "Unknown");
+        }
     }
 }
