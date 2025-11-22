@@ -7,6 +7,7 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using static TravelButtonUI;
 
 /// <summary>
 /// ExtraSceneVariantDiagnostics
@@ -21,10 +22,9 @@ using UnityEngine.SceneManagement;
 public static class ExtraSceneVariantDiagnostics
 {
     // tokens used to identify normal/destroyed variants; you can extend these lists.
-    static readonly string[] NormalTokens = new[] { "Normal", "Intact", "Living", "Default", "NormalCierzo", "Normal" };
-    static readonly string[] DestroyedTokens = new[] { "Destroyed", "Ruined", "Ruin", "Broken", "Damaged", "DestroyedCierzo" };
-
-    public enum SceneVariant { Unknown, Normal, Destroyed }
+    // Removed scene-specific hard-coded tokens so diagnostics remain generic and work for all scenes.
+    static readonly string[] NormalTokens = new[] { "Normal", "Intact", "Living", "Default" };
+    static readonly string[] DestroyedTokens = new[] { "Destroyed", "Ruined", "Ruin", "Broken", "Damaged" };
 
     // Public entry: detect, log and write diagnostics file
     public static SceneVariant DetectAndDump(Scene scene)

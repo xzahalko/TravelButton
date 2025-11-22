@@ -36,8 +36,20 @@ public static class ExtraSceneStateSetter
             // 3) lblAreaName UI text (Text or TMP)
             TrySetLblAreaName(scene, sceneDisplayName ?? sceneNameCanonical);
 
-            // 4) Replace Destroyed variant references inside NodeCanvas/MonoBehaviour object reference collections
-            int replacedCount = ReplaceObjectReferencesAndSerializedBlackboards(scene, normalName: "NormalCierzo", destroyedName: "DestroyedCierzo");
+            // 4) Replace Destroyed variant references: derive normal/destroyed names from scene
+            string normalVariant = null;
+            string destroyedVariant = null;
+            try
+            {
+                DeriveNormalDestroyedNamesFromScene(scene, out normalVariant, out destroyedVariant);
+                TBLog.Info($"[ExtraSceneStateSetter] Derived variants: normal='{normalVariant}', destroyed='{destroyedVariant}'");
+            }
+            catch (Exception exDerive)
+            {
+                TBLog.Warn("[ExtraSceneStateSetter] failed deriving variant names: " + exDerive);
+            }
+
+            int replacedCount = ReplaceObjectReferencesAndSerializedBlackboards(scene, normalName: normalVariant, destroyedName: destroyedVariant);
             Debug.Log($"[ExtraSceneStateSetter] ReplaceObjectReferencesAndSerializedBlackboards completed: replacements={replacedCount}");
 
             Debug.Log("[ExtraSceneStateSetter] Apply completed.");
@@ -259,12 +271,14 @@ public static class ExtraSceneStateSetter
                 if (root == null) continue;
                 if (normalGO == null)
                 {
-                    var cand = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => string.Equals(t.name, normalName, StringComparison.Ordinal));
+                    var cand = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => !string.IsNullOrEmpty(t.name) &&
+                        (!string.IsNullOrEmpty(normalName) ? string.Equals(t.name, normalName, StringComparison.Ordinal) : t.name.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0));
                     if (cand != null) normalGO = cand.gameObject;
                 }
                 if (destroyedGO == null)
                 {
-                    var cand = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => string.Equals(t.name, destroyedName, StringComparison.Ordinal));
+                    var cand = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => !string.IsNullOrEmpty(t.name) &&
+                        (!string.IsNullOrEmpty(destroyedName) ? string.Equals(t.name, destroyedName, StringComparison.Ordinal) : (t.name.IndexOf("Destroyed", StringComparison.OrdinalIgnoreCase) >= 0 || t.name.IndexOf("Ruin", StringComparison.OrdinalIgnoreCase) >= 0)));
                     if (cand != null) destroyedGO = cand.gameObject;
                 }
                 if (normalGO != null && destroyedGO != null) break;
@@ -274,8 +288,8 @@ public static class ExtraSceneStateSetter
 
             if (normalGO == null)
             {
-                Debug.LogWarning($"[ReplaceObjectReferences] Normal '{normalName}' not found; nothing to replace.");
-                return 0;
+                Debug.LogWarning($"[ReplaceObjectReferences] Normal '{normalName ?? "<derived>"}' not found; nothing to replace.");
+                // It's acceptable to continue — some scenes might not have explicit Normal object names.
             }
 
             // collect all components in scene
@@ -290,7 +304,7 @@ public static class ExtraSceneStateSetter
             Func<Component, Component> findMatchingOnNormal = (compToMatch) =>
             {
                 if (compToMatch == null) return null;
-                return normalGO.GetComponent(compToMatch.GetType());
+                return normalGO?.GetComponent(compToMatch.GetType());
             };
 
             // 1) Scan fields for collections/arrays named _objectReferences or of IList types and replace entries
@@ -307,14 +321,14 @@ public static class ExtraSceneStateSetter
                         // target likely names
                         if (string.Equals(f.Name, "_objectReferences", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(f.Name, "objectReferences", StringComparison.OrdinalIgnoreCase)
-                            || typeof(IList).IsAssignableFrom(f.FieldType)
+                            || typeof(System.Collections.IList).IsAssignableFrom(f.FieldType)
                             || f.FieldType.IsArray)
                         {
                             var val = f.GetValue(comp);
                             if (val == null) continue;
 
                             // handle IList
-                            if (val is IList list)
+                            if (val is System.Collections.IList list)
                             {
                                 bool any = false;
                                 for (int i = 0; i < list.Count; i++)
@@ -327,15 +341,16 @@ public static class ExtraSceneStateSetter
                                         // UnityEngine.Object references (GameObject / Component)
                                         if (item is UnityEngine.Object uo)
                                         {
-                                            if (uo is GameObject goItem && string.Equals(goItem.name, destroyedName, StringComparison.Ordinal))
+                                            if (uo is GameObject goItem && !string.IsNullOrEmpty(destroyedName) && string.Equals(goItem.name, destroyedName, StringComparison.Ordinal))
                                             {
-                                                // replace by normalGO
-                                                list[i] = normalGO;
+                                                // replace by normalGO if available
+                                                if (normalGO != null) list[i] = normalGO;
+                                                else list[i] = uo;
                                                 changes++;
                                                 any = true;
                                                 Debug.Log($"[ReplaceObjectReferences] field '{t.FullName}.{f.Name}' on '{GetGameObjectPath(comp.gameObject)}' replaced object entry index={i} Destroyed->{normalName}");
                                             }
-                                            else if (uo is Component compItem && compItem.gameObject != null && string.Equals(compItem.gameObject.name, destroyedName, StringComparison.Ordinal))
+                                            else if (uo is Component compItem && compItem.gameObject != null && !string.IsNullOrEmpty(destroyedName) && string.Equals(compItem.gameObject.name, destroyedName, StringComparison.Ordinal))
                                             {
                                                 // attempt to find matching component on normalGO
                                                 var match = findMatchingOnNormal(compItem);
@@ -346,7 +361,7 @@ public static class ExtraSceneStateSetter
                                                     any = true;
                                                     Debug.Log($"[ReplaceObjectReferences] replaced component entry index={i} on '{GetGameObjectPath(comp.gameObject)}' with matching component on {normalName}");
                                                 }
-                                                else
+                                                else if (normalGO != null)
                                                 {
                                                     // fallback: replace with normalGO
                                                     list[i] = normalGO;
@@ -359,9 +374,10 @@ public static class ExtraSceneStateSetter
                                         else if (item is string sItem)
                                         {
                                             // if string equals or contains destroyedName, replace with normalName
-                                            if (sItem.IndexOf(destroyedName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                            if (!string.IsNullOrEmpty(destroyedName) && sItem.IndexOf(destroyedName, StringComparison.OrdinalIgnoreCase) >= 0)
                                             {
-                                                list[i] = sItem.Replace(destroyedName, normalName);
+                                                var newVal = !string.IsNullOrEmpty(normalName) ? sItem.Replace(destroyedName, normalName) : sItem;
+                                                list[i] = newVal;
                                                 changes++;
                                                 any = true;
                                                 Debug.Log($"[ReplaceObjectReferences] replaced string entry '{sItem}' -> '{list[i]}' in field '{t.FullName}.{f.Name}' on '{GetGameObjectPath(comp.gameObject)}'");
@@ -377,7 +393,6 @@ public static class ExtraSceneStateSetter
                                         // write back modified list for arrays (if array type)
                                         if (f.FieldType.IsArray && val is Array arr)
                                         {
-                                            // nothing special needed; we modified list instance if it's a List<T>. For arrays, attempt to copy back:
                                             var elementType = f.FieldType.GetElementType();
                                             var newArr = Array.CreateInstance(elementType, list.Count);
                                             for (int i = 0; i < list.Count; i++)
@@ -386,14 +401,12 @@ public static class ExtraSceneStateSetter
                                         }
                                         else
                                         {
-                                            // for List<T> or IList-field, set the field back (some types have private backing)
                                             f.SetValue(comp, val);
                                         }
                                     }
                                     catch { }
                                 }
                             }
-                            // handle arrays that are not IList (should be covered), otherwise skip
                         }
                     }
                     catch { /* per-field defensive */ }
@@ -409,9 +422,9 @@ public static class ExtraSceneStateSetter
                             || string.Equals(f.Name, "_serialized", StringComparison.OrdinalIgnoreCase)))
                         {
                             var str = f.GetValue(comp) as string;
-                            if (!string.IsNullOrEmpty(str) && str.IndexOf(destroyedName, StringComparison.OrdinalIgnoreCase) >= 0)
+                            if (!string.IsNullOrEmpty(str) && !string.IsNullOrEmpty(destroyedName) && str.IndexOf(destroyedName, StringComparison.OrdinalIgnoreCase) >= 0)
                             {
-                                var newStr = str.Replace(destroyedName, normalName);
+                                var newStr = !string.IsNullOrEmpty(normalName) ? str.Replace(destroyedName, normalName) : str;
                                 f.SetValue(comp, newStr);
                                 changes++;
                                 Debug.Log($"[ReplaceObjectReferences] Replaced serialized blackboard string on '{GetGameObjectPath(comp.gameObject)}' field '{f.Name}' (len {str.Length} -> {newStr.Length})");
@@ -440,7 +453,7 @@ public static class ExtraSceneStateSetter
                         {
                             try
                             {
-                                var listObj = objRefsField.GetValue(comp) as IList;
+                                var listObj = objRefsField.GetValue(comp) as System.Collections.IList;
                                 if (listObj != null)
                                 {
                                     for (int i = 0; i < listObj.Count; i++)
@@ -448,9 +461,9 @@ public static class ExtraSceneStateSetter
                                         try
                                         {
                                             var item = listObj[i] as UnityEngine.Object;
-                                            if (item is GameObject go && string.Equals(go.name, destroyedName, StringComparison.Ordinal))
+                                            if (item is GameObject go && !string.IsNullOrEmpty(destroyedName) && string.Equals(go.name, destroyedName, StringComparison.Ordinal))
                                             {
-                                                listObj[i] = normalGO;
+                                                listObj[i] = normalGO ?? null;
                                                 changes++;
                                                 Debug.Log($"[ReplaceObjectReferences] NodeCanvas blackboard _objectReferences[{i}] replaced with {normalName} on '{GetGameObjectPath(comp.gameObject)}'");
                                             }
@@ -463,12 +476,11 @@ public static class ExtraSceneStateSetter
                         }
 
                         // fallback: call SetValue for common variable names (try to set Normal object)
-                        if (setValueMethod != null)
+                        if (setValueMethod != null && normalGO != null)
                         {
                             try
                             {
-                                // Try common variable names; these calls are best-effort and may throw for mismatched types
-                                object[] attempts = new object[] { new object[] { "CierzoNormal", normalGO }, new object[] { "CierzoDestroyed", null } };
+                                object[] attempts = new object[] { new object[] { "Normal", normalGO }, new object[] { "Destroyed", null } };
                                 foreach (object[] attempt in attempts)
                                 {
                                     try
@@ -490,7 +502,6 @@ public static class ExtraSceneStateSetter
             }
 
             // 3) Optionally deactivate DestroyedGO to be safe
-            // (we do this as a final aggressive fallback if we found a Destroyed GO)
             if (destroyedGO != null)
             {
                 try
@@ -529,5 +540,89 @@ public static class ExtraSceneStateSetter
             return string.Join("/", parts);
         }
         catch { return go.name; }
+    }
+
+    // Helper: heuristics to derive Normal/Destroyed names from the scene (best-effort)
+    public static void DeriveNormalDestroyedNamesFromScene(Scene scene, out string normalName, out string destroyedName)
+    {
+        normalName = null;
+        destroyedName = null;
+        try
+        {
+            if (!scene.IsValid()) return;
+
+            // Derive base token
+            string baseToken = null;
+            try
+            {
+                baseToken = scene.name;
+                if (string.IsNullOrEmpty(baseToken))
+                {
+                    normalName = null; destroyedName = null; return;
+                }
+                // strip known suffixes
+                string[] suffixes = new[] { "NewTerrain", "Terrain", "Map" };
+                foreach (var sfx in suffixes)
+                {
+                    if (baseToken.EndsWith(sfx, StringComparison.OrdinalIgnoreCase))
+                    {
+                        baseToken = baseToken.Substring(0, baseToken.Length - sfx.Length);
+                        break;
+                    }
+                }
+            }
+            catch { baseToken = scene.name; }
+
+            // Form common variants
+            var candidates = new List<(string normal, string destroyed)>();
+            if (!string.IsNullOrEmpty(baseToken))
+            {
+                candidates.Add(($"Normal{baseToken}", $"Destroyed{baseToken}"));
+                candidates.Add(($"{baseToken}Normal", $"{baseToken}Destroyed"));
+                candidates.Add(($"Normal_{baseToken}", $"Destroyed_{baseToken}"));
+            }
+
+            // Try to find any pair that exists in scene
+            var namesInScene = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                if (root == null) continue;
+                foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                    if (!string.IsNullOrEmpty(t.name)) namesInScene.Add(t.name);
+            }
+
+            foreach (var cand in candidates)
+            {
+                bool nExists = namesInScene.Contains(cand.normal);
+                bool dExists = namesInScene.Contains(cand.destroyed);
+                if (nExists || dExists)
+                {
+                    normalName = cand.normal;
+                    destroyedName = cand.destroyed;
+                    return;
+                }
+            }
+
+            // fallback: try to find any names containing Normal/Destroyed tokens and include baseToken
+            foreach (var name in namesInScene)
+            {
+                if (string.IsNullOrEmpty(normalName) && name.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 && (string.IsNullOrEmpty(baseToken) || name.IndexOf(baseToken, StringComparison.OrdinalIgnoreCase) >= 0))
+                    normalName = name;
+                if (string.IsNullOrEmpty(destroyedName) && (name.IndexOf("Destroyed", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Ruin", StringComparison.OrdinalIgnoreCase) >= 0) && (string.IsNullOrEmpty(baseToken) || name.IndexOf(baseToken, StringComparison.OrdinalIgnoreCase) >= 0))
+                    destroyedName = name;
+                if (!string.IsNullOrEmpty(normalName) && !string.IsNullOrEmpty(destroyedName)) break;
+            }
+
+            // final fallback: any Normal-like / Destroyed-like present
+            if (string.IsNullOrEmpty(normalName))
+            {
+                normalName = namesInScene.FirstOrDefault(n => n.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            if (string.IsNullOrEmpty(destroyedName))
+            {
+                destroyedName = namesInScene.FirstOrDefault(n => n.IndexOf("Destroyed", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("Ruin", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+        }
+        catch { /* swallow – best-effort */ }
     }
 }
