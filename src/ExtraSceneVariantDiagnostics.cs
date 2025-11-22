@@ -430,7 +430,7 @@ public static class ExtraSceneVariantDiagnostics
         catch { return "<path-error>"; }
     }
 
-    static string GetGameObjectPath(GameObject go)
+    public static string GetGameObjectPath(GameObject go)
     {
         if (go == null) return "<null>";
         return GetTransformPath(go.transform);

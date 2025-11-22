@@ -22,7 +22,8 @@ public static class NodeCanvasVariantHelper
                     string derivedNormal = null;
                     string derivedDestroyed = null;
                     // best-effort derive using same helper logic as ExtraSceneStateSetter
-                    ExtraSceneStateSetter.DeriveNormalDestroyedNamesFromScene(loadedScene, out derivedNormal, out derivedDestroyed);
+                    // DeriveNormalDestroyedNamesFromScene expects (Scene scene, string preferredToken, out string normalName, out string destroyedName)
+                    ExtraSceneStateSetter.DeriveNormalDestroyedNamesFromScene(loadedScene, null, out derivedNormal, out derivedDestroyed);
                     if (!string.IsNullOrEmpty(derivedNormal) && string.IsNullOrEmpty(normalName)) normalName = derivedNormal;
                     if (!string.IsNullOrEmpty(derivedDestroyed) && string.IsNullOrEmpty(destroyedName)) destroyedName = derivedDestroyed;
                 }
