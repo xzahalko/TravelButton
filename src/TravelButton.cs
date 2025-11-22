@@ -551,13 +551,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 try { citySceneName = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
                             }
 
+                            // If the city entry matches the currently loaded sceneName, collect candidate tokens from that entry.
                             if (!string.IsNullOrEmpty(citySceneName) && string.Equals(citySceneName, scene.name, StringComparison.OrdinalIgnoreCase))
                             {
+                                // city.name
                                 string cityName = null;
                                 try { cityName = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
                                 if (!string.IsNullOrEmpty(cityName) && !tryTokens.Exists(x => string.Equals(x, cityName, StringComparison.OrdinalIgnoreCase)))
                                     tryTokens.Add(cityName);
 
+                                // targetGameObjectName (may contain BGM_TownCierzo(Clone) etc)
                                 string targetName = null;
                                 try { targetName = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
                                 if (string.IsNullOrEmpty(targetName))
@@ -566,6 +569,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 }
                                 if (!string.IsNullOrEmpty(targetName))
                                 {
+                                    // Try to extract a core alpha token (e.g., "Cierzo" from "BGM_TownCierzo(Clone)")
                                     var m = System.Text.RegularExpressions.Regex.Match(targetName, @"([A-Za-z]{3,})");
                                     if (m.Success)
                                     {
@@ -573,12 +577,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                         if (!tryTokens.Exists(x => string.Equals(x, cleaned, StringComparison.OrdinalIgnoreCase)))
                                             tryTokens.Add(cleaned);
                                     }
+
+                                    // Also split on non-alphanumerics and add each reasonable part
                                     var parts = System.Text.RegularExpressions.Regex.Split(targetName, @"[^A-Za-z0-9]+");
                                     foreach (var p in parts)
                                         if (!string.IsNullOrEmpty(p) && p.Length >= 3 && !tryTokens.Exists(x => string.Equals(x, p, StringComparison.OrdinalIgnoreCase)))
                                             tryTokens.Add(p);
                                 }
-                                break; // stop on matching city entry
+
+                                // Found matching city entry -> stop enumerating further city entries
+                                break;
                             }
                         }
                         catch { /* ignore per-city reflection errors */ }
@@ -657,13 +665,84 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
 
         // -----------------------
-        // 2) Quick scene-scan fallback: look for GameObjects named like NormalCierzo / CierzoNormal / DestroyedCierzo
-        //    NOTE: this block must not contain try/catch that encloses any yields.
+        // 2) Quick scene-scan fallback: dynamic tokenCandidates generated from TravelButton.Cities
         // -----------------------
         {
-            // candidate short tokens to try (add any extra heuristics here)
-            var tokenCandidates = new[] { scene.name, "Cierzo", "Chersonese", "ChersoneseNewTerrain" };
+            // Build tokenCandidates dynamically from TravelButton.Cities and the scene name.
+            var tokenSet = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 
+            if (!string.IsNullOrEmpty(scene.name)) tokenSet.Add(scene.name);
+
+            // Add variants of the scene name (strip common suffixes)
+            string[] suffixes = new[] { "NewTerrain", "Terrain", "Map" };
+            foreach (var sfx in suffixes)
+            {
+                if (!string.IsNullOrEmpty(scene.name) && scene.name.EndsWith(sfx, StringComparison.OrdinalIgnoreCase))
+                {
+                    var trimmed = scene.name.Substring(0, scene.name.Length - sfx.Length);
+                    if (!string.IsNullOrEmpty(trimmed)) tokenSet.Add(trimmed);
+                }
+            }
+
+            // Add tokens from runtime city entries (name, sceneName, targetGameObjectName parts)
+            try
+            {
+                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                if (citiesEnum != null)
+                {
+                    foreach (var c in citiesEnum)
+                    {
+                        try
+                        {
+                            var t = c.GetType();
+
+                            // add city.name if present
+                            string cityName = null;
+                            try { cityName = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                            if (!string.IsNullOrEmpty(cityName)) tokenSet.Add(cityName);
+
+                            // add sceneName if present
+                            string citySceneName = null;
+                            try { citySceneName = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                            if (!string.IsNullOrEmpty(citySceneName)) tokenSet.Add(citySceneName);
+
+                            // add targetGameObjectName-derived tokens
+                            string targetName = null;
+                            try { targetName = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                            if (string.IsNullOrEmpty(targetName))
+                            {
+                                try { targetName = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            }
+                            if (!string.IsNullOrEmpty(targetName))
+                            {
+                                // try a simple alpha token extraction and splitting
+                                var m = System.Text.RegularExpressions.Regex.Match(targetName, @"([A-Za-z]{3,})");
+                                if (m.Success) tokenSet.Add(m.Groups[1].Value);
+
+                                var parts = System.Text.RegularExpressions.Regex.Split(targetName, @"[^A-Za-z0-9]+");
+                                foreach (var p in parts)
+                                    if (!string.IsNullOrEmpty(p) && p.Length >= 3)
+                                        tokenSet.Add(p);
+                            }
+                        }
+                        catch { /* ignore per-city reflection errors */ }
+                    }
+                }
+            }
+            catch { /* ignore enumeration errors */ }
+
+            // Add capitalized tokens from the scene name
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(scene.name ?? "", @"[A-Z][a-z]{2,}"))
+            {
+                tokenSet.Add(m.Value);
+            }
+
+            // Convert to list to preserve iteration behavior
+            var tokenCandidates = new System.Collections.Generic.List<string>(tokenSet);
+
+            TBLog.Info($"DelayedVariantDetect: scene-scan will try {tokenCandidates.Count} dynamic tokens for scene '{scene.name}'");
+
+            // For each candidate token, try to find common name patterns or a broader name match on GameObjects
             foreach (var tok in tokenCandidates)
             {
                 if (string.IsNullOrEmpty(tok)) continue;
@@ -680,7 +759,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     if (go != null && go.activeInHierarchy)
                     {
                         // Persist as high-confidence and short-circuit
-                        TBLog.Info($"DelayedVariantDetect: scene-scan found GameObject '{pat}' active -> persisting variant '{(pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed")}'");
+                        TBLog.Info($"DelayedVariantDetect: scene-scan found GameObject '{pat}' active -> persisting variant '{(pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed")}' (token='{tok}')");
                         try
                         {
                             CitiesJsonManager.UpdateCityVariantData(scene.name,
@@ -707,7 +786,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         (n.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("Destroyed", StringComparison.OrdinalIgnoreCase) >= 0))
                     {
                         var which = n.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed";
-                        TBLog.Info($"DelayedVariantDetect: broad scene-scan found '{g.name}' -> persisting variant {which}");
+                        TBLog.Info($"DelayedVariantDetect: broad scene-scan found '{g.name}' -> persisting variant {which} (token='{tok}')");
                         try
                         {
                             CitiesJsonManager.UpdateCityVariantData(scene.name, n, /*destroyed*/ "", which, ExtraSceneVariantDetection.VariantConfidence.High);
