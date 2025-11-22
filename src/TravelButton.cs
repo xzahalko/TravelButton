@@ -478,20 +478,52 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 TBLog.Warn("OnSceneLoaded: MarkCityVisitedByScene failed: " + exMark.Message);
             }
 
-            // Defer variant detection to avoid timing issues (recommended).
-            // Start a coroutine on your persistent MonoBehaviour instance; this will run
-            // after one frame + a small realtime delay so scene objects finish initializing.
-            // schedule deferred detection (replace existing scheduling block)
+            // --- replace the existing derive/persist try-block in OnSceneLoaded with this ---
             try
             {
-                TravelButtonRunner.Instance.StartSafeCoroutine(DelayedVariantDetect(scene, 0.08f));
-                TBLog.Info("OnSceneLoaded: scheduled DelayedVariantDetect via TravelButtonRunner.");
+                string preferredToken = sceneName;
+                try
+                {
+                    preferredToken = TravelButtonUI.GetBaseTokenFromSceneName(sceneName) ?? sceneName;
+                }
+                catch { /* ignore, fallback to sceneName */ }
+
+                string derivedNormal = null;
+                string derivedDestroyed = null;
+                try
+                {
+                    ExtraSceneStateSetter.DeriveNormalDestroyedNamesFromScene(scene, preferredToken, out derivedNormal, out derivedDestroyed);
+                    TBLog.Info($"OnSceneLoaded: Derived variants (preferred='{preferredToken}'): normal='{derivedNormal}', destroyed='{derivedDestroyed}'");
+                }
+                catch (Exception exDerive)
+                {
+                    TBLog.Warn("OnSceneLoaded: DeriveNormalDestroyedNamesFromScene failed: " + exDerive);
+                }
+
+                // Build variants list (order-preserving; normal first if available)
+                var variants = new System.Collections.Generic.List<string>();
+                if (!string.IsNullOrEmpty(derivedNormal) && !variants.Contains(derivedNormal)) variants.Add(derivedNormal);
+                if (!string.IsNullOrEmpty(derivedDestroyed) && !variants.Contains(derivedDestroyed)) variants.Add(derivedDestroyed);
+
+                // determine lastKnown as the concrete detected variant name
+                string lastKnown = null;
+                if (!string.IsNullOrEmpty(derivedNormal)) lastKnown = derivedNormal;
+                else if (!string.IsNullOrEmpty(derivedDestroyed)) lastKnown = derivedDestroyed;
+
+                try
+                {
+                    // NOTE: new signature is (string sceneName, List<string> variants, string lastKnownVariant, object confidenceToken)
+                    bool persisted = CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                    TBLog.Info($"OnSceneLoaded: CitiesJsonManagerCompat.TryUpdateAndPersist returned {persisted} for scene '{sceneName}'");
+                }
+                catch (Exception exCompat)
+                {
+                    TBLog.Warn("OnSceneLoaded: CitiesJsonManagerCompat.TryUpdateAndPersist threw: " + exCompat);
+                }
             }
-            catch (Exception exSchedule)
+            catch (Exception exOuterApply)
             {
-                TBLog.Warn("OnSceneLoaded: Failed to schedule deferred detection: " + exSchedule.Message);
-                // fallback: run inline detection
-                try { RunVariantDetectionInline(scene, scene.name); } catch { }
+                TBLog.Warn("OnSceneLoaded: variant derive/update block failed: " + exOuterApply);
             }
 
             totalSw.Stop();
@@ -632,12 +664,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             TBLog.Info($"DelayedVariantDetect: SceneVariantProvider returned raw='{rawVar}', normalized='{normalized}' for token='{tok}' - persisting and skipping heavy detection.");
                             try
                             {
-                                bool providerPersisted = CitiesJsonManager.UpdateCityVariantData(scene.name, rawVar, /*destroyed*/ "", normalized, ExtraSceneVariantDetection.VariantConfidence.High);
-                                TBLog.Info($"DelayedVariantDetect: SceneVariantProvider persist returned {providerPersisted}");
+                                // Build variants list and choose concrete lastKnown
+                                var variants = new System.Collections.Generic.List<string>();
+                                if (!string.IsNullOrEmpty(rawVar) && !variants.Contains(rawVar)) variants.Add(rawVar);
+                                if (!string.IsNullOrEmpty(normalized) && !variants.Contains(normalized)) variants.Add(normalized);
+                                string lastKnown = !string.IsNullOrEmpty(normalized) ? normalized : rawVar;
+
+                                bool providerPersisted = CitiesJsonManager.TryUpdateAndPersist(scene.name, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                                TBLog.Info($"DelayedVariantDetect: SceneVariantProvider compat persist returned {providerPersisted}");
                             }
                             catch (Exception exProvPersist)
                             {
-                                TBLog.Warn("DelayedVariantDetect: SceneVariantProvider persist threw: " + exProvPersist.Message);
+                                TBLog.Warn("DelayedVariantDetect: SceneVariantProvider compat persist threw: " + exProvPersist.Message);
                             }
                             providerFound = true;
                             break;
@@ -759,14 +797,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     if (go != null && go.activeInHierarchy)
                     {
                         // Persist as high-confidence and short-circuit
-                        TBLog.Info($"DelayedVariantDetect: scene-scan found GameObject '{pat}' active -> persisting variant '{(pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed")}' (token='{tok}')");
+                        TBLog.Info($"DelayedVariantDetect: scene-scan found GameObject '{pat}' active -> persisting variant (token='{tok}')");
                         try
                         {
-                            CitiesJsonManager.UpdateCityVariantData(scene.name,
-                                pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? $"{tok}Normal" : $"{tok}Destroyed",
-                                /*destroyed*/ "",
-                                pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed",
-                                ExtraSceneVariantDetection.VariantConfidence.High);
+                            var variants = new System.Collections.Generic.List<string>();
+                            // use the GO name as a concrete variant
+                            variants.Add(pat);
+                            // also add token-based guesses
+                            if (!variants.Contains($"{tok}Normal")) variants.Add($"{tok}Normal");
+                            if (!variants.Contains($"{tok}Destroyed")) variants.Add($"{tok}Destroyed");
+
+                            string lastKnown = pat; // concrete name
+                            CitiesJsonManager.TryUpdateAndPersist(scene.name, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
                         }
                         catch (Exception exPersist)
                         {
@@ -789,7 +831,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         TBLog.Info($"DelayedVariantDetect: broad scene-scan found '{g.name}' -> persisting variant {which} (token='{tok}')");
                         try
                         {
-                            CitiesJsonManager.UpdateCityVariantData(scene.name, n, /*destroyed*/ "", which, ExtraSceneVariantDetection.VariantConfidence.High);
+                            var variants = new System.Collections.Generic.List<string>();
+                            variants.Add(n); // concrete
+                                             // add probable alternatives
+                            if (!variants.Contains($"{tok}Normal")) variants.Add($"{tok}Normal");
+                            if (!variants.Contains($"{tok}Destroyed")) variants.Add($"{tok}Destroyed");
+
+                            CitiesJsonManager.TryUpdateAndPersist(scene.name, variants, n, ExtraSceneVariantDetection.VariantConfidence.High);
                         }
                         catch (Exception exPersist)
                         {
@@ -839,12 +887,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             var persistSw = System.Diagnostics.Stopwatch.StartNew();
-            var finalVariantStr = confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium
-                ? ExtraSceneVariantDiagnostics.DetectAndDump(scene).ToString()
-                : "Unknown";
-            persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
+            var variants = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrEmpty(normal) && !variants.Contains(normal)) variants.Add(normal);
+            if (!string.IsNullOrEmpty(destroyed) && !variants.Contains(destroyed)) variants.Add(destroyed);
+
+            var finalVariantConcrete = !string.IsNullOrEmpty(normal) ? normal : (!string.IsNullOrEmpty(destroyed) ? destroyed : null);
+
+            persisted = CitiesJsonManager.TryUpdateAndPersist(scene.name, variants, finalVariantConcrete, confidence);
             persistSw.Stop();
-            TBLog.Info($"DelayedVariantDetect: UpdateCityVariantData returned {persisted} (took {persistSw.ElapsedMilliseconds} ms)");
+            TBLog.Info($"DelayedVariantDetect: CitiesJsonManagerCompat.TryUpdateAndPersist returned {persisted} (took {persistSw.ElapsedMilliseconds} ms)");
         }
         catch (Exception exPersist)
         {

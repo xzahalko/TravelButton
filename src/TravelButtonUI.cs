@@ -3474,7 +3474,7 @@ public partial class TravelButtonUI : MonoBehaviour
     }
 
     // Helper used above: derive a short base token from scene.name (used only for display fallback)
-    private static string GetBaseTokenFromSceneName(string sceneName)
+    public static string GetBaseTokenFromSceneName(string sceneName)
     {
         if (string.IsNullOrEmpty(sceneName)) return "Scene";
         // strip suffixes like NewTerrain, Terrain, Map

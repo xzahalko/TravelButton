@@ -1,9 +1,11 @@
-using System;
-using System.IO;
-using System.Linq;
-using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using UnityEngine;
 
 /// <summary>
@@ -298,5 +300,476 @@ public static class CitiesJsonManager
 
         // Looks plausible
         return true;
+    }
+
+    // Try to update city variant data and persist. Returns true when persisted (or runtime updated + persist attempted).
+    // Order of attempts:
+    //  1) Call CitiesJsonManager.UpdateCityVariantData(...) by reflection (if available).
+    //  2) Update runtime TravelButton.Cities entry so runtime behavior is corrected immediately.
+    //  3) Call TravelButton.PersistCitiesToPluginFolder() if a zero-argument overload exists.
+    //  4) As a last resort, update the canonical JSON file on disk directly using Newtonsoft.Json (via reflection)
+    //     to avoid relying on specific internal signatures. This step returns true if the file was changed.
+    // Full-refactor signature:
+    // variants: list of known variant ids (may be empty). lastKnownVariant: concrete variant id (should be in variants if possible).
+    public static bool TryUpdateAndPersist(string sceneName, List<string> variants, string lastKnownVariant, object confidenceToken = null)
+    {
+        try
+        {
+            TBLog.Info($"CitiesJsonManagerCompat: TryUpdateAndPersist(scene='{sceneName}', variants=[{(variants != null ? string.Join(",", variants) : "")}], lastKnown='{lastKnownVariant}')");
+
+            bool attemptedUpdate = false;
+            bool persisted = false;
+
+            // 1) Try calling legacy CitiesJsonManager.UpdateCityVariantData(...) for runtimes that still provide it.
+            //    We attempt to map to legacy signature if present (keep compatibility).
+            try
+            {
+                var cjType = Type.GetType("CitiesJsonManager, Assembly-CSharp", false, true);
+                if (cjType != null)
+                {
+                    var mi = cjType.GetMethod("UpdateCityVariantData", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (mi != null)
+                    {
+                        try
+                        {
+                            // Legacy method expected (scene, normal, destroyed, finalVariant, confidence?) - we call it best-effort.
+                            string normal = (variants != null && variants.Count >= 1) ? variants[0] : "";
+                            string destroyed = (variants != null && variants.Count >= 2) ? variants[1] : "";
+                            var paramCount = mi.GetParameters().Length;
+                            object ret = null;
+                            if (paramCount == 5)
+                            {
+                                ret = mi.Invoke(null, new object[] { sceneName, normal, destroyed, lastKnownVariant, confidenceToken });
+                            }
+                            else if (paramCount == 4)
+                            {
+                                ret = mi.Invoke(null, new object[] { sceneName, normal, destroyed, lastKnownVariant });
+                            }
+                            else
+                            {
+                                // unknown signature - try four args
+                                try { ret = mi.Invoke(null, new object[] { sceneName, normal, destroyed, lastKnownVariant }); } catch { ret = null; }
+                            }
+
+                            if (ret is bool b) { attemptedUpdate = true; persisted = b; }
+                            else { attemptedUpdate = true; persisted = true; }
+                            TBLog.Info($"CitiesJsonManagerCompat: CitiesJsonManager.UpdateCityVariantData invoked via legacy bridge returned={persisted}");
+                        }
+                        catch (TargetParameterCountException tpc)
+                        {
+                            TBLog.Warn("CitiesJsonManagerCompat: CitiesJsonManager.UpdateCityVariantData signature mismatch: " + tpc.Message);
+                        }
+                        catch (Exception ex)
+                        {
+                            TBLog.Warn("CitiesJsonManagerCompat: CitiesJsonManager.UpdateCityVariantData threw: " + ex);
+                        }
+                    }
+                    else
+                    {
+                        TBLog.Info("CitiesJsonManagerCompat: CitiesJsonManager.UpdateCityVariantData method not found by reflection.");
+                    }
+                }
+                else
+                {
+                    TBLog.Info("CitiesJsonManagerCompat: type 'CitiesJsonManager' not found (Assembly-CSharp). Skipping legacy call.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("CitiesJsonManagerCompat: error while trying legacy CitiesJsonManager call: " + ex);
+            }
+
+            // 2) Update runtime TravelButton.Cities entry so runtime behavior is corrected immediately.
+            try
+            {
+                TBLog.Info("CitiesJsonManagerCompat: Attempting to update in-memory TravelButton runtime city entry (variants + lastKnown).");
+                TravelButtonVariantUpdater.UpdateCityVariantDataWithVariants(sceneName, variants, lastKnownVariant);
+                TBLog.Info("CitiesJsonManagerCompat: TravelButtonVariantUpdater.UpdateCityVariantDataWithVariants completed.");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("CitiesJsonManagerCompat: TravelButtonVariantUpdater threw: " + ex);
+            }
+
+            // 3) If legacy persist exists and is zero-arg, attempt it (backward compatibility).
+            if (!persisted)
+            {
+                try
+                {
+                    var tbType = typeof(TravelButton);
+                    var persistMi = tbType.GetMethod("PersistCitiesToPluginFolder", BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (persistMi != null)
+                    {
+                        var pcount = persistMi.GetParameters()?.Length ?? 0;
+                        if (pcount == 0)
+                        {
+                            try
+                            {
+                                if (persistMi.IsStatic) persistMi.Invoke(null, null);
+                                else
+                                {
+                                    var instField = tbType.GetField("Instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                                    var inst = instField != null ? instField.GetValue(null) : null;
+                                    if (inst != null) persistMi.Invoke(inst, null);
+                                    else persistMi.Invoke(null, null);
+                                }
+                                persisted = true;
+                                TBLog.Info("CitiesJsonManagerCompat: called TravelButton.PersistCitiesToPluginFolder() (zero-arg) successfully.");
+                            }
+                            catch (Exception ex)
+                            {
+                                TBLog.Warn("CitiesJsonManagerCompat: TravelButton.PersistCitiesToPluginFolder zero-arg invoke threw: " + ex);
+                            }
+                        }
+                        else
+                        {
+                            TBLog.Warn($"CitiesJsonManagerCompat: PersistCitiesToPluginFolder exists but expects {pcount} parameters; skipping automatic call.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("CitiesJsonManagerCompat: error while trying to call PersistCitiesToPluginFolder: " + ex);
+                }
+            }
+
+            // 4) Last resort: update canonical JSON file on disk directly (new schema).
+            if (!persisted)
+            {
+                try
+                {
+                    TBLog.Info("CitiesJsonManagerCompat: Attempting direct JSON file update (new schema) as a last resort.");
+                    var jsonWriteOk = TryForceWriteCitiesJsonNewSchema(sceneName, variants, lastKnownVariant);
+                    if (jsonWriteOk)
+                    {
+                        persisted = true;
+                        TBLog.Info("CitiesJsonManagerCompat: direct JSON write (new schema) succeeded.");
+                    }
+                    else
+                    {
+                        TBLog.Warn("CitiesJsonManagerCompat: direct JSON write failed or Newtonsoft unavailable.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("CitiesJsonManagerCompat: TryForceWriteCitiesJsonNewSchema threw: " + ex);
+                }
+            }
+
+            TBLog.Info($"CitiesJsonManagerCompat: final persisted={persisted} (attemptedUpdate={attemptedUpdate})");
+            return persisted;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CitiesJsonManagerCompat: unexpected error: " + ex);
+            return false;
+        }
+    }
+
+    // New: write canonical JSON using the new schema: 'variants' array and 'lastKnownVariant'.
+    // For backward compatibility we also retain variantNormalName/variantDestroyedName fields (populated from variants[0]/variants[1] if present)
+    static bool TryForceWriteCitiesJsonNewSchema(string sceneName, List<string> variants, string lastKnownVariant)
+    {
+        try
+        {
+            // Determine canonical path (reuse earlier reflection approach)
+            string path = null;
+            try
+            {
+                var tbPluginType = Type.GetType("TravelButtonPlugin, Assembly-CSharp", false, true) ?? Type.GetType("TravelButtonPlugin");
+                if (tbPluginType != null)
+                {
+                    var mi = tbPluginType.GetMethod("GetCitiesJsonPath", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (mi != null) path = mi.Invoke(null, null) as string;
+                }
+            }
+            catch (Exception ex) { TBLog.Warn("CitiesJsonManagerCompat: GetCitiesJsonPath reflection threw: " + ex); }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                try
+                {
+                    var tbAsm = typeof(TravelButton).Assembly;
+                    var asmPath = tbAsm.Location;
+                    var dir = Path.GetDirectoryName(asmPath);
+                    path = Path.Combine(dir ?? ".", "TravelButton_Cities.json");
+                }
+                catch { path = null; }
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                TBLog.Warn("CitiesJsonManagerCompat: could not determine cities JSON path; skipping direct write.");
+                return false;
+            }
+
+            TBLog.Info($"CitiesJsonManagerCompat: TryForceWriteCitiesJsonNewSchema: path='{path}'");
+
+            if (!File.Exists(path))
+            {
+                TBLog.Warn("CitiesJsonManagerCompat: Cities JSON file does not exist at path; skipping direct write.");
+                return false;
+            }
+
+            string text = File.ReadAllText(path);
+
+            // Locate Newtonsoft types
+            var jObjectType = Type.GetType("Newtonsoft.Json.Linq.JObject, Newtonsoft.Json");
+            var jArrayType = Type.GetType("Newtonsoft.Json.Linq.JArray, Newtonsoft.Json");
+            var jTokenType = Type.GetType("Newtonsoft.Json.Linq.JToken, Newtonsoft.Json");
+
+            if (jObjectType == null || jArrayType == null || jTokenType == null)
+            {
+                TBLog.Warn("CitiesJsonManagerCompat: Newtonsoft.Json.Linq not found; cannot modify JSON safely.");
+                return false;
+            }
+
+            // Parse root JObject
+            var parseMi = jObjectType.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+            if (parseMi == null) { TBLog.Warn("CitiesJsonManagerCompat: JObject.Parse not found"); return false; }
+            object rootObj = parseMi.Invoke(null, new object[] { text });
+            if (rootObj == null) { TBLog.Warn("CitiesJsonManagerCompat: JObject.Parse returned null"); return false; }
+
+            // Access or create root["cities"] as JArray
+            MethodInfo jobj_getItem = FindMethod(rootObj.GetType(), "get_Item", 1, typeof(string));
+            MethodInfo jobj_setItem = FindMethod(rootObj.GetType(), "set_Item", 2, null);
+            object citiesToken = null;
+            try { if (jobj_getItem != null) citiesToken = jobj_getItem.Invoke(rootObj, new object[] { "cities" }); } catch (Exception ex) { TBLog.Warn("CitiesJsonManagerCompat: get_Item('cities') threw: " + ex); }
+            object jArrayObj = citiesToken;
+            if (jArrayObj == null)
+            {
+                jArrayObj = Activator.CreateInstance(jArrayType);
+                if (jobj_setItem != null) jobj_setItem.Invoke(rootObj, new object[] { "cities", jArrayObj });
+                else { TBLog.Warn("CitiesJsonManagerCompat: cannot set root['cities']"); return false; }
+            }
+
+            // Get helpers for JArray
+            MethodInfo jarray_getItem = FindMethod(jArrayObj.GetType(), "get_Item", 1, typeof(int));
+            MethodInfo jarray_add = jArrayType.GetMethod("Add", new[] { jTokenType }) ?? jArrayType.GetMethod("Add", new[] { typeof(object) });
+            MethodInfo jarray_removeAt = jArrayType.GetMethod("RemoveAt", new[] { typeof(int) });
+            PropertyInfo jArrayCountProp = jArrayType.GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
+
+            int count = (int)(jArrayCountProp.GetValue(jArrayObj) ?? 0);
+
+            // iterate to find matching sceneName object
+            object matchedElement = null;
+            for (int i = 0; i < count; i++)
+            {
+                object elem = null;
+                try { if (jarray_getItem != null) elem = jarray_getItem.Invoke(jArrayObj, new object[] { i }); } catch { elem = null; }
+                if (elem == null) continue;
+                var elem_getItem = FindMethod(elem.GetType(), "get_Item", 1, typeof(string));
+                if (elem_getItem == null) continue;
+                try
+                {
+                    var scenePropVal = elem_getItem.Invoke(elem, new object[] { "sceneName" });
+                    if (scenePropVal is string s && string.Equals(s, sceneName, StringComparison.OrdinalIgnoreCase)) { matchedElement = elem; break; }
+                }
+                catch { }
+            }
+
+            // Prepare JToken.FromObject for converting scalars
+            MethodInfo jtoken_fromObject = jTokenType.GetMethod("FromObject", new[] { typeof(object) });
+            Type jvalueType = Type.GetType("Newtonsoft.Json.Linq.JValue, Newtonsoft.Json");
+            ConstructorInfo jvalue_ctor = jvalueType?.GetConstructor(new[] { typeof(object) });
+
+            // Helper to convert a C# object to JToken via reflection
+            Func<object, object> ToJToken = (obj) =>
+            {
+                if (obj == null) return null;
+                if (jtoken_fromObject != null) return jtoken_fromObject.Invoke(null, new object[] { obj });
+                if (jvalue_ctor != null) return jvalue_ctor.Invoke(new object[] { obj });
+                return obj;
+            };
+
+            if (matchedElement == null)
+            {
+                // create new JObject for this scene
+                var jobjCtor = jObjectType.GetConstructor(Type.EmptyTypes);
+                object newObj = jobjCtor != null ? jobjCtor.Invoke(null) : Activator.CreateInstance(jObjectType);
+                var newObjType = newObj.GetType();
+                var newObj_setItem = FindMethod(newObjType, "set_Item", 2, null);
+
+                // set common properties
+                try
+                {
+                    newObj_setItem.Invoke(newObj, new object[] { "sceneName", ToJToken(sceneName) });
+                    // variants array (create JArray)
+                    var jarrayCtor = jArrayType.GetConstructor(Type.EmptyTypes);
+                    object variantsArr = jarrayCtor != null ? jarrayCtor.Invoke(null) : Activator.CreateInstance(jArrayType);
+                    MethodInfo variants_add = jArrayType.GetMethod("Add", new[] { jTokenType }) ?? jArrayType.GetMethod("Add", new[] { typeof(object) });
+                    if (variants != null)
+                    {
+                        foreach (var v in variants) variants_add.Invoke(variantsArr, new object[] { ToJToken(v) });
+                    }
+                    // assign variants array
+                    newObj_setItem.Invoke(newObj, new object[] { "variants", variantsArr });
+                    // also populate legacy fields for backward compatibility
+                    if (variants != null && variants.Count >= 1) newObj_setItem.Invoke(newObj, new object[] { "variantNormalName", ToJToken(variants[0]) });
+                    if (variants != null && variants.Count >= 2) newObj_setItem.Invoke(newObj, new object[] { "variantDestroyedName", ToJToken(variants[1]) });
+                    if (!string.IsNullOrEmpty(lastKnownVariant)) newObj_setItem.Invoke(newObj, new object[] { "lastKnownVariant", ToJToken(lastKnownVariant) });
+                }
+                catch (Exception exNewSet)
+                {
+                    TBLog.Warn("CitiesJsonManagerCompat: failed to set fields on new JObject: " + exNewSet);
+                }
+
+                // append
+                if (jarray_add == null) { TBLog.Warn("CitiesJsonManagerCompat: JArray.Add not found"); return false; }
+                jarray_add.Invoke(jArrayObj, new object[] { newObj });
+            }
+            else
+            {
+                // update matched element: set variants array and lastKnownVariant (and legacy fields)
+                var elemType = matchedElement.GetType();
+                var elem_setItem = FindMethod(elemType, "set_Item", 2, null);
+
+                try
+                {
+                    // create JArray for variants and set
+                    var jarrayCtor = jArrayType.GetConstructor(Type.EmptyTypes);
+                    object variantsArr = jarrayCtor != null ? jarrayCtor.Invoke(null) : Activator.CreateInstance(jArrayType);
+                    MethodInfo variants_add = jArrayType.GetMethod("Add", new[] { jTokenType }) ?? jArrayType.GetMethod("Add", new[] { typeof(object) });
+                    if (variants != null)
+                    {
+                        foreach (var v in variants) variants_add.Invoke(variantsArr, new object[] { ToJToken(v) });
+                    }
+                    // set variants + legacy
+                    elem_setItem.Invoke(matchedElement, new object[] { "variants", variantsArr });
+                    if (variants != null && variants.Count >= 1) elem_setItem.Invoke(matchedElement, new object[] { "variantNormalName", ToJToken(variants[0]) });
+                    if (variants != null && variants.Count >= 2) elem_setItem.Invoke(matchedElement, new object[] { "variantDestroyedName", ToJToken(variants[1]) });
+                    if (!string.IsNullOrEmpty(lastKnownVariant)) elem_setItem.Invoke(matchedElement, new object[] { "lastKnownVariant", ToJToken(lastKnownVariant) });
+                }
+                catch (Exception exUpd)
+                {
+                    TBLog.Warn("CitiesJsonManagerCompat: failed to update matched JSON element: " + exUpd);
+                }
+            }
+
+            // Serialize root to indented JSON
+            var formattingType = Type.GetType("Newtonsoft.Json.Formatting, Newtonsoft.Json");
+            object indentedFormatting = null;
+            if (formattingType != null)
+            {
+                var enumVals = Enum.GetValues(formattingType);
+                foreach (var ev in enumVals) if (ev.ToString().Equals("Indented", StringComparison.OrdinalIgnoreCase)) { indentedFormatting = ev; break; }
+            }
+
+            string outText = null;
+            try
+            {
+                if (indentedFormatting != null)
+                {
+                    var tostringMi = jObjectType.GetMethod("ToString", new[] { formattingType });
+                    if (tostringMi != null) outText = tostringMi.Invoke(rootObj, new object[] { indentedFormatting }) as string;
+                }
+                if (outText == null) outText = rootObj.ToString();
+            }
+            catch (Exception exSer) { TBLog.Warn("CitiesJsonManagerCompat: serialization failed: " + exSer); outText = rootObj.ToString(); }
+
+            if (string.IsNullOrEmpty(outText)) { TBLog.Warn("CitiesJsonManagerCompat: serialization returned empty string"); return false; }
+
+            // Backup + atomic write
+            try
+            {
+                var bak = path + ".bak";
+                File.Copy(path, bak, true);
+                TBLog.Info("CitiesJsonManagerCompat: backup created: " + bak);
+            }
+            catch (Exception exBak) { TBLog.Warn("CitiesJsonManagerCompat: failed backup: " + exBak); }
+
+            try
+            {
+                var tmp = Path.Combine(Path.GetDirectoryName(path) ?? Path.GetTempPath(), $"TravelButton_Cities_tmp_{Guid.NewGuid():N}.json");
+                File.WriteAllText(tmp, outText);
+                try { File.Replace(tmp, path, null); }
+                catch (PlatformNotSupportedException) { File.Copy(tmp, path, true); File.Delete(tmp); }
+                TBLog.Info("CitiesJsonManagerCompat: written updated cities JSON to '" + path + "'");
+                return true;
+            }
+            catch (Exception exWrite) { TBLog.Warn("CitiesJsonManagerCompat: failed writing updated JSON to disk: " + exWrite); return false; }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CitiesJsonManagerCompat: TryForceWriteCitiesJsonNewSchema top-level failure: " + ex);
+            return false;
+        }
+    }
+
+    // Migration utility: scan runtime TravelButton.Cities and:
+    // - if an entry uses legacy variantNormalName/variantDestroyedName or lastKnownVariant="Normal"/"Destroyed",
+    //   convert to the new schema: variants array + lastKnownVariant concrete name, then persist via TryUpdateAndPersist.
+    public static void MigrateAllCitiesToVariants()
+    {
+        try
+        {
+            TBLog.Info("CitiesJsonManagerCompat: MigrateAllCitiesToVariants: scanning runtime TravelButton.Cities");
+            var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+            if (citiesEnum == null) { TBLog.Info("CitiesJsonManagerCompat: TravelButton.Cities not enumerable; skipping migration."); return; }
+
+            foreach (var c in citiesEnum)
+            {
+                if (c == null) continue;
+                try
+                {
+                    var t = c.GetType();
+                    string sceneName = null;
+                    try { sceneName = t.GetProperty("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    if (string.IsNullOrEmpty(sceneName)) continue;
+
+                    // collect legacy fields
+                    string varNormal = null, varDestroyed = null, lastKnown = null;
+                    try { varNormal = t.GetProperty("variantNormalName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    try { varDestroyed = t.GetProperty("variantDestroyedName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    try { lastKnown = t.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+
+                    // build variants list
+                    var variants = new List<string>();
+                    if (!string.IsNullOrEmpty(varNormal)) variants.Add(varNormal);
+                    if (!string.IsNullOrEmpty(varDestroyed) && !variants.Contains(varDestroyed)) variants.Add(varDestroyed);
+
+                    // if lastKnown is legacy flag, map to concrete if possible
+                    string concreteLast = lastKnown;
+                    if (!string.IsNullOrEmpty(lastKnown))
+                    {
+                        if (string.Equals(lastKnown, "Normal", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(varNormal)) concreteLast = varNormal;
+                        else if (string.Equals(lastKnown, "Destroyed", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(varDestroyed)) concreteLast = varDestroyed;
+                        // if lastKnown already concrete, keep it
+                    }
+
+                    // if we have any variants or concreteLast to migrate, persist with new schema
+                    if (variants.Count > 0 || !string.IsNullOrEmpty(concreteLast))
+                    {
+                        TBLog.Info($"CitiesJsonManagerCompat: migrating scene '{sceneName}' -> variants=[{string.Join(",", variants)}], lastKnown='{concreteLast}'");
+                        TryUpdateAndPersist(sceneName, variants, concreteLast, null);
+                    }
+                }
+                catch (Exception ex) { TBLog.Warn("CitiesJsonManagerCompat: per-city migration failure: " + ex); }
+            }
+        }
+        catch (Exception exTop) { TBLog.Warn("CitiesJsonManagerCompat: MigrateAllCitiesToVariants failed: " + exTop); }
+    }
+
+    // Helper: find method with name and parameter count and optional first parameter type
+    static MethodInfo FindMethod(Type t, string name, int paramCount, Type firstParamType)
+    {
+        try
+        {
+            var candidates = t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                              .Where(m => string.Equals(m.Name, name, StringComparison.Ordinal)).ToArray();
+            if (candidates.Length == 0) return null;
+            foreach (var c in candidates)
+            {
+                var ps = c.GetParameters();
+                if (ps.Length != paramCount) continue;
+                if (firstParamType != null)
+                {
+                    if (ps.Length >= 1 && ps[0].ParameterType == firstParamType) return c;
+                }
+                else return c;
+            }
+            return candidates.FirstOrDefault(m => m.GetParameters().Length == paramCount);
+        }
+        catch { return null; }
     }
 }
