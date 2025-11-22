@@ -503,95 +503,299 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
-
     private static System.Collections.IEnumerator DelayedVariantDetect(UnityEngine.SceneManagement.Scene scene, float waitSeconds = 0.08f)
     {
         // wait a frame so Unity finishes Awake/Start for scene objects
         yield return null;
         if (waitSeconds > 0f) yield return new UnityEngine.WaitForSecondsRealtime(waitSeconds);
 
-        try
+        TBLog.Info($"DelayedVariantDetect: running detection for scene '{scene.name}'");
+
+        // -----------------------
+        // 1) Try SceneVariantProvider with multiple tokens + retry
+        // -----------------------
         {
-            TBLog.Info($"DelayedVariantDetect: running detection for scene '{scene.name}'");
+            TBLog.Info($"DelayedVariantDetect: attempting SceneVariantProvider for scene '{scene.name}' using multiple tokens (with retries)");
 
-            // public quick detection
-            var detectSw = System.Diagnostics.Stopwatch.StartNew();
-            var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, scene.name);
-            detectSw.Stop();
-            TBLog.Info($"DelayedVariantDetect: DetectVariantNamesWithConfidence -> normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidence} (took {detectSw.ElapsedMilliseconds} ms)");
+            // Build candidate tokens (order matters)
+            var tryTokens = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrEmpty(scene.name)) tryTokens.Add(scene.name);
 
-            // print diagnostics from the helper
-            try
+            // common suffix stripping
+            string[] suffixes = new[] { "NewTerrain", "Terrain", "Map" };
+            foreach (var sfx in suffixes)
             {
-                var fast = VariantDetectDiagnostics.DumpDiagnostics(scene);
-                Debug.Log($"[VariantDetectDiag] DumpDiagnostics fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
-            }
-            catch (Exception exDump)
-            {
-                Debug.LogWarning("[VariantDetectDiag] DumpDiagnostics threw: " + exDump);
-            }
-
-            // optionally run heavy dump if confidence is low (safe)
-            if (confidence < ExtraSceneVariantDetection.VariantConfidence.Medium)
-            {
-                try
+                if (!string.IsNullOrEmpty(scene.name) && scene.name.EndsWith(sfx, StringComparison.OrdinalIgnoreCase))
                 {
-                    TBLog.Info("DelayedVariantDetect: confidence low — running DetectAndDump for offline diagnostics.");
-                    var diag = ExtraSceneVariantDiagnostics.DetectAndDump(scene);
-                    TBLog.Info("DelayedVariantDetect: DetectAndDump returned: " + diag);
-                }
-                catch (Exception exDiag)
-                {
-                    TBLog.Warn("DelayedVariantDetect: DetectAndDump failed: " + exDiag.Message);
+                    var trimmed = scene.name.Substring(0, scene.name.Length - sfx.Length);
+                    if (!string.IsNullOrEmpty(trimmed) && !tryTokens.Exists(x => string.Equals(x, trimmed, StringComparison.OrdinalIgnoreCase)))
+                        tryTokens.Add(trimmed);
                 }
             }
 
-            // Persist detection (using existing manager)
-            bool persisted = false;
+            // try to find matching city entry and add city.name and parts of targetGameObjectName
             try
             {
-                var persistSw = System.Diagnostics.Stopwatch.StartNew();
-                var finalVariantStr = confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium
-                    ? ExtraSceneVariantDiagnostics.DetectAndDump(scene).ToString()
-                    : "Unknown";
-                persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
-                persistSw.Stop();
-                TBLog.Info($"DelayedVariantDetect: UpdateCityVariantData returned {persisted} (took {persistSw.ElapsedMilliseconds} ms)");
-            }
-            catch (Exception exPersist)
-            {
-                TBLog.Warn("DelayedVariantDetect: UpdateCityVariantData threw exception: " + exPersist.Message);
-            }
-
-            if (!persisted)
-            {
-                TBLog.Info($"DelayedVariantDetect: Persist failed - CitiesJsonPath='{TravelButtonPlugin.GetCitiesJsonPath() ?? "<null>"}'");
-                try
+                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                if (citiesEnum != null)
                 {
-                    var path = TravelButtonPlugin.GetCitiesJsonPath();
-                    if (!string.IsNullOrEmpty(path))
+                    foreach (var c in citiesEnum)
                     {
-                        var fi = new System.IO.FileInfo(path);
-                        TBLog.Info($"DelayedVariantDetect: CitiesJson file exists={fi.Exists}, length={(fi.Exists ? fi.Length.ToString() : "N/A")}, readonly={(fi.Exists ? fi.IsReadOnly.ToString() : "N/A")}");
-                        var dir = System.IO.Path.GetDirectoryName(path);
-                        var tmp = System.IO.Path.Combine(dir ?? System.IO.Path.GetTempPath(), $"TravelButton_write_test_{Guid.NewGuid():N}.tmp");
-                        System.IO.File.WriteAllText(tmp, "ping");
-                        System.IO.File.Delete(tmp);
-                        TBLog.Info($"DelayedVariantDetect: Temp write to dir '{dir}' succeeded");
+                        try
+                        {
+                            var t = c.GetType();
+                            string citySceneName = null;
+                            try { citySceneName = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                            if (string.IsNullOrEmpty(citySceneName))
+                            {
+                                try { citySceneName = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            }
+
+                            if (!string.IsNullOrEmpty(citySceneName) && string.Equals(citySceneName, scene.name, StringComparison.OrdinalIgnoreCase))
+                            {
+                                string cityName = null;
+                                try { cityName = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                                if (!string.IsNullOrEmpty(cityName) && !tryTokens.Exists(x => string.Equals(x, cityName, StringComparison.OrdinalIgnoreCase)))
+                                    tryTokens.Add(cityName);
+
+                                string targetName = null;
+                                try { targetName = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
+                                if (string.IsNullOrEmpty(targetName))
+                                {
+                                    try { targetName = t.GetField("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                                }
+                                if (!string.IsNullOrEmpty(targetName))
+                                {
+                                    var m = System.Text.RegularExpressions.Regex.Match(targetName, @"([A-Za-z]{3,})");
+                                    if (m.Success)
+                                    {
+                                        var cleaned = m.Groups[1].Value;
+                                        if (!tryTokens.Exists(x => string.Equals(x, cleaned, StringComparison.OrdinalIgnoreCase)))
+                                            tryTokens.Add(cleaned);
+                                    }
+                                    var parts = System.Text.RegularExpressions.Regex.Split(targetName, @"[^A-Za-z0-9]+");
+                                    foreach (var p in parts)
+                                        if (!string.IsNullOrEmpty(p) && p.Length >= 3 && !tryTokens.Exists(x => string.Equals(x, p, StringComparison.OrdinalIgnoreCase)))
+                                            tryTokens.Add(p);
+                                }
+                                break; // stop on matching city entry
+                            }
+                        }
+                        catch { /* ignore per-city reflection errors */ }
                     }
                 }
-                catch (Exception exDiag)
-                {
-                    TBLog.Warn("DelayedVariantDetect: Extra persist diagnostics failed: " + exDiag.Message);
-                }
+            }
+            catch { /* ignore city enumeration errors */ }
+
+            // fallback: capitalized tokens from scene name
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(scene.name ?? "", @"[A-Z][a-z]{2,}"))
+            {
+                var token = m.Value;
+                if (!string.IsNullOrEmpty(token) && !tryTokens.Exists(x => string.Equals(x, token, StringComparison.OrdinalIgnoreCase)))
+                    tryTokens.Add(token);
             }
 
-            TBLog.Info($"DelayedVariantDetect: finished for scene '{scene.name}' persisted={persisted}");
+            // Retry loop - yields are outside the try blocks that have catches
+            const int maxAttempts = 5;
+            const float attemptDelay = 0.20f;
+            bool providerFound = false;
+
+            for (int attempt = 1; attempt <= maxAttempts && !providerFound; attempt++)
+            {
+                TBLog.Info($"DelayedVariantDetect: SceneVariantProvider attempt {attempt}/{maxAttempts} for scene '{scene.name}'");
+
+                // Inner provider try/catch - does NOT contain any yield
+                try
+                {
+                    // Optional diagnostic call if available (wrap in try to avoid crashing)
+                    try
+                    {
+                        SceneVariantProvider.DumpBlackboardsDiagnostics(scene.name);
+                    }
+                    catch { /* ignore diag errors */ }
+
+                    foreach (var tok in tryTokens)
+                    {
+                        if (string.IsNullOrEmpty(tok)) continue;
+                        TBLog.Info($"DelayedVariantDetect: SceneVariantProvider trying token '{tok}' (attempt {attempt})");
+                        var (rawVar, normalized) = SceneVariantProvider.GetActiveVariantForScene(tok);
+                        if (!string.IsNullOrEmpty(rawVar))
+                        {
+                            TBLog.Info($"DelayedVariantDetect: SceneVariantProvider returned raw='{rawVar}', normalized='{normalized}' for token='{tok}' - persisting and skipping heavy detection.");
+                            try
+                            {
+                                bool providerPersisted = CitiesJsonManager.UpdateCityVariantData(scene.name, rawVar, /*destroyed*/ "", normalized, ExtraSceneVariantDetection.VariantConfidence.High);
+                                TBLog.Info($"DelayedVariantDetect: SceneVariantProvider persist returned {providerPersisted}");
+                            }
+                            catch (Exception exProvPersist)
+                            {
+                                TBLog.Warn("DelayedVariantDetect: SceneVariantProvider persist threw: " + exProvPersist.Message);
+                            }
+                            providerFound = true;
+                            break;
+                        }
+                    }
+                }
+                catch (Exception exInner)
+                {
+                    TBLog.Warn("DelayedVariantDetect: SceneVariantProvider inner attempt threw: " + exInner.Message);
+                }
+
+                if (providerFound) break;
+
+                // wait before next attempt (yield is here but not inside a try with catch)
+                if (attempt < maxAttempts)
+                    yield return new UnityEngine.WaitForSecondsRealtime(attemptDelay);
+            }
+
+            if (providerFound)
+            {
+                yield break; // already persisted by provider
+            }
+
+            TBLog.Info("DelayedVariantDetect: SceneVariantProvider did not find an active variant after retries; continuing to fallback detection.");
         }
-        catch (Exception ex)
+
+        // -----------------------
+        // 2) Quick scene-scan fallback: look for GameObjects named like NormalCierzo / CierzoNormal / DestroyedCierzo
+        //    NOTE: this block must not contain try/catch that encloses any yields.
+        // -----------------------
         {
-            TBLog.Warn("DelayedVariantDetect: " + ex.Message);
+            // candidate short tokens to try (add any extra heuristics here)
+            var tokenCandidates = new[] { scene.name, "Cierzo", "Chersonese", "ChersoneseNewTerrain" };
+
+            foreach (var tok in tokenCandidates)
+            {
+                if (string.IsNullOrEmpty(tok)) continue;
+
+                // patterns (explicit names)
+                var patterns = new[] {
+                $"Normal{tok}", $"{tok}Normal", $"Destroyed{tok}", $"{tok}Destroyed",
+                $"Normal_{tok}", $"{tok}_Normal", $"Destroyed_{tok}", $"{tok}_Destroyed"
+            };
+
+                foreach (var pat in patterns)
+                {
+                    var go = UnityEngine.GameObject.Find(pat);
+                    if (go != null && go.activeInHierarchy)
+                    {
+                        // Persist as high-confidence and short-circuit
+                        TBLog.Info($"DelayedVariantDetect: scene-scan found GameObject '{pat}' active -> persisting variant '{(pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed")}'");
+                        try
+                        {
+                            CitiesJsonManager.UpdateCityVariantData(scene.name,
+                                pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? $"{tok}Normal" : $"{tok}Destroyed",
+                                /*destroyed*/ "",
+                                pat.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed",
+                                ExtraSceneVariantDetection.VariantConfidence.High);
+                        }
+                        catch (Exception exPersist)
+                        {
+                            TBLog.Warn("DelayedVariantDetect: scene-scan persist threw: " + exPersist.Message);
+                        }
+                        yield break;
+                    }
+                }
+
+                // broader scan: any GO whose name contains tok and Normal/Destroyed
+                var all = UnityEngine.Object.FindObjectsOfType<UnityEngine.GameObject>();
+                foreach (var g in all)
+                {
+                    if (!g.activeInHierarchy) continue;
+                    var n = g.name ?? "";
+                    if (n.IndexOf(tok, StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        (n.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("Destroyed", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        var which = n.IndexOf("Normal", StringComparison.OrdinalIgnoreCase) >= 0 ? "Normal" : "Destroyed";
+                        TBLog.Info($"DelayedVariantDetect: broad scene-scan found '{g.name}' -> persisting variant {which}");
+                        try
+                        {
+                            CitiesJsonManager.UpdateCityVariantData(scene.name, n, /*destroyed*/ "", which, ExtraSceneVariantDetection.VariantConfidence.High);
+                        }
+                        catch (Exception exPersist)
+                        {
+                            TBLog.Warn("DelayedVariantDetect: scene-scan broad persist threw: " + exPersist.Message);
+                        }
+                        yield break;
+                    }
+                }
+            }
         }
+
+        // -----------------------
+        // 3) Fallback: existing heuristic detection (slower)
+        // -----------------------
+        var detectSw = System.Diagnostics.Stopwatch.StartNew();
+        var (normal, destroyed, confidence) = ExtraSceneVariantDetection.DetectVariantNamesWithConfidence(scene, scene.name);
+        detectSw.Stop();
+        TBLog.Info($"DelayedVariantDetect: DetectVariantNamesWithConfidence -> normal='{normal ?? ""}' destroyed='{destroyed ?? ""}' confidence={confidence} (took {detectSw.ElapsedMilliseconds} ms)");
+
+        // diagnostics dump (safe)
+        try
+        {
+            var fast = VariantDetectDiagnostics.DumpDiagnostics(scene);
+            Debug.Log($"[VariantDetectDiag] DumpDiagnostics fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
+        }
+        catch (Exception exDump)
+        {
+            Debug.LogWarning("[VariantDetectDiag] DumpDiagnostics threw: " + exDump);
+        }
+
+        if (confidence < ExtraSceneVariantDetection.VariantConfidence.Medium)
+        {
+            try
+            {
+                TBLog.Info("DelayedVariantDetect: confidence low — running DetectAndDump for offline diagnostics.");
+                var diag = ExtraSceneVariantDiagnostics.DetectAndDump(scene);
+                TBLog.Info("DelayedVariantDetect: DetectAndDump returned: " + diag);
+            }
+            catch (Exception exDiag)
+            {
+                TBLog.Warn("DelayedVariantDetect: DetectAndDump failed: " + exDiag.Message);
+            }
+        }
+
+        // Persist detection (no yields inside try)
+        bool persisted = false;
+        try
+        {
+            var persistSw = System.Diagnostics.Stopwatch.StartNew();
+            var finalVariantStr = confidence >= ExtraSceneVariantDetection.VariantConfidence.Medium
+                ? ExtraSceneVariantDiagnostics.DetectAndDump(scene).ToString()
+                : "Unknown";
+            persisted = CitiesJsonManager.UpdateCityVariantData(scene.name, normal, destroyed, finalVariantStr, confidence);
+            persistSw.Stop();
+            TBLog.Info($"DelayedVariantDetect: UpdateCityVariantData returned {persisted} (took {persistSw.ElapsedMilliseconds} ms)");
+        }
+        catch (Exception exPersist)
+        {
+            TBLog.Warn("DelayedVariantDetect: UpdateCityVariantData threw exception: " + exPersist.Message);
+        }
+
+        if (!persisted)
+        {
+            TBLog.Info($"DelayedVariantDetect: Persist failed - CitiesJsonPath='{TravelButtonPlugin.GetCitiesJsonPath() ?? "<null>"}'");
+            try
+            {
+                var path = TravelButtonPlugin.GetCitiesJsonPath();
+                if (!string.IsNullOrEmpty(path))
+                {
+                    var fi = new System.IO.FileInfo(path);
+                    TBLog.Info($"DelayedVariantDetect: CitiesJson file exists={fi.Exists}, length={(fi.Exists ? fi.Length.ToString() : "N/A")}, readonly={(fi.Exists ? fi.IsReadOnly.ToString() : "N/A")}");
+                    var dir = System.IO.Path.GetDirectoryName(path);
+                    var tmp = System.IO.Path.Combine(dir ?? System.IO.Path.GetTempPath(), $"TravelButton_write_test_{Guid.NewGuid():N}.tmp");
+                    System.IO.File.WriteAllText(tmp, "ping");
+                    System.IO.File.Delete(tmp);
+                    TBLog.Info($"DelayedVariantDetect: Temp write to dir '{dir}' succeeded");
+                }
+            }
+            catch (Exception exDiag)
+            {
+                TBLog.Warn("DelayedVariantDetect: Extra persist diagnostics failed: " + exDiag.Message);
+            }
+        }
+
+        TBLog.Info($"DelayedVariantDetect: finished for scene '{scene.name}' persisted={persisted}");
     }
 
     // Fallback inline detection if scheduling coroutine isn't possible. Keeps same detection+persist steps.

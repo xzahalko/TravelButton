@@ -5,10 +5,15 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 using UnityEngine;
 
+/// <summary>
+/// Helper to read NodeCanvas blackboard variables and determine the currently active
+/// variant for a scene (e.g. CierzoNormal / CierzoDestroyed).
+/// Returns (rawVariableName, normalizedVariantLabel) or (null,null) if not found.
+/// </summary>
 public static class SceneVariantProvider
 {
     // Returns (rawVariableName, normalizedVariant) or (null,null) if not found.
-    // sceneToken: short scene identifier like "Cierzo" (case-insensitive).
+    // sceneToken: scene.name or a short token like "Cierzo" (case-insensitive).
     public static (string raw, string normalized) GetActiveVariantForScene(string sceneToken)
     {
         if (string.IsNullOrEmpty(sceneToken)) return (null, null);
@@ -59,33 +64,29 @@ public static class SceneVariantProvider
                         var varName = de.Key as string;
                         if (string.IsNullOrEmpty(varName)) continue;
 
-                        // only consider variables matching scene token OR variables that include a scene-like substring
-                        if (!varName.IndexOf(sceneToken, StringComparison.OrdinalIgnoreCase).Equals(-1) ||
-                            varName.IndexOf(sceneToken, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            var varObj = de.Value;
-                            var runtimeVal = TryGetRuntimeValue(varObj, binding);
-                            if (runtimeVal != null)
-                            {
-                                GameObject go = null;
-                                if (runtimeVal is GameObject goVal) go = goVal;
-                                else if (runtimeVal is Component comp) go = comp.gameObject;
+                        // only consider variables that mention sceneToken (e.g. 'CierzoNormal')
+                        if (varName.IndexOf(sceneToken, StringComparison.OrdinalIgnoreCase) < 0) continue;
 
-                                if (go != null)
-                                {
-                                    if (go.activeInHierarchy)
-                                    {
-                                        // found active variant
-                                        return (varName, NormalizeVariantName(varName, sceneToken));
-                                    }
-                                }
+                        var varObj = de.Value;
+                        var runtimeVal = TryGetRuntimeValue(varObj, binding);
+                        if (runtimeVal != null)
+                        {
+                            GameObject go = null;
+                            if (runtimeVal is GameObject goVal) go = goVal;
+                            else if (runtimeVal is Component comp) go = comp.gameObject;
+
+                            if (go != null)
+                            {
+                                // active GO -> current variant
+                                if (go.activeInHierarchy)
+                                    return (varName, NormalizeVariantName(varName, sceneToken));
                             }
                         }
                     }
                 }
                 else
                 {
-                    // fallback: try to inspect serialized JSON if present, but that won't say active state.
+                    // fallback: try to inspect serialized JSON to find tokens if active-state not available
                     var serField = bbType.GetField("_serializedBlackboard", binding);
                     if (serField != null)
                     {
@@ -97,14 +98,11 @@ public static class SceneVariantProvider
                             foreach (Match m in Regex.Matches(json, @"""([A-Za-z0-9_ \-]+)"""))
                             {
                                 var token = m.Groups[1].Value;
-                                if (token.IndexOf(sceneToken, StringComparison.OrdinalIgnoreCase) >= 0) tokens.Add(token);
+                                if (token.IndexOf(sceneToken, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    tokens.Add(token);
                             }
                             if (tokens.Count > 0)
-                            {
-                                // return first match as raw (no active-state info)
-                                var raw = tokens[0];
-                                return (raw, NormalizeVariantName(raw, sceneToken));
-                            }
+                                return (tokens[0], NormalizeVariantName(tokens[0], sceneToken)); // best-effort
                         }
                     }
                 }
@@ -147,15 +145,101 @@ public static class SceneVariantProvider
         // remove non-alpha chars and underscores/spaces
         s = Regex.Replace(s, @"[^A-Za-z0-9]+", " ").Trim();
 
-        // common mapping
         var lower = s.ToLowerInvariant();
         if (lower.Contains("normal")) return "Normal";
         if (lower.Contains("destroy") || lower.Contains("broken")) return "Destroyed";
         if (Regex.IsMatch(lower, @"\bdefault\b")) return "Normal";
-        // fallback: capitalise first token
+
         var parts = s.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length > 0)
             return char.ToUpperInvariant(parts[0][0]) + parts[0].Substring(1);
         return s;
+    }
+
+    // Diagnostic: dump blackboards and variable names (non-destructive)
+    public static void DumpBlackboardsDiagnostics(string sceneTokenHint = null)
+    {
+        try
+        {
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+            Type bbType = null;
+            foreach (var a in assemblies)
+            {
+                try
+                {
+                    foreach (var t in a.GetTypes())
+                    {
+                        if (t == null) continue;
+                        if (t.FullName == "NodeCanvas.Framework.Blackboard" || t.Name == "Blackboard")
+                        {
+                            bbType = t;
+                            break;
+                        }
+                    }
+                }
+                catch { }
+                if (bbType != null) break;
+            }
+            if (bbType == null)
+            {
+                Debug.Log("[SVP_DIAG] Blackboard type not found.");
+                return;
+            }
+
+            var bbs = UnityEngine.Object.FindObjectsOfType(bbType);
+            Debug.Log($"[SVP_DIAG] Found {bbs.Length} Blackboard instances. sceneTokenHint='{sceneTokenHint}'");
+            var binding = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public;
+            var dictField = bbType.GetField("_variables", binding) ?? bbType.GetField("variables", binding);
+            var serField = bbType.GetField("_serializedBlackboard", binding);
+
+            int idx = 0;
+            foreach (var bb in bbs)
+            {
+                string goName = "(no-go)";
+                try { var comp = bb as UnityEngine.Component; if (comp != null) goName = comp.gameObject.name; } catch { }
+                Debug.Log($"[SVP_DIAG] Blackboard[{idx}] GO='{goName}' type={bb.GetType().FullName}");
+
+                object dictObj = dictField != null ? dictField.GetValue(bb) : null;
+                if (dictObj is System.Collections.IDictionary idict)
+                {
+                    Debug.Log($"[SVP_DIAG]   variables dictionary entries = {idict.Count}");
+                    foreach (System.Collections.DictionaryEntry de in idict)
+                    {
+                        var varName = de.Key as string;
+                        object runtimeVal = null;
+                        try
+                        {
+                            runtimeVal = TryGetRuntimeValue(de.Value, binding);
+                        }
+                        catch { }
+                        string activeStr = "(null)";
+                        if (runtimeVal is GameObject go) activeStr = $"GO name='{go.name}' active={go.activeInHierarchy}";
+                        else if (runtimeVal is Component comp) activeStr = $"Component on GO='{comp.gameObject.name}' active={comp.gameObject.activeInHierarchy}";
+                        else if (runtimeVal != null) activeStr = $"Type={runtimeVal.GetType().FullName}";
+
+                        Debug.Log($"[SVP_DIAG]     var='{varName}' -> {activeStr}");
+                    }
+                }
+                else
+                {
+                    var json = serField != null ? serField.GetValue(bb) as string : null;
+                    if (!string.IsNullOrEmpty(json))
+                    {
+                        var snippet = json.Length > 800 ? json.Substring(0, 800) + " ...(truncated)..." : json;
+                        Debug.Log($"[SVP_DIAG]   serialized JSON snippet: {snippet}");
+                    }
+                    else
+                    {
+                        Debug.Log($"[SVP_DIAG]   no variables dictionary and no serialized JSON present.");
+                    }
+                }
+
+                idx++;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[SVP_DIAG] exception: " + ex);
+        }
     }
 }
