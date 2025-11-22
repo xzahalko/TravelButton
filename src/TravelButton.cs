@@ -854,7 +854,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         if (!persisted)
         {
             TBLog.Info($"DelayedVariantDetect: Persist failed - CitiesJsonPath='{TravelButtonPlugin.GetCitiesJsonPath() ?? "<null>"}'");
-            try 
+            try
             {
                 var path = TravelButtonPlugin.GetCitiesJsonPath();
                 if (!string.IsNullOrEmpty(path))
