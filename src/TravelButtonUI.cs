@@ -1856,6 +1856,159 @@ public partial class TravelButtonUI : MonoBehaviour
         }
     }
 
+    // Add to TravelButtonPlugin class
+
+    // Print a compact summary of the current in-memory TravelButton.Cities (no variants list).
+    public void DebugDumpAllCitiesSummary(string tag = "DebugDumpAllCitiesSummary")
+    {
+        try
+        {
+            if (TravelButton.Cities == null)
+            {
+                TBLog.Info($"{tag}: TravelButton.Cities == null");
+                return;
+            }
+
+            TBLog.Info($"{tag}: Cities count = {TravelButton.Cities.Count}");
+
+            for (int i = 0; i < TravelButton.Cities.Count; i++)
+            {
+                var c = TravelButton.Cities[i];
+                if (c == null)
+                {
+                    TBLog.Info($"{tag}: city[{i}] == null");
+                    continue;
+                }
+
+                string coords;
+                try
+                {
+                    coords = (c.coords != null && c.coords.Length > 0)
+                        ? $"[{string.Join(", ", c.coords.Select(f => f.ToString("G")))}]"
+                        : "null";
+                }
+                catch { coords = "unavailable"; }
+
+                string priceStr = c.price.HasValue ? c.price.Value.ToString() : "null";
+                string lastKnown = c.lastKnownVariant ?? "";
+                bool enabled = false;
+                try { enabled = c.enabled; } catch { /* ignore if missing */ }
+                string target = c.targetGameObjectName ?? "";
+
+                TBLog.Info($"{tag}: city[{i}] name='{c.name}' scene='{c.sceneName}' target='{target}' enabled={enabled} visited={c.visited} price={priceStr} coords={coords} lastKnownVariant='{lastKnown}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"{tag}: failed: {ex.Message}");
+        }
+    }
+
+    // Read the canonical TravelButton_Cities.json on disk and print every city entry (no variants array).
+    // This shows what is actually persisted on disk even if the runtime list differs.
+    public void DebugDumpCitiesFromJson(string tag = "DebugDumpCitiesFromJson")
+    {
+        try
+        {
+            string jsonPath = null;
+            try
+            {
+                // Prefer existing helper if available
+                jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            }
+            catch { /* ignore if not available */ }
+
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                // Best-effort fallback: plugin folder next to assembly
+                try
+                {
+                    var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                    var pluginDir = Path.GetDirectoryName(asm.Location);
+                    if (!string.IsNullOrEmpty(pluginDir))
+                        jsonPath = Path.Combine(pluginDir, "TravelButton_Cities.json");
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                TBLog.Info($"{tag}: could not determine TravelButton_Cities.json path");
+                return;
+            }
+
+            TBLog.Info($"{tag}: reading canonical JSON from: {jsonPath}");
+
+            if (!File.Exists(jsonPath))
+            {
+                TBLog.Info($"{tag}: file not found: {jsonPath}");
+                return;
+            }
+
+            string text = File.ReadAllText(jsonPath);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                TBLog.Info($"{tag}: file empty: {jsonPath}");
+                return;
+            }
+
+            JObject root;
+            try
+            {
+                root = JObject.Parse(text);
+            }
+            catch (Exception exParse)
+            {
+                TBLog.Warn($"{tag}: JSON parse failed: {exParse.Message}");
+                return;
+            }
+
+            var citiesToken = root["cities"];
+            if (citiesToken == null || citiesToken.Type != JTokenType.Array)
+            {
+                TBLog.Info($"{tag}: no 'cities' array found in JSON");
+                return;
+            }
+
+            var arr = (JArray)citiesToken;
+            TBLog.Info($"{tag}: JSON cities count = {arr.Count}");
+
+            for (int i = 0; i < arr.Count; i++)
+            {
+                var jo = arr[i] as JObject;
+                if (jo == null)
+                {
+                    TBLog.Info($"{tag}: json city[{i}] is not an object");
+                    continue;
+                }
+
+                string name = (string)(jo["name"] ?? jo["sceneName"] ?? "");
+                string sceneName = (string)(jo["sceneName"] ?? jo["name"] ?? "");
+                string target = (string)(jo["targetGameObjectName"] ?? "");
+                string desc = (string)(jo["desc"] ?? "");
+                string priceStr = jo["price"] == null || jo["price"].Type == JTokenType.Null ? "null" : jo["price"].ToString();
+                string visited = jo["visited"]?.ToString() ?? "";
+                string lastKnown = jo["lastKnownVariant"]?.ToString() ?? "";
+
+                string coords;
+                try
+                {
+                    var cToken = jo["coords"] as JArray;
+                    if (cToken != null)
+                        coords = "[" + string.Join(", ", cToken.Children().Select(t => t.ToString())) + "]";
+                    else coords = "null";
+                }
+                catch { coords = "unavailable"; }
+
+                TBLog.Info($"{tag}: json city[{i}] name='{name}' scene='{sceneName}' target='{target}' visited='{visited}' price={priceStr} coords={coords} lastKnownVariant='{lastKnown}' desc='{desc}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"DebugDumpCitiesFromJson: failed: {ex.Message}");
+        }
+    }
+
     // Robust, simplified OpenTravelDialog implementation.
     // Replace your current OpenTravelDialog body with this version (keep the same signature).
     // Defensive replacement of OpenTravelDialog: per-city try/catch and progress logs to avoid crashes and collect diagnostics.
@@ -1866,8 +2019,8 @@ public partial class TravelButtonUI : MonoBehaviour
     {
         TBLog.Info("OpenTravelDialog: invoked.");
 
-        VerifyJsonAndRuntimeCitiesOnDialogOpen();
-
+        //        VerifyJsonAndRuntimeCitiesOnDialogOpen();
+        DebugDumpAllCitiesSummary();
         try
         {
             try { ClearSaveRootCache(); } catch { }
