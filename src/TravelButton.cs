@@ -256,170 +256,38 @@ public class TravelButtonPlugin : BaseUnityPlugin
         { }
     }
 
-    /// <summary>
-    /// Consolidated initialization helper that performs a single, deterministic load/merge of
-    /// TravelButton_Cities.json, ConfigManager defaults, and BepInEx config bindings.
-    /// This method performs the canonical sequence exactly once during Awake.
-    /// </summary>
-    private void InitializeCitiesAndConfig()
-    {
-        try
-        {
-            TBLog.Info("InitializeCitiesAndConfig: begin consolidated initialization sequence");
-            
-            // Step a) InitCities for diagnostics - reads parsed DTOs into helper.loadedCities
-            try
-            {
-                CityMappingHelpers.InitCities();
-                TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() completed");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: InitCities failed: " + ex);
-            }
-            
-            // Step b) Load TravelButton_Cities.json into runtime TravelButton.Cities (metadata only)
-            // This includes reading new keys variants and lastKnownVariant
-            try
-            {
-                TryLoadCitiesJsonIntoTravelButtonMod();
-                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed");
-                
-                // Diagnostic dump after loading from JSON
-                try
-                {
-                    TBLog.Info("InitializeCitiesAndConfig: Runtime cities state after JSON load:");
-                    if (TravelButton.Cities == null)
-                    {
-                        TBLog.Info("  - Cities == null");
-                    }
-                    else
-                    {
-                        TBLog.Info($"  - Cities.Count = {TravelButton.Cities.Count}");
-                        foreach (var c in TravelButton.Cities)
-                        {
-                            try
-                            {
-                                var variantsStr = c.variants != null ? $"[{string.Join(", ", c.variants)}]" : "null";
-                                TBLog.Info($"  - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}] variants={variantsStr} lastKnownVariant='{c.lastKnownVariant ?? ""}'");
-                            }
-                            catch { }
-                        }
-                    }
-                }
-                catch (Exception exDump)
-                {
-                    TBLog.Warn("InitializeCitiesAndConfig: diagnostic dump failed: " + exDump);
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod failed: " + ex);
-            }
-            
-            // Step c) Attempt to load external ConfigManager config (or fallback to local Default)
-            try
-            {
-                TravelButton.InitFromConfig();
-                TBLog.Info("InitializeCitiesAndConfig: TravelButton.InitFromConfig() completed");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: InitFromConfig failed: " + ex);
-            }
-            
-            // Step d) Ensure TravelButton.Cities is assigned and complete
-            // This should not overwrite runtime values that came from TryLoadCitiesJsonIntoTravelButtonMod
-            try
-            {
-                CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
-                TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed");
-                
-                // Diagnostic dump after ensuring cities initialized
-                try
-                {
-                    TBLog.Info("InitializeCitiesAndConfig: Runtime cities state after EnsureCitiesInitializedFromJsonOrDefaults:");
-                    if (TravelButton.Cities == null)
-                    {
-                        TBLog.Info("  - Cities == null");
-                    }
-                    else
-                    {
-                        TBLog.Info($"  - Cities.Count = {TravelButton.Cities.Count}");
-                        foreach (var c in TravelButton.Cities)
-                        {
-                            try
-                            {
-                                var variantsStr = c.variants != null ? $"[{string.Join(", ", c.variants)}]" : "null";
-                                TBLog.Info($"  - '{c.name}' sceneName='{c.sceneName ?? ""}' enabled={c.enabled} price={c.price} visited={c.visited} variants={variantsStr} lastKnownVariant='{c.lastKnownVariant ?? ""}'");
-                            }
-                            catch { }
-                        }
-                    }
-                }
-                catch (Exception exDump)
-                {
-                    TBLog.Warn("InitializeCitiesAndConfig: diagnostic dump failed: " + exDump);
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults failed: " + ex);
-            }
-            
-            // Step e) Create BepInEx bindings for cities and global settings
-            // Attach SettingChanged handlers to persist updates to files
-            try
-            {
-                EnsureBepInExConfigBindings();
-                TBLog.Info("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() completed");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings failed: " + ex);
-            }
-            
-            // Step f) Start file watcher for cfg file (only watches legacy cfg, not JSON)
-            try
-            {
-                StartConfigWatcher();
-                TBLog.Info("InitializeCitiesAndConfig: StartConfigWatcher() completed");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("InitializeCitiesAndConfig: StartConfigWatcher failed: " + ex);
-            }
-            
-            TBLog.Info("InitializeCitiesAndConfig: consolidated initialization sequence completed successfully");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: unexpected top-level error: " + ex);
-        }
-    }
+    // 1) In Awake(), call the instance explicitly to avoid ambiguity.
+    // 2) Keep the full consolidated InitializeCitiesAndConfig (the second version below).
+    // Make sure you remove any other duplicate InitializeCitiesAndConfig definitions in this file.
 
     private void Awake()
     {
         DebugConfig.IsDebug = true;
+
+        // avoid creating multiple hooks
+        if (GameObject.Find("SceneLoadHook") == null)
+        {
+            var hookGO = new GameObject("SceneLoadHook");
+            hookGO.AddComponent<SceneLoadHook>();
+            UnityEngine.Object.DontDestroyOnLoad(hookGO);
+        }
 
         // Set the static instance reference
         Instance = this;
 
         UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
 
-        try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */
-        }
+        try { TravelButtonPlugin.Initialize(this.Logger); } catch { /* swallow */ }
 
         this.Logger.LogInfo("[TravelButton] direct Logger test (should appear in LogOutput.log)");
         TBLog.Info("TravelButtonPlugin test (should appear in LogOutput.log)");
-
-        // sanity checks to confirm BepInEx receives logs:
         TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
-        // Consolidated initialization flow
+        // Consolidated initialization: read JSON/config once and wire bindings/watchers.
         try
         {
-            InitializeCitiesAndConfig();
+            // explicit instance call to disambiguate if any static/duplicate method exists
+            this.InitializeCitiesAndConfig();
         }
         catch (Exception ex)
         {
@@ -428,13 +296,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         ShowPlayerNotification = (msg) =>
         {
-            // enqueue to main thread if required; Show uses Unity main thread anyway
             TravelButtonNotificationUI.Show(msg, 3f);
         };
 
-        // in Awake/Init:
-        cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", false, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
-
+        cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", true, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
     }
 
     /// <summary>
