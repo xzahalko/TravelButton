@@ -7408,11 +7408,12 @@ public static class TravelButton
         {
             var jobj = new JObject();
             
-            // Always include name
-            jobj["name"] = city.name ?? "";
+            // Always include name (use empty string if null for consistency)
+            string cityName = city.name ?? "";
+            jobj["name"] = cityName;
             
-            // sceneName
-            jobj["sceneName"] = city.sceneName ?? city.name ?? "";
+            // sceneName (fallback to name if null)
+            jobj["sceneName"] = city.sceneName ?? cityName;
             
             // coords array (or null if not present)
             if (city.coords != null && city.coords.Length >= 3)
@@ -7457,7 +7458,7 @@ public static class TravelButton
         }
         catch (Exception ex)
         {
-            TBLog.Warn($"BuildJObjectForCity: failed to build JObject for city '{city?.name}': {ex}");
+            TBLog.Warn($"BuildJObjectForCity: failed to build JObject for city '{city.name ?? "(null)"}': {ex}");
             return new JObject();
         }
     }

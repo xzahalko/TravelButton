@@ -15,10 +15,11 @@ public static class TravelButtonVariantUpdater
             TBLog.Info($"TravelButtonVariantUpdater: Attempting to update variant data for scene='{sceneName}' variants=[{(variants != null ? string.Join(",", variants) : "")}] lastKnown='{lastKnownVariant}'");
 
             bool updatedRuntime = false;
+            System.Collections.IEnumerable citiesEnum = null;
 
             try
             {
-                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
                 if (citiesEnum != null)
                 {
                     foreach (var c in citiesEnum)
@@ -101,26 +102,6 @@ public static class TravelButtonVariantUpdater
 
                             updatedRuntime = true;
                             TBLog.Info($"TravelButtonVariantUpdater: updated runtime city entry for scene '{sceneName}'.");
-                            
-                            // Persist the updated city to JSON using atomic write
-                            try
-                            {
-                                // Get the city object as TravelButton.City if possible
-                                if (c is TravelButton.City city)
-                                {
-                                    TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                                    TBLog.Info($"TravelButtonVariantUpdater: persisted updated variant data for '{city.name}' to JSON.");
-                                }
-                                else
-                                {
-                                    TBLog.Warn("TravelButtonVariantUpdater: city object is not of type TravelButton.City; cannot persist to JSON directly.");
-                                }
-                            }
-                            catch (Exception exPersist)
-                            {
-                                TBLog.Warn($"TravelButtonVariantUpdater: failed to persist variant update to JSON: {exPersist}");
-                            }
-                            
                             break; // updated the matching entry; stop
                         }
                         catch (Exception exPerCity)
@@ -133,6 +114,12 @@ public static class TravelButtonVariantUpdater
             catch (Exception exEnum)
             {
                 TBLog.Warn("TravelButtonVariantUpdater: error enumerating TravelButton.Cities: " + exEnum);
+            }
+
+            // Persist the updated city to JSON if we found and updated a runtime entry
+            if (updatedRuntime && citiesEnum != null)
+            {
+                PersistCityToJson(citiesEnum, sceneName);
             }
 
             // If we didn't find a runtime entry to update, attempt to call the legacy UpdateCityVariantData if it's available
@@ -249,44 +236,8 @@ public static class TravelButtonVariantUpdater
 
             if (updated)
             {
-                // Persist the updated city to JSON using the new atomic write helper
-                try
-                {
-                    // Find and persist the updated city
-                    foreach (var c in citiesObj)
-                    {
-                        if (c == null) continue;
-                        var t = c.GetType();
-                        
-                        string scenePropVal = null;
-                        var sceneProp = t.GetProperty("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                        var sceneField = t.GetField("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                        if (sceneProp != null)
-                        {
-                            try { scenePropVal = sceneProp.GetValue(c) as string; } catch { }
-                        }
-                        else if (sceneField != null)
-                        {
-                            try { scenePropVal = sceneField.GetValue(c) as string; } catch { }
-                        }
-                        
-                        if (string.IsNullOrEmpty(scenePropVal)) continue;
-                        
-                        if (string.Equals(scenePropVal, sceneName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (c is TravelButton.City city)
-                            {
-                                TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                                TBLog.Info($"TravelButtonVariantUpdater: persisted updated variant data for '{city.name}' to JSON.");
-                            }
-                            break;
-                        }
-                    }
-                }
-                catch (Exception exPersist)
-                {
-                    TBLog.Warn($"TravelButtonVariantUpdater: failed to persist variant update to JSON: {exPersist}");
-                }
+                // Persist the updated city to JSON using the helper
+                PersistCityToJson(citiesObj, sceneName);
                 
                 // Also call the legacy persist method for backward compatibility (best-effort)
                 // Only call persist if there's a zero-argument overload to avoid TargetParameterCountException.
@@ -335,6 +286,48 @@ public static class TravelButtonVariantUpdater
         catch (Exception ex)
         {
             try { TBLog.Warn("TravelButtonVariantUpdater: top-level exception: " + ex); } catch { }
+        }
+    }
+
+    // Helper method to persist a city to JSON after variant updates
+    static void PersistCityToJson(IEnumerable citiesObj, string sceneName)
+    {
+        try
+        {
+            // Find and persist the updated city
+            foreach (var c in citiesObj)
+            {
+                if (c == null) continue;
+                var t = c.GetType();
+                
+                string scenePropVal = null;
+                var sceneProp = t.GetProperty("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                var sceneField = t.GetField("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (sceneProp != null)
+                {
+                    try { scenePropVal = sceneProp.GetValue(c) as string; } catch { }
+                }
+                else if (sceneField != null)
+                {
+                    try { scenePropVal = sceneField.GetValue(c) as string; } catch { }
+                }
+                
+                if (string.IsNullOrEmpty(scenePropVal)) continue;
+                
+                if (string.Equals(scenePropVal, sceneName, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (c is TravelButton.City city)
+                    {
+                        TravelButton.AppendOrUpdateCityInJsonAndSave(city);
+                        TBLog.Info($"TravelButtonVariantUpdater: persisted updated variant data for '{city.name}' to JSON.");
+                    }
+                    break;
+                }
+            }
+        }
+        catch (Exception exPersist)
+        {
+            TBLog.Warn($"TravelButtonVariantUpdater: failed to persist variant update to JSON: {exPersist}");
         }
     }
 
