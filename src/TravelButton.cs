@@ -316,7 +316,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
     {
         TBLog.Info("InitializeCitiesAndConfig: BEGIN consolidated initialization.");
 
-        // Step 1: Diagnostic city initialization
         try
         {
             CityMappingHelpers.InitCities();
@@ -327,49 +326,42 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() failed: " + ex);
         }
 
-        // Step 2: Load and map TravelButton_Cities.json into runtime with variants/lastKnownVariant
         try
         {
-            TryLoadCitiesJsonIntoTravelButtonMod();
-            TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed.");
-            DumpRuntimeCitiesState("After TryLoadCitiesJsonIntoTravelButtonMod");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() failed: " + ex);
-        }
-
-        // Step 3: Attempt external config initialization
-        try
-        {
-            TravelButton.InitFromConfig();
-            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
+            if (TryLoadCitiesJsonIntoTravelButtonMod())
             {
-                TBLog.Info($"InitializeCitiesAndConfig: TravelButton.InitFromConfig() loaded {TravelButton.Cities.Count} cities.");
+                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed and loaded JSON.");
             }
             else
             {
-                TBLog.Warn("InitializeCitiesAndConfig: TravelButton.InitFromConfig() did not produce cities or file is empty.");
+                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed with no JSON loaded.");
             }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod failed: " + ex);
+        }
+
+        try
+        {
+            TravelButton.InitFromConfig();
+            TBLog.Info("InitializeCitiesAndConfig: TravelButton.InitFromConfig() completed.");
         }
         catch (Exception ex)
         {
             TBLog.Warn("InitializeCitiesAndConfig: TravelButton.InitFromConfig() failed: " + ex);
         }
 
-        // Step 4: Ensure cities initialized from JSON or defaults & persist canonical JSON if missing
         try
         {
             CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
             TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed.");
-            DumpRuntimeCitiesState("After EnsureCitiesInitializedFromJsonOrDefaults");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults() failed: " + ex);
+            TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults failed: " + ex);
         }
 
-        // Step 5: Create BepInEx config bindings with SettingChanged handlers (write-only)
         try
         {
             EnsureBepInExConfigBindings();
@@ -377,10 +369,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() failed: " + ex);
+            TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings failed: " + ex);
         }
 
-        // Step 6: Start config file watcher for external edits to legacy cfg
         try
         {
             StartConfigWatcher();
@@ -391,7 +382,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("InitializeCitiesAndConfig: StartConfigWatcher() failed: " + ex);
         }
 
-        // Step 7: Start the existing TryInitConfigCoroutine as a retrier
         try
         {
             StartCoroutine(TryInitConfigCoroutine());
@@ -404,6 +394,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         TBLog.Info("InitializeCitiesAndConfig: END consolidated initialization.");
     }
+
 
     /// <summary>
     /// Diagnostic helper: dump runtime TravelButton.Cities state to log.
@@ -745,344 +736,103 @@ public class TravelButtonPlugin : BaseUnityPlugin
     /// Deduplicates cities by case-insensitive name.
     /// </summary>
     // Replace the existing TryLoadCitiesJsonIntoTravelButtonMod method body with this corrected implementation.
-    private static void TryLoadCitiesJsonIntoTravelButtonMod()
+    private bool TryLoadCitiesJsonIntoTravelButtonMod()
     {
         try
         {
-            var logger = LogSource;
-            void LInfo(string m) { try { logger?.LogInfo(Prefix + m); } catch { } }
-            void LWarn(string m) { try { logger?.LogWarning(Prefix + m); } catch { } }
+            var path = GetCitiesJsonPath();
+            if (!File.Exists(path))
+            {
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: no JSON found at '{path}'.");
+                return false;
+            }
 
-            var candidatePaths = new List<string>();
+            string json = File.ReadAllText(path);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                TBLog.Warn($"TryLoadCitiesJsonIntoTravelButtonMod: file empty: '{path}'.");
+                return false;
+            }
 
+            JObject root;
             try
             {
-                var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? "";
-                //                candidatePaths.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton_Cities.json"));
-                //                candidatePaths.Add(Path.Combine(baseDir, "config", "TravelButton_Cities.json"));
+                root = JObject.Parse(json);
             }
-            catch { }
-
-            try
+            catch (JsonException jex)
             {
-                var asmLocation = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
-                if (!string.IsNullOrEmpty(asmLocation))
-                    candidatePaths.Add(Path.Combine(asmLocation, TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json"));
-            }
-            catch { }
-
-            //            try { candidatePaths.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
-            //            try { if (!string.IsNullOrEmpty(Application.dataPath)) candidatePaths.Add(Path.Combine(Application.dataPath, "TravelButton_Cities.json")); } catch { }
-
-            try
-            {
-                var cfgPath = TravelButton.ConfigFilePath;
-                if (!string.IsNullOrEmpty(cfgPath) && cfgPath != "(unknown)")
-                {
-                    var dir = cfgPath;
-                    try { if (File.Exists(cfgPath)) dir = Path.GetDirectoryName(cfgPath); } catch { }
-                    //                    if (!string.IsNullOrEmpty(dir)) candidatePaths.Add(Path.Combine(dir, "TravelButton_Cities.json"));
-                }
-            }
-            catch { }
-
-            //          try { candidatePaths.Add(Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? ".", "TravelButton_Cities.json")); } catch { }
-
-            // Find first candidate that exists and parses successfully
-            string foundPath = null;
-            TravelConfig loaded = null;
-            var tried = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var p in candidatePaths)
-            {
-                if (string.IsNullOrEmpty(p)) continue;
-                string full;
-                try { full = Path.GetFullPath(p); } catch { full = p; }
-                if (tried.Contains(full)) continue;
-                tried.Add(full);
-
-                try
-                {
-                    if (!File.Exists(full)) continue;
-                    var cfg = TravelConfig.LoadFromFile(full);
-                    if (cfg != null)
-                    {
-                        foundPath = full;
-                        loaded = cfg;
-                        break;
-                    }
-                    else
-                    {
-                        LWarn($"TravelButton_Cities.json present at {full} but parsing failed.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    LWarn($"Error while attempting to load TravelButton_Cities.json at {full}: {ex.Message}");
-                }
+                TBLog.Warn("TryLoadCitiesJsonIntoTravelButtonMod: JSON parse failed: " + jex.Message);
+                return false;
             }
 
-            if (!string.IsNullOrEmpty(foundPath))
+            var jCities = root["cities"] as JArray;
+            if (jCities == null)
             {
-                LInfo("Found and parsed TravelButton_Cities.json at: " + foundPath);
-            }
-            else
-            {
-                LInfo("No valid TravelButton_Cities.json found in candidate locations.");
+                TBLog.Warn($"TryLoadCitiesJsonIntoTravelButtonMod: JSON missing 'cities' array at '{path}'.");
+                return false;
             }
 
-            TBLog.Info("TryLoadCitiesJsonIntoTravelButtonMod: skipping implicit write of default JSON (loader should not persist).");
-
-            // Map CityConfig entries into TravelButtonMod.City instances (metadata only)
-            if (loaded != null && loaded.cities != null)
+            var loaded = new List<TravelButton.City>();
+            foreach (var token in jCities.OfType<JObject>())
             {
-                var map = new Dictionary<string, TravelButton.City>(StringComparer.OrdinalIgnoreCase);
-                foreach (var cc in loaded.cities)
+                var name = token.Value<string>("name");
+                if (string.IsNullOrEmpty(name)) continue;
+
+                var city = new TravelButton.City(name);
+
+                city.sceneName = token.Value<string>("sceneName") ?? city.sceneName;
+                city.targetGameObjectName = token.Value<string>("targetGameObjectName") ?? city.targetGameObjectName;
+                city.price = token["price"] != null ? (int?)token.Value<int?>("price") : city.price;
+                city.visited = token.Value<bool?>("visited") ?? city.visited;
+
+                // coords
+                var coordsToken = token["coords"] as JArray;
+                if (coordsToken != null && coordsToken.Count >= 3)
                 {
                     try
                     {
-                        if (string.IsNullOrWhiteSpace(cc.name)) continue;
-                        var c = new TravelButton.City(cc.name);
-
-                        if (cc.coords != null && cc.coords.Length >= 3)
-                            c.coords = new float[] { cc.coords[0], cc.coords[1], cc.coords[2] };
-
-                        c.targetGameObjectName = cc.targetGameObjectName;
-                        c.sceneName = cc.sceneName;
-
-                        // If JSON provides a price, set city.price so we can seed the Config.Bind default.
-                        // BepInEx remains authoritative: EnsureBepInExConfigBindings will overwrite with the actual Config value.
-                        if (cc.price >= 0)
-                            c.price = cc.price;      // assign actual price
-                        else
-                            c.price = (int?)null;    // no price present in JSON
-
-                        // Do not set enabled from JSON; keep BepInEx authoritative.
-                        c.enabled = false;
-
-                        // Apply visited if present in the JSON seed. City.visited property setter will mark visited via VisitedTracker.
-                        try
+                        city.coords = new float[3]
                         {
-                            if (cc.visited)
-                            {
-                                // setter on TravelButton.City will call VisitedTracker.MarkVisited(...)
-                                c.visited = true;
-                            }
-                        }
-                        catch { /* ignore errors from visited mapping */ }
-
-                        // Map variants and lastKnownVariant (new fields)
-                        try
-                        {
-                            // Use reflection to support different runtime City implementations
-                            var cityType = c.GetType();
-                            
-                            // Try to set variants field/property
-                            if (cc.variants != null)
-                            {
-                                try
-                                {
-                                    var variantsField = cityType.GetField("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                    if (variantsField != null && (variantsField.FieldType == typeof(string[]) || variantsField.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
-                                    {
-                                        variantsField.SetValue(c, cc.variants);
-                                    }
-                                    else
-                                    {
-                                        var variantsProp = cityType.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                        if (variantsProp != null && variantsProp.CanWrite)
-                                        {
-                                            variantsProp.SetValue(c, cc.variants);
-                                        }
-                                    }
-                                }
-                                catch { /* ignore reflection errors */ }
-                            }
-                            
-                            // Try to set lastKnownVariant field/property
-                            if (!string.IsNullOrEmpty(cc.lastKnownVariant))
-                            {
-                                try
-                                {
-                                    var lastKnownVariantField = cityType.GetField("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                    if (lastKnownVariantField != null && lastKnownVariantField.FieldType == typeof(string))
-                                    {
-                                        lastKnownVariantField.SetValue(c, cc.lastKnownVariant);
-                                    }
-                                    else
-                                    {
-                                        var lastKnownVariantProp = cityType.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                        if (lastKnownVariantProp != null && lastKnownVariantProp.CanWrite)
-                                        {
-                                            lastKnownVariantProp.SetValue(c, cc.lastKnownVariant);
-                                        }
-                                    }
-                                }
-                                catch { /* ignore reflection errors */ }
-                            }
-                        }
-                        catch (Exception exVariants)
-                        {
-                            LWarn($"Error mapping variants/lastKnownVariant for city '{cc?.name}': {exVariants.Message}");
-                        }
-
-                        map[c.name] = c;
+                            coordsToken[0].Value<float>(),
+                            coordsToken[1].Value<float>(),
+                            coordsToken[2].Value<float>()
+                        };
                     }
-                    catch (Exception ex)
-                    {
-                        LWarn($"Error mapping city '{cc?.name ?? "(null)"}': {ex.Message}");
-                    }
+                    catch { city.coords = null; }
                 }
 
-                if (map.Count > 0)
+                // variants: prefer 'variants'; fallback to variantNormalName/variantDestroyedName if present
+                var variantsToken = token["variants"] as JArray;
+                if (variantsToken != null && variantsToken.Count > 0)
                 {
-                    TravelButton.Cities = new List<TravelButton.City>(map.Values);
-                    LInfo($"Loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json (metadata only).");
-
-                    // --- Migration logic: migrate legacy .cfg visited flags only if JSON contains no visited=true entries ---
-                    bool jsonHadVisited = false;
-                    try
-                    {
-                        foreach (var cc in loaded.cities)
-                        {
-                            if (cc != null && cc.visited)
-                            {
-                                jsonHadVisited = true;
-                                break;
-                            }
-                        }
-                    }
-                    catch { jsonHadVisited = false; }
-
-                    if (jsonHadVisited)
-                    {
-                        LInfo("TravelButton_Cities.json already contains visited flags; skipping migration from legacy .cfg.");
-                    }
-                    else
-                    {
-                        // Determine candidate legacy cfg paths to check
-                        var candidateCfgs = new List<string>();
-                        try
-                        {
-                            // Primary best-effort value reported by the plugin
-                            if (!string.IsNullOrEmpty(TravelButton.ConfigFilePath))
-                                candidateCfgs.Add(TravelButton.ConfigFilePath);
-
-                            // Common BepInEx config location
-                            var baseDir = AppDomain.CurrentDomain.BaseDirectory ?? ".";
-                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", LegacyCfgFileName));
-                            candidateCfgs.Add(Path.Combine(baseDir, "BepInEx", "config", "TravelButton.cfg"));
-
-                            // r2modman / profile locations (from LogOutput earlier)
-                            try
-                            {
-                                var userRoaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                                if (!string.IsNullOrEmpty(userRoaming))
-                                {
-                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", LegacyCfgFileName));
-                                    candidateCfgs.Add(Path.Combine(userRoaming, "r2modmanPlus-local", "OutwardDe", "profiles", "Default", "BepInEx", "config", "TravelButton.cfg"));
-                                }
-                            }
-                            catch { /* ignore fallback generation errors */ }
-
-                            // also try TravelButton.ConfigFilePath directory if it's a file path
-                            try
-                            {
-                                var cfgPath = TravelButton.ConfigFilePath;
-                                if (!string.IsNullOrEmpty(cfgPath) && File.Exists(cfgPath))
-                                {
-                                    // we'll include it above; else try its directory for TravelButton_Cities.json sibling names
-                                    candidateCfgs.Add(cfgPath);
-                                }
-                                else if (!string.IsNullOrEmpty(cfgPath))
-                                {
-                                    try { var d = Path.GetDirectoryName(cfgPath); if (!string.IsNullOrEmpty(d)) candidateCfgs.Add(Path.Combine(d, LegacyCfgFileName)); } catch { }
-                                }
-                            }
-                            catch { }
-                        }
-                        catch { }
-
-                        // De-duplicate and check existence
-                        var triedCfg = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        string foundCfg = null;
-                        foreach (var cp in candidateCfgs)
-                        {
-                            if (string.IsNullOrEmpty(cp)) continue;
-                            string full;
-                            try { full = Path.GetFullPath(cp); } catch { full = cp; }
-                            if (triedCfg.Contains(full)) continue;
-                            triedCfg.Add(full);
-
-                            bool exists = false;
-                            try { exists = File.Exists(full); } catch { exists = false; }
-                            LInfo($"Migration: checking legacy cfg candidate: '{full}' exists={exists}");
-
-                            if (exists)
-                            {
-                                foundCfg = full;
-                                break;
-                            }
-                        }
-
-                        if (string.IsNullOrEmpty(foundCfg))
-                        {
-                            LInfo("No legacy .cfg present to migrate visited flags from (checked TravelButton.ConfigFilePath and fallback locations).");
-                        }
-                        else
-                        {
-                            LInfo($"Legacy config detected at '{foundCfg}'. Applying visited flags from legacy .cfg into loaded JSON data (one-time migration).");
-
-                            bool applied = false;
-                            try
-                            {
-                                // If ApplyVisitedFlagsFromCfg reads TravelButton.ConfigFilePath internally, set it to foundCfg temporarily:
-                                try
-                                {
-                                    // only try if TravelButton exposes writable ConfigFilePath
-                                    var tbType = typeof(TravelButton);
-                                    var pf = tbType.GetField("ConfigFilePath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                                    if (pf != null)
-                                    {
-                                        try { pf.SetValue(null, foundCfg); LInfo("Migration: temporarily set TravelButton.ConfigFilePath to found cfg path for ApplyVisitedFlagsFromCfg."); } catch { /* ignore */ }
-                                    }
-                                }
-                                catch { /* ignore reflection attempt */ }
-
-                                ApplyVisitedFlagsFromCfg();
-                                applied = true;
-                                LInfo("ApplyVisitedFlagsFromCfg completed; now persisting migrated TravelButton_Cities.json to disk.");
-                            }
-                            catch (Exception ex)
-                            {
-                                applied = false;
-                                LWarn("ApplyVisitedFlagsFromCfg failed during migration: " + ex.Message);
-                            }
-
-                            if (applied)
-                            {
-                                try
-                                {
-                                    PersistCitiesToPluginFolder();
-                                    LInfo("Persisted migrated TravelButton_Cities.json to disk.");
-                                }
-                                catch (Exception ex)
-                                {
-                                    LWarn("PersistCitiesToPluginFolder failed while persisting migrated JSON: " + ex.Message);
-                                }
-                            }
-                        }
-                    }
+                    city.variants = variantsToken.Select(v => (string)v).Where(s => !string.IsNullOrEmpty(s)).ToArray();
                 }
                 else
                 {
-                    LWarn("TravelButton_Cities.json parsed but no valid city entries found.");
+                    // attempt old keys fallback
+                    var normal = token.Value<string>("variantNormalName");
+                    var destroyed = token.Value<string>("variantDestroyedName");
+                    var vt = new List<string>();
+                    if (!string.IsNullOrEmpty(normal)) vt.Add(normal);
+                    if (!string.IsNullOrEmpty(destroyed)) vt.Add(destroyed);
+                    city.variants = vt.ToArray(); // empty array if none found
                 }
+
+                // lastKnownVariant (default to empty string to ensure key exists downstream)
+                city.lastKnownVariant = token.Value<string>("lastKnownVariant") ?? "";
+
+                loaded.Add(city);
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: parsed city '{name}' (scene='{city.sceneName}', variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant}').");
             }
+
+            TravelButton.Cities = loaded;
+            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: successfully parsed {loaded.Count} cities from: {path}");
+            return true;
         }
         catch (Exception ex)
         {
-            try { LogSource?.LogWarning(Prefix + "TryLoadCitiesJsonIntoTravelButtonMod unexpected failure: " + ex.Message); } catch { }
+            TBLog.Warn("TryLoadCitiesJsonIntoTravelButtonMod: unexpected: " + ex.Message);
+            return false;
         }
     }
 
@@ -7397,5 +7147,147 @@ public static class TravelButton
         // add other scenes as you identify authoritative component names
     };
 
+    // Build a canonical JObject representation for a single city.
+    // Ensures "variants" (array) and "lastKnownVariant" (string) keys are always present.
+    public static JObject BuildJObjectForCity(City city)
+    {
+        var jo = new JObject
+        {
+            ["name"] = city.name ?? "",
+            ["sceneName"] = city.sceneName ?? "",
+            ["coords"] = (city.coords != null && city.coords.Length >= 3)
+                ? new JArray(city.coords.Select(f => (JToken)JToken.FromObject(f)))
+                : new JArray(), // keep key present
+            ["price"] = city.price.HasValue ? (JToken)city.price.Value : JValue.CreateNull(),
+            ["targetGameObjectName"] = !string.IsNullOrEmpty(city.targetGameObjectName) ? city.targetGameObjectName : "",
+            ["desc"] = "", // reserved
+            ["visited"] = city.visited
+        };
+
+        // variants: always present (default empty array)
+        if (city.variants != null && city.variants.Length > 0)
+            jo["variants"] = new JArray(city.variants);
+        else
+            jo["variants"] = new JArray();
+
+        // lastKnownVariant: always present (default empty string)
+        jo["lastKnownVariant"] = city.lastKnownVariant ?? "";
+
+        return jo;
+    }
+
+    // Append or update a single city in the canonical TravelButton_Cities.json and write atomically.
+    public static void AppendOrUpdateCityInJsonAndSave(City city)
+    {
+        try
+        {
+            var path = TravelButtonPlugin.GetCitiesJsonPath();
+            JObject root;
+
+            if (File.Exists(path))
+            {
+                var text = File.ReadAllText(path);
+                try
+                {
+                    root = JObject.Parse(text);
+                }
+                catch (JsonException)
+                {
+                    TBLog.Warn($"AppendOrUpdateCityInJsonAndSave: existing JSON parse failed at '{path}', recreating root.");
+                    root = new JObject();
+                }
+                if (root["cities"] == null || !(root["cities"] is JArray)) root["cities"] = new JArray();
+            }
+            else
+            {
+                root = new JObject { ["cities"] = new JArray() };
+            }
+
+            var citiesArray = (JArray)root["cities"];
+            var existing = citiesArray.OfType<JObject>()
+                .FirstOrDefault(j => string.Equals(j.Value<string>("name"), city.name, StringComparison.OrdinalIgnoreCase));
+
+            var newJo = BuildJObjectForCity(city);
+
+            if (existing != null)
+            {
+                existing.Replace(newJo);
+            }
+            else
+            {
+                citiesArray.Add(newJo);
+            }
+
+            // Atomic write: write to temp then replace
+            var temp = path + ".tmp";
+            File.WriteAllText(temp, root.ToString(Formatting.Indented));
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Replace(temp, path, null);
+                }
+                else
+                {
+                    File.Move(temp, path);
+                }
+            }
+            catch (Exception exReplace)
+            {
+                TBLog.Warn("AppendOrUpdateCityInJsonAndSave: File.Replace fallback: " + exReplace.Message);
+                File.Copy(temp, path, true);
+                File.Delete(temp);
+            }
+
+            TBLog.Info($"AppendOrUpdateCityInJsonAndSave: persisted city '{city.name}' to {path}.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("AppendOrUpdateCityInJsonAndSave: " + ex.Message);
+        }
+    }
+
+    // Called when a variant is detected for a city (integration point).
+    // Updates in-memory city.lastKnownVariant and persists only that city to JSON.
+    public static void OnVariantDetectedForCity(string cityName, string detectedVariantName)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(cityName)) return;
+            var city = Cities?.FirstOrDefault(c => string.Equals(c.name, cityName, StringComparison.OrdinalIgnoreCase));
+            if (city == null)
+            {
+                TBLog.Warn($"OnVariantDetectedForCity: city '{cityName}' not found in TravelButton.Cities");
+                return;
+            }
+
+            var newVariant = detectedVariantName ?? "";
+            if (string.Equals(city.lastKnownVariant ?? "", newVariant, StringComparison.Ordinal))
+            {
+                TBLog.Info($"OnVariantDetectedForCity: '{cityName}' lastKnownVariant already '{newVariant}', no change.");
+                return;
+            }
+
+            city.lastKnownVariant = newVariant;
+            TBLog.Info($"OnVariantDetectedForCity: '{cityName}' lastKnownVariant set to '{city.lastKnownVariant}' in memory; persisting JSON.");
+
+            // Ensure variants array contains the detected variant if not present
+            if (!string.IsNullOrEmpty(newVariant))
+            {
+                var variants = city.variants ?? new string[0];
+                if (!variants.Contains(newVariant))
+                {
+                    var list = new List<string>(variants) { newVariant };
+                    city.variants = list.ToArray();
+                }
+            }
+
+            AppendOrUpdateCityInJsonAndSave(city);
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("OnVariantDetectedForCity: " + ex.Message);
+        }
+    }
 
 }

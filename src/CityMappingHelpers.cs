@@ -479,106 +479,72 @@ public static class CityMappingHelpers
     {
         try
         {
-            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
-            if (File.Exists(jsonPath))
+            var runtime = TravelButton.Cities ?? new List<TravelButton.City>();
+
+            // If runtime appears empty, attempt to populate from config defaults (best-effort)
+            if ((runtime == null || runtime.Count == 0))
             {
-                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loading cities from canonical JSON: {jsonPath}");
-                var list = ParseCitiesJsonFile(jsonPath);
-                if (list != null && list.Count > 0)
+                TravelButton.InitFromConfig(); // safe to call (it returns quickly if nothing to load)
+                runtime = TravelButton.Cities ?? new List<TravelButton.City>();
+            }
+
+            var lookup = new Dictionary<string, TravelButton.City>(StringComparer.OrdinalIgnoreCase);
+            foreach (var c in runtime)
+            {
+                if (string.IsNullOrEmpty(c?.name)) continue;
+                lookup[c.name] = c;
+            }
+
+            try
+            {
+                var defaults = TravelButton.Cities ?? new List<TravelButton.City>();
+                foreach (var d in defaults)
                 {
-                    object converted = ConvertParsedCitiesToRuntime(list);
-                    if (AssignConvertedCitiesToTravelButton(converted))
+                    if (string.IsNullOrEmpty(d?.name)) continue;
+                    if (!lookup.TryGetValue(d.name, out var existing))
                     {
-                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loaded {GetRuntimeCitiesCount()} cities from JSON.");
-                        return;
+                        var clone = new TravelButton.City(d.name)
+                        {
+                            coords = d.coords,
+                            sceneName = d.sceneName,
+                            targetGameObjectName = d.targetGameObjectName,
+                            price = d.price,
+                            enabled = d.enabled,
+                            visited = d.visited,
+                            variants = d.variants ?? new string[0],
+                            lastKnownVariant = d.lastKnownVariant ?? ""
+                        };
+                        lookup[clone.name] = clone;
+                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: New city '{clone.name}': enabled={clone.enabled} price={(clone.price.HasValue ? clone.price.Value.ToString() : "null")} visited={clone.visited}");
                     }
                     else
                     {
-                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: converted collection was not assignable to TravelButton.Cities (attempting fallback assignment).");
-                        // fallback: if converted is List<CityEntry> try assigning as-is
-                        TryAssignFallbackListOfCityEntry(converted);
-                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: TravelButton.Cities count after fallback = {GetRuntimeCitiesCount()}");
-                        return;
+                        if (existing.variants == null) existing.variants = d.variants ?? new string[0];
+                        if (existing.lastKnownVariant == null) existing.lastKnownVariant = d.lastKnownVariant ?? "";
+                        if (existing.sceneName == null) existing.sceneName = d.sceneName;
+                        if (existing.targetGameObjectName == null) existing.targetGameObjectName = d.targetGameObjectName;
+                        if (!existing.price.HasValue && d.price.HasValue) existing.price = d.price;
                     }
                 }
-                else
-                {
-                    TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: JSON file present but parsing returned no entries. Falling back to defaults.");
-                }
             }
-            else
+            catch (Exception exMerge)
             {
-                TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON not found; falling back to ConfigManager defaults.");
+                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: merge defaults failed: " + exMerge.Message);
             }
 
-            // Fallback: populate from ConfigManager.Default() and persist canonical JSON only if missing
-            object defaults = null;
-            try
+            var final = lookup.Values.ToList();
+            foreach (var c in final)
             {
-                // ConfigManager.Default() call - safe reflection fallback
-                var cfgMgr = TravelButton.GetLocalType("ConfigManager");
-                if (cfgMgr != null)
-                {
-                    var defMi = cfgMgr.GetMethod("Default", BindingFlags.Public | BindingFlags.Static);
-                    if (defMi != null)
-                        defaults = defMi.Invoke(null, null);
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: reading ConfigManager.Default() failed: " + ex.Message);
+                if (c.variants == null) c.variants = new string[0];
+                if (c.lastKnownVariant == null) c.lastKnownVariant = "";
             }
 
-            if (defaults == null)
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: no defaults object available; leaving TravelButton.Cities as-is.");
-                return;
-            }
-
-            object convertedDefaults = ConvertConfigManagerDefaultsToRuntime(defaults);
-            if (AssignConvertedCitiesToTravelButton(convertedDefaults))
-            {
-                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: populated TravelButton.Cities from ConfigManager defaults (count={GetRuntimeCitiesCount()})");
-            }
-            else
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to assign ConfigManager defaults to TravelButton.Cities via reflection.");
-                TryAssignFallbackListOfCityEntry(convertedDefaults);
-            }
-
-            // Persist canonical JSON only if it does not exist and JsonTravelConfig.Default() produces entries
-            try
-            {
-                var jsonDefaults = JsonTravelConfig.Default();
-                int mappedCount = jsonDefaults?.cities?.Count ?? 0;
-                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced {mappedCount} entries.");
-
-                if (mappedCount > 0 && !File.Exists(jsonPath))
-                {
-                    try
-                    {
-                        // write canonical JSON next to plugin DLL
-                        jsonDefaults.SaveToJson(jsonPath);
-                        TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: persisted canonical JSON from JsonTravelConfig.Default().");
-                    }
-                    catch (Exception pex)
-                    {
-                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to persist canonical JSON: " + pex);
-                    }
-                }
-                else if (mappedCount > 0)
-                {
-                    TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON already exists -> not overwriting.");
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: error while optionally persisting default JSON: " + ex);
-            }
+            TravelButton.Cities = final;
+            TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: final Cities count = {TravelButton.Cities?.Count ?? 0}");
         }
         catch (Exception ex)
         {
-            TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: unexpected error: " + ex);
+            TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: " + ex.Message);
         }
     }
 
