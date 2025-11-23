@@ -1,6 +1,7 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -302,6 +303,10 @@ public static class CitiesJsonManager
         return true;
     }
 
+    // retry bookkeeping for deferred updates when runtime info (coords etc.) arrives later
+    static readonly Dictionary<string, int> s_retryCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    const int MAX_RETRIES = 3;
+
     // Try to update city variant data and persist. Returns true when persisted (or runtime updated + persist attempted).
     // Order of attempts:
     //  1) Call CitiesJsonManager.UpdateCityVariantData(...) by reflection (if available).
@@ -429,6 +434,13 @@ public static class CitiesJsonManager
                 }
             }
 
+            // If we appended a minimal entry and couldn't find coords/runtime info, schedule a retry
+            if (persisted)
+            {
+                // if the JSON now contains an entry for sceneName but lacks coords, schedule a retry to enrich it later
+                TryScheduleRetryIfNeeded(sceneName);
+            }
+
             TBLog.Info($"CitiesJsonManagerCompat: final persisted={persisted} (attemptedUpdate={attemptedUpdate})");
             return persisted;
         }
@@ -437,6 +449,136 @@ public static class CitiesJsonManager
             TBLog.Warn("CitiesJsonManagerCompat: unexpected error: " + ex);
             return false;
         }
+    }
+
+    // Try to schedule a retry when runtime data didn't exist at write time.
+    static void TryScheduleRetryIfNeeded(string sceneName)
+    {
+        try
+        {
+            // Read the canonical file and check whether the entry for sceneName exists and lacks coords
+            var path = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
+
+            string text = File.ReadAllText(path);
+            var jObjectType = Type.GetType("Newtonsoft.Json.Linq.JObject, Newtonsoft.Json");
+            var jArrayType = Type.GetType("Newtonsoft.Json.Linq.JArray, Newtonsoft.Json");
+            var jTokenType = Type.GetType("Newtonsoft.Json.Linq.JToken, Newtonsoft.Json");
+            if (jObjectType == null || jArrayType == null || jTokenType == null) return;
+
+            var parseMi = jObjectType.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+            if (parseMi == null) return;
+            object rootObj = parseMi.Invoke(null, new object[] { text });
+            if (rootObj == null) return;
+
+            var jobj_getItem = FindMethod(rootObj.GetType(), "get_Item", 1, typeof(string));
+            if (jobj_getItem == null) return;
+            object citiesToken = jobj_getItem.Invoke(rootObj, new object[] { "cities" });
+            if (citiesToken == null) return;
+
+            var jarray_getItem = FindMethod(citiesToken.GetType(), "get_Item", 1, typeof(int));
+            var jArrayCountProp = citiesToken.GetType().GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
+            int count = (int)(jArrayCountProp.GetValue(citiesToken) ?? 0);
+
+            for (int i = 0; i < count; i++)
+            {
+                object elem = null;
+                try { elem = jarray_getItem?.Invoke(citiesToken, new object[] { i }); } catch { elem = null; }
+                if (elem == null) continue;
+                var elem_getItem = FindMethod(elem.GetType(), "get_Item", 1, typeof(string));
+                if (elem_getItem == null) continue;
+                string sceneVal = null;
+                try { sceneVal = elem_getItem.Invoke(elem, new object[] { "sceneName" }) as string; } catch { }
+                if (string.Equals(sceneVal, sceneName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // check coords presence
+                    object coords = null;
+                    try { coords = elem_getItem.Invoke(elem, new object[] { "coords" }); } catch { coords = null; }
+                    if (coords == null)
+                    {
+                        // schedule retry if under limit
+                        int current = 0;
+                        s_retryCounts.TryGetValue(sceneName, out current);
+                        if (current < MAX_RETRIES)
+                        {
+                            s_retryCounts[sceneName] = current + 1;
+                            TBLog.Info($"CitiesJsonManagerCompat: scheduling retry #{current + 1} for scene '{sceneName}' in 3s to enrich missing runtime data.");
+                            // schedule a coroutine to run TryUpdateAndPersist again
+                            try
+                            {
+                                TravelButtonRunner.Instance?.StartSafeCoroutine(RetryPersistCoroutine(sceneName, 3f));
+                            }
+                            catch (Exception exStart) { TBLog.Warn("CitiesJsonManagerCompat: failed to start retry coroutine: " + exStart); }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        catch (Exception ex) { TBLog.Warn("CitiesJsonManagerCompat: TryScheduleRetryIfNeeded failed: " + ex); }
+    }
+
+    static IEnumerator RetryPersistCoroutine(string sceneName, float delay)
+    {
+        // wait for delay
+        yield return new UnityEngine.WaitForSecondsRealtime(delay);
+
+        // attempt to build variants/lastKnown again from runtime and persist
+        try
+        {
+            // attempt to get runtime city entry
+            var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+            string lastKnown = null;
+            var variants = new List<string>();
+
+            if (citiesEnum != null)
+            {
+                foreach (var c in citiesEnum)
+                {
+                    if (c == null) continue;
+                    try
+                    {
+                        var t = c.GetType();
+                        string sceneProp = null;
+                        try { sceneProp = t.GetProperty("sceneName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                        if (string.IsNullOrEmpty(sceneProp)) continue;
+                        if (!string.Equals(sceneProp, sceneName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                        // read lastKnownVariant if exists
+                        try { lastKnown = t.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                        // read legacy variant names
+                        try { var v1 = t.GetProperty("variantNormalName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; if (!string.IsNullOrEmpty(v1)) variants.Add(v1); } catch { }
+                        try { var v2 = t.GetProperty("variantDestroyedName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase)?.GetValue(c) as string; if (!string.IsNullOrEmpty(v2) && !variants.Contains(v2)) variants.Add(v2); } catch { }
+                        // if runtime contains a variants collection, try to read it
+                        try
+                        {
+                            var variantsProp = t.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (variantsProp != null)
+                            {
+                                var val = variantsProp.GetValue(c);
+                                if (val is IEnumerable<object> en)
+                                {
+                                    foreach (var x in en) { var s = x as string; if (!string.IsNullOrEmpty(s) && !variants.Contains(s)) variants.Add(s); }
+                                }
+                                else if (val is IEnumerable<string> ens)
+                                {
+                                    foreach (var s in ens) if (!string.IsNullOrEmpty(s) && !variants.Contains(s)) variants.Add(s);
+                                }
+                            }
+                        }
+                        catch { }
+                        break;
+                    }
+                    catch { }
+                }
+            }
+
+            TBLog.Info($"CitiesJsonManagerCompat: RetryPersistCoroutine: retrying persist for scene '{sceneName}' (variants=[{string.Join(",", variants)}], lastKnown='{lastKnown}')");
+            TryUpdateAndPersist(sceneName, variants, lastKnown, null);
+        }
+        catch (Exception ex) { TBLog.Warn("CitiesJsonManagerCompat: RetryPersistCoroutine failure: " + ex); }
+
+        yield break;
     }
 
     // New schema writer with merging & runtime-fill improvements

@@ -8,6 +8,7 @@ using System.Collections;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Linq;
@@ -479,14 +480,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
 
             // --- replace the existing derive/persist try-block in OnSceneLoaded with this ---
+            // derive/persist block — replace existing block with this
             try
             {
                 string preferredToken = sceneName;
-                try
-                {
-                    preferredToken = TravelButtonUI.GetBaseTokenFromSceneName(sceneName) ?? sceneName;
-                }
-                catch { /* ignore, fallback to sceneName */ }
+                try { preferredToken = TravelButtonUI.GetBaseTokenFromSceneName(sceneName) ?? sceneName; } catch { }
 
                 string derivedNormal = null;
                 string derivedDestroyed = null;
@@ -510,11 +508,78 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 if (!string.IsNullOrEmpty(derivedNormal)) lastKnown = derivedNormal;
                 else if (!string.IsNullOrEmpty(derivedDestroyed)) lastKnown = derivedDestroyed;
 
+                // Check if runtime city entry already has coords (so we can persist fully now)
+                bool hasCoords = false;
                 try
                 {
-                    // NOTE: new signature is (string sceneName, List<string> variants, string lastKnownVariant, object confidenceToken)
-                    bool persisted = CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
-                    TBLog.Info($"OnSceneLoaded: CitiesJsonManagerCompat.TryUpdateAndPersist returned {persisted} for scene '{sceneName}'");
+                    var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                    if (citiesEnum != null)
+                    {
+                        foreach (var c in citiesEnum)
+                        {
+                            if (c == null) continue;
+                            var t = c.GetType();
+                            string sceneProp = null;
+                            try { sceneProp = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            if (string.IsNullOrEmpty(sceneProp))
+                            {
+                                try { sceneProp = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            }
+                            if (string.IsNullOrEmpty(sceneProp) || !string.Equals(sceneProp, sceneName, StringComparison.OrdinalIgnoreCase)) continue;
+
+                            // try to read coords
+                            try
+                            {
+                                var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                var coordsVal = coordsProp != null ? coordsProp.GetValue(c) : coordsField != null ? coordsField.GetValue(c) : null;
+                                if (coordsVal != null)
+                                {
+                                    // check if coords enumerable yields at least one numeric value
+                                    var en = coordsVal as System.Collections.IEnumerable;
+                                    if (en != null)
+                                    {
+                                        int cnt = 0;
+                                        foreach (var _ in en) { cnt++; if (cnt > 0) break; }
+                                        if (cnt > 0) hasCoords = true;
+                                    }
+                                }
+                            }
+                            catch { /* ignore */ }
+                            break;
+                        }
+                    }
+                }
+                catch (Exception exDetectCoords)
+                {
+                    TBLog.Warn("OnSceneLoaded: runtime coords detection failed: " + exDetectCoords);
+                }
+
+                // If coords exist, persist now (will write full entry).
+                // If coords don't exist, schedule a deferred detection/persist (DelayedVariantDetect) so the entry can be enriched later.
+                try
+                {
+                    if (hasCoords)
+                    {
+                        bool persisted = CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                        TBLog.Info($"OnSceneLoaded: CitiesJsonManagerCompat.TryUpdateAndPersist returned {persisted} for scene '{sceneName}' (immediate; coords present)");
+                    }
+                    else
+                    {
+                        // Optional: record the variant names immediately (may write a minimal entry),
+                        // but prefer scheduling DelayedVariantDetect to enrich later.
+                        TBLog.Info($"OnSceneLoaded: coords not available yet for '{sceneName}' — scheduling deferred detection/persist.");
+                        // start DelayedVariantDetect to attempt more robust detection and persisting later.
+                        try
+                        {
+                            // ensure you have a coroutine runner helper (TravelButtonRunner or similar)
+                            TravelButtonRunner.Instance?.StartSafeCoroutine(DelayedVariantDetect(scene, 0.08f));
+                        }
+                        catch (Exception exStart) { TBLog.Warn("OnSceneLoaded: failed to start DelayedVariantDetect: " + exStart); }
+
+                        // Optionally also call TryUpdateAndPersist now to capture variants (compat has retry-enrich logic).
+                        // CitiesJsonManagerCompat.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.Medium);
+                    }
                 }
                 catch (Exception exCompat)
                 {
@@ -861,11 +926,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
         try
         {
             var fast = VariantDetectDiagnostics.DumpDiagnostics(scene);
-            Debug.Log($"[VariantDetectDiag] DumpDiagnostics fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
+            TBLog.Info($"[VariantDetectDiag] DumpDiagnostics fast -> normal='{fast.normalName ?? ""}' destroyed='{fast.destroyedName ?? ""}' confidence={fast.confidence}");
         }
         catch (Exception exDump)
         {
-            Debug.LogWarning("[VariantDetectDiag] DumpDiagnostics threw: " + exDump);
+            TBLog.Warn("[VariantDetectDiag] DumpDiagnostics threw: " + exDump);
         }
 
         if (confidence < ExtraSceneVariantDetection.VariantConfidence.Medium)
@@ -2613,7 +2678,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            try { TBLog.Warn("TravelButtonUIRefresh.RefreshUI failed: " + ex.Message); } catch { Debug.LogWarning("[TravelButton] TravelButtonUIRefresh.RefreshUI failed: " + ex); }
+            try { TBLog.Warn("TravelButtonUIRefresh.RefreshUI failed: " + ex.Message); } catch { TBLog.Warn("[TravelButton] TravelButtonUIRefresh.RefreshUI failed: " + ex); }
         }
     }
 
@@ -7033,6 +7098,754 @@ public static class TravelButton
         return false;
     }
 
+    // Kick off the detection coroutine when StoreVisitedSceneToJson couldn't get coords synchronously.
+    static void EnsureCoordsPersistedLater(string sceneName)
+    {
+        try
+        {
+            // Use whatever coroutine runner your project uses; TravelButtonRunner.Instance?.StartSafeCoroutine was used elsewhere.
+            TravelButtonRunner.Instance?.StartSafeCoroutine(DetectAndPersistCoordsCoroutine(sceneName, 0.1f));
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("EnsureCoordsPersistedLater: failed to start coroutine: " + ex);
+        }
+    }
+
+    // DetectAndPersistCoordsCoroutine: attempts to obtain runtime city data (preferred), falls back to
+    // player position coords, and always ensures variants are merged. If it can't finish, it starts
+    // MonitorRuntimeCityCoroutine to enrich the JSON later when a runtime entry appears.
+    static System.Collections.IEnumerator DetectAndPersistCoordsCoroutine(string sceneName, float initialDelay)
+    {
+        if (initialDelay > 0f) yield return new UnityEngine.WaitForSecondsRealtime(initialDelay);
+        yield return null;
+
+        const int attempts = 6;
+        const float attemptDelay = 0.25f;
+
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            object runtimeMatch = null;
+            object coordsObj = null;
+            string lastKnown = null;
+            var variants = new List<string>();
+
+            // Try to find runtime TravelButton.Cities entry and read available fields
+            try
+            {
+                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                if (citiesEnum != null)
+                {
+                    foreach (var c in citiesEnum)
+                    {
+                        if (c == null) continue;
+                        try
+                        {
+                            var t = c.GetType();
+                            string sceneProp = null;
+                            try { sceneProp = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            if (string.IsNullOrEmpty(sceneProp))
+                            {
+                                try { sceneProp = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            }
+                            if (string.IsNullOrEmpty(sceneProp)) continue;
+                            if (!string.Equals(sceneProp.Trim(), sceneName.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+
+                            runtimeMatch = c;
+
+                            // coords if present
+                            try
+                            {
+                                var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                coordsObj = coordsProp != null ? coordsProp.GetValue(c) : coordsField != null ? coordsField.GetValue(c) : null;
+                            }
+                            catch { coordsObj = null; }
+
+                            try { lastKnown = t.GetProperty("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+
+                            // legacy fields + runtime variants list
+                            try { var v1 = t.GetProperty("variantNormalName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; if (!string.IsNullOrEmpty(v1) && !variants.Contains(v1)) variants.Add(v1); } catch { }
+                            try { var v2 = t.GetProperty("variantDestroyedName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; if (!string.IsNullOrEmpty(v2) && !variants.Contains(v2)) variants.Add(v2); } catch { }
+                            try
+                            {
+                                var variantsProp = t.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                                if (variantsProp != null)
+                                {
+                                    var val = variantsProp.GetValue(c);
+                                    if (val is System.Collections.IEnumerable enumVals)
+                                    {
+                                        foreach (var x in enumVals)
+                                        {
+                                            if (x is string s && !string.IsNullOrEmpty(s) && !variants.Contains(s)) variants.Add(s);
+                                        }
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            break; // stop scanning
+                        }
+                        catch { /* per-entry errors ignored */ }
+                    }
+                }
+            }
+            catch (Exception exLookup)
+            {
+                TBLog.Warn("DetectAndPersistCoordsCoroutine: runtime TravelButton.Cities lookup failed: " + exLookup);
+            }
+
+            // If runtime entry found, write full object and merge variants
+            if (runtimeMatch != null)
+            {
+                try
+                {
+                    TBLog.Info($"DetectAndPersistCoordsCoroutine: runtime city entry found for '{sceneName}' (attempt {attempt}) - writing full runtime-backed JSON.");
+                    UpdateSceneEntryFromRuntime(runtimeMatch);
+                }
+                catch (Exception exUp)
+                {
+                    TBLog.Warn("DetectAndPersistCoordsCoroutine: UpdateSceneEntryFromRuntime threw: " + exUp);
+                }
+
+                try
+                {
+                    CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                }
+                catch (Exception exPersist)
+                {
+                    TBLog.Warn("DetectAndPersistCoordsCoroutine: TryUpdateAndPersist failed after runtime write: " + exPersist);
+                }
+
+                yield break;
+            }
+
+            // Try player position as fallback coords
+            if (coordsObj == null)
+            {
+                try
+                {
+                    var playerPos = TravelButton.GetPlayerPositionInScene();
+                    if (playerPos.HasValue)
+                    {
+                        coordsObj = new[] { (double)playerPos.Value.x, (double)playerPos.Value.y, (double)playerPos.Value.z };
+                        TBLog.Info($"DetectAndPersistCoordsCoroutine: player position fallback used for '{sceneName}' (attempt {attempt}) -> {playerPos.Value}");
+                    }
+                }
+                catch (Exception exPos)
+                {
+                    TBLog.Warn("DetectAndPersistCoordsCoroutine: GetPlayerPositionInScene failed: " + exPos);
+                }
+            }
+
+            // If we have coords, convert and write full-ish object
+            if (coordsObj != null)
+            {
+                IEnumerable<double> coordsDoubles = null;
+                try
+                {
+                    if (coordsObj is IEnumerable<double> dd) coordsDoubles = dd;
+                    else if (coordsObj is System.Collections.IEnumerable en)
+                    {
+                        var tmp = new List<double>();
+                        foreach (var o in en)
+                        {
+                            if (o == null) continue;
+                            if (o is double dv) tmp.Add(dv);
+                            else if (o is float fv) tmp.Add(Convert.ToDouble(fv));
+                            else if (o is int iv) tmp.Add(Convert.ToDouble(iv));
+                            else if (double.TryParse(o.ToString(), out double parsed)) tmp.Add(parsed);
+                        }
+                        if (tmp.Count > 0) coordsDoubles = tmp;
+                    }
+                }
+                catch { /* ignore conversion errors */ }
+
+                if (coordsDoubles != null)
+                {
+                    try
+                    {
+                        TBLog.Info($"DetectAndPersistCoordsCoroutine: writing coords-backed JSON entry for '{sceneName}' (attempt {attempt}).");
+                        UpdateSceneEntryWithCoords(sceneName, coordsDoubles, null, null, null, true);
+                    }
+                    catch (Exception exUp)
+                    {
+                        TBLog.Warn("DetectAndPersistCoordsCoroutine: UpdateSceneEntryWithCoords failed: " + exUp);
+                    }
+
+                    try
+                    {
+                        CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                    }
+                    catch (Exception exPersist)
+                    {
+                        TBLog.Warn("DetectAndPersistCoordsCoroutine: TryUpdateAndPersist failed after coords write: " + exPersist);
+                    }
+
+                    yield break;
+                }
+                else
+                {
+                    // coords conversion failed — persist variants now (may append minimal entry) and start monitor to enrich later
+                    try
+                    {
+                        CitiesJsonManager.TryUpdateAndPersist(sceneName, variants, lastKnown, ExtraSceneVariantDetection.VariantConfidence.High);
+                    }
+                    catch (Exception exPersist)
+                    {
+                        TBLog.Warn("DetectAndPersistCoordsCoroutine: TryUpdateAndPersist fallback failed: " + exPersist);
+                    }
+
+                    TravelButtonRunner.Instance?.StartSafeCoroutine(MonitorRuntimeCityCoroutine(sceneName, 0.5f, 10f));
+                    yield break;
+                }
+            }
+
+            // nothing this attempt — wait and retry
+            if (attempt < attempts)
+            {
+                yield return new UnityEngine.WaitForSecondsRealtime(attemptDelay);
+                continue;
+            }
+
+            // exhausted attempts, start monitor and give up now
+            TBLog.Info($"DetectAndPersistCoordsCoroutine: coords/runtime entry not found for scene '{sceneName}' after {attempts} attempts; starting monitor.");
+            TravelButtonRunner.Instance?.StartSafeCoroutine(MonitorRuntimeCityCoroutine(sceneName, 0.5f, 10f));
+            yield break;
+        }
+
+        yield break;
+    }
+
+    // MonitorRuntimeCityCoroutine: polls TravelButton.Cities for runtime entry, writes full object when it appears.
+    // If it times out it attempts an enrichment using persisted variants + player position.
+    static System.Collections.IEnumerator MonitorRuntimeCityCoroutine(string sceneName, float pollInterval = 0.5f, float timeoutSeconds = 10f)
+    {
+        yield return null; // avoid racing with the same frame that scheduled us
+
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed.TotalSeconds < timeoutSeconds)
+        {
+            object runtimeMatch = null;
+            try
+            {
+                var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+                if (citiesEnum != null)
+                {
+                    foreach (var c in citiesEnum)
+                    {
+                        if (c == null) continue;
+                        try
+                        {
+                            var t = c.GetType();
+                            string sceneProp = null;
+                            try { sceneProp = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            if (string.IsNullOrEmpty(sceneProp))
+                            {
+                                try { sceneProp = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                            }
+                            if (string.IsNullOrEmpty(sceneProp)) continue;
+                            if (string.Equals(sceneProp.Trim(), sceneName.Trim(), StringComparison.OrdinalIgnoreCase))
+                            {
+                                runtimeMatch = c;
+                                break;
+                            }
+                        }
+                        catch { /* ignore per-entry errors */ }
+                    }
+                }
+            }
+            catch (Exception exLookup)
+            {
+                TBLog.Warn("MonitorRuntimeCityCoroutine: lookup failed: " + exLookup);
+            }
+
+            if (runtimeMatch != null)
+            {
+                try
+                {
+                    TBLog.Info($"MonitorRuntimeCityCoroutine: runtime entry found for '{sceneName}' - writing full runtime-backed JSON.");
+                    UpdateSceneEntryFromRuntime(runtimeMatch);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("MonitorRuntimeCityCoroutine: UpdateSceneEntryFromRuntime threw: " + ex);
+                }
+
+                try
+                {
+                    // merge any variants the compat layer may have discovered
+                    CitiesJsonManager.TryUpdateAndPersist(sceneName, new List<string>(), string.Empty, ExtraSceneVariantDetection.VariantConfidence.High);
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn("MonitorRuntimeCityCoroutine: TryUpdateAndPersist after runtime write failed: " + ex);
+                }
+
+                yield break;
+            }
+
+            yield return new UnityEngine.WaitForSecondsRealtime(pollInterval);
+        }
+
+        TBLog.Info($"MonitorRuntimeCityCoroutine: timed out waiting for runtime city '{sceneName}' after {timeoutSeconds} s; attempting best-effort enrichment.");
+
+        // Read any persisted minimal entry (variants, lastKnown, etc.)
+        var persistedVariants = new List<string>();
+        string persistedLastKnown = null;
+        string persistedTarget = null;
+        string persistedDisplayName = null;
+        int? persistedPrice = null;
+        bool? persistedVisited = null;
+
+        try
+        {
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (!string.IsNullOrEmpty(jsonPath) && File.Exists(jsonPath))
+            {
+                var text = File.ReadAllText(jsonPath);
+                var root = string.IsNullOrWhiteSpace(text) ? new JObject() : JObject.Parse(text);
+                var cities = (root["cities"] as JArray) ?? new JArray();
+                foreach (var tok in cities.Children<JObject>())
+                {
+                    try
+                    {
+                        var candidate = ((string)(tok["sceneName"] ?? tok["name"]))?.Trim();
+                        if (string.IsNullOrEmpty(candidate)) continue;
+                        if (string.Equals(candidate, sceneName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (tok["variants"] is JArray jar)
+                            {
+                                foreach (var v in jar.Children())
+                                {
+                                    var s = v.ToString();
+                                    if (!string.IsNullOrEmpty(s) && !persistedVariants.Contains(s)) persistedVariants.Add(s);
+                                }
+                            }
+                            persistedLastKnown = (string)(tok["lastKnownVariant"] ?? tok["variantNormalName"]);
+                            persistedTarget = (string)tok["targetGameObjectName"];
+                            persistedDisplayName = (string)(tok["name"] ?? tok["sceneName"]);
+                            try { if (tok["price"] != null) persistedPrice = (int)tok["price"]; } catch { }
+                            try { if (tok["visited"] != null) persistedVisited = (bool)tok["visited"]; } catch { }
+                            break;
+                        }
+                    }
+                    catch { /* ignore per-token */ }
+                }
+            }
+        }
+        catch (Exception exRead)
+        {
+            TBLog.Warn("MonitorRuntimeCityCoroutine: failed to read existing JSON for enrichment: " + exRead);
+        }
+
+        // compute coords fallback (try up to 6 times with yields outside try/catch)
+        Vector3? coordsCandidate = null;
+        for (int i = 0; i < 6 && !coordsCandidate.HasValue; i++)
+        {
+            try
+            {
+                var pos = TravelButton.GetPlayerPositionInScene();
+                if (pos.HasValue)
+                {
+                    coordsCandidate = pos.Value;
+                    break;
+                }
+            }
+            catch { /* swallow per-iteration exception */ }
+
+            yield return new UnityEngine.WaitForSecondsRealtime(0.25f);
+        }
+
+        if (coordsCandidate.HasValue)
+        {
+            var coordsDoubles = new[] { (double)coordsCandidate.Value.x, (double)coordsCandidate.Value.y, (double)coordsCandidate.Value.z };
+            try
+            {
+                UpdateSceneEntryWithCoords(sceneName, coordsDoubles, persistedTarget, persistedDisplayName, persistedPrice, persistedVisited);
+                TBLog.Info($"MonitorRuntimeCityCoroutine: wrote coords-backed enrichment for '{sceneName}' from player position.");
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn("MonitorRuntimeCityCoroutine: UpdateSceneEntryWithCoords enrichment failed: " + exWrite);
+            }
+
+            try
+            {
+                CitiesJsonManager.TryUpdateAndPersist(sceneName, persistedVariants, persistedLastKnown ?? string.Empty, ExtraSceneVariantDetection.VariantConfidence.High);
+            }
+            catch (Exception exPersist)
+            {
+                TBLog.Warn("MonitorRuntimeCityCoroutine: TryUpdateAndPersist failed after enrichment: " + exPersist);
+            }
+
+            yield break;
+        }
+
+        TBLog.Info($"MonitorRuntimeCityCoroutine: enrichment failed (no runtime entry and couldn't compute player coords) for '{sceneName}'. Giving up.");
+        yield break;
+    }
+
+    // UpdateSceneEntryFromRuntime: builds and writes the full canonical object from the runtime city object.
+    static bool UpdateSceneEntryFromRuntime(object runtimeCity)
+    {
+        try
+        {
+            if (runtimeCity == null) return false;
+            var t = runtimeCity.GetType();
+
+            string sceneName = null;
+            try { sceneName = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; } catch { }
+            if (string.IsNullOrEmpty(sceneName))
+            {
+                try { sceneName = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; } catch { }
+            }
+            if (string.IsNullOrEmpty(sceneName)) { TBLog.Warn("UpdateSceneEntryFromRuntime: runtime city missing sceneName; aborting."); return false; }
+
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath)) { TBLog.Warn($"UpdateSceneEntryFromRuntime: cities JSON not found at '{jsonPath}'"); return false; }
+
+            string bakPath = jsonPath + ".bak";
+            string text = File.ReadAllText(jsonPath);
+            JObject root;
+            try { root = string.IsNullOrWhiteSpace(text) ? new JObject() : JObject.Parse(text); } catch (Exception ex) { TBLog.Warn("UpdateSceneEntryFromRuntime: parse failed: " + ex); return false; }
+
+            if (root["cities"] == null || root["cities"].Type != JTokenType.Array) root["cities"] = new JArray();
+            var cities = (JArray)root["cities"];
+
+            JObject fullObj = new JObject();
+            Action<string, object> setToken = (k, v) => { if (v == null) return; try { fullObj[k] = JToken.FromObject(v); } catch { fullObj[k] = JToken.FromObject(v?.ToString()); } };
+
+            try { var rn = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(rn)) setToken("name", rn); } catch { }
+            setToken("sceneName", sceneName);
+
+            try
+            {
+                var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                var coordsVal = coordsProp != null ? coordsProp.GetValue(runtimeCity) : coordsField != null ? coordsField.GetValue(runtimeCity) : null;
+                if (coordsVal is System.Collections.IEnumerable en)
+                {
+                    var arr = new JArray();
+                    foreach (var x in en)
+                    {
+                        if (x == null) continue;
+                        if (x is double dd) arr.Add(Math.Round(dd, 3));
+                        else if (x is float ff) arr.Add(Math.Round(Convert.ToDouble(ff), 3));
+                        else if (double.TryParse(x.ToString(), out double parsed)) arr.Add(Math.Round(parsed, 3));
+                    }
+                    if (arr.Count > 0) fullObj["coords"] = arr;
+                }
+            }
+            catch { /* ignore */ }
+
+            try { var p = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity); if (p != null) setToken("price", Convert.ToInt32(p)); } catch { }
+            try { var tg = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(tg)) setToken("targetGameObjectName", tg); } catch { }
+            try { var d = t.GetProperty("desc", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (d != null) setToken("desc", d); } catch { }
+            try { var vprop = t.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase); if (vprop != null) { var vv = vprop.GetValue(runtimeCity); if (vv is bool b) setToken("visited", b); } } catch { }
+
+            var runtimeVariants = new List<string>();
+            try
+            {
+                var varProp = t.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                if (varProp != null)
+                {
+                    var val = varProp.GetValue(runtimeCity);
+                    if (val is System.Collections.IEnumerable ev)
+                    {
+                        foreach (var x in ev) if (x is string s && !string.IsNullOrEmpty(s) && !runtimeVariants.Contains(s)) runtimeVariants.Add(s);
+                    }
+                }
+            }
+            catch { }
+            try { var vn = t.GetProperty("variantNormalName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(vn) && !runtimeVariants.Contains(vn)) runtimeVariants.Add(vn); } catch { }
+            try { var vd = t.GetProperty("variantDestroyedName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(vd) && !runtimeVariants.Contains(vd)) runtimeVariants.Add(vd); } catch { }
+
+            if (runtimeVariants.Count > 0) fullObj["variants"] = new JArray(runtimeVariants);
+
+            try { var lkv = t.GetProperty("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(lkv)) setToken("lastKnownVariant", lkv); } catch { }
+            try { var vn2 = t.GetProperty("variantNormalName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(vn2)) setToken("variantNormalName", vn2); } catch { }
+            try { var vd2 = t.GetProperty("variantDestroyedName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(runtimeCity) as string; if (!string.IsNullOrEmpty(vd2)) setToken("variantDestroyedName", vd2); } catch { }
+
+            if (fullObj["name"] == null) setToken("name", sceneName);
+            if (fullObj["price"] == null) setToken("price", 200);
+            if (fullObj["targetGameObjectName"] == null) setToken("targetGameObjectName", sceneName + "_Location");
+            if (fullObj["desc"] == null) setToken("desc", "");
+            if (fullObj["visited"] == null) setToken("visited", true);
+            if (fullObj["variants"] == null) fullObj["variants"] = new JArray();
+            if (fullObj["variantNormalName"] == null && fullObj["variants"].Type == JTokenType.Array && ((JArray)fullObj["variants"]).Count > 0) fullObj["variantNormalName"] = ((JArray)fullObj["variants"])[0];
+            if (fullObj["variantDestroyedName"] == null && fullObj["variants"].Type == JTokenType.Array && ((JArray)fullObj["variants"]).Count > 1) fullObj["variantDestroyedName"] = ((JArray)fullObj["variants"])[1];
+            if (fullObj["lastKnownVariant"] == null && fullObj["variantNormalName"] != null) fullObj["lastKnownVariant"] = fullObj["variantNormalName"];
+
+            JObject matchedToken = null;
+            foreach (var tok in cities.Children<JObject>())
+            {
+                try
+                {
+                    var candidateName = ((string)(tok["sceneName"] ?? tok["name"]))?.Trim();
+                    if (string.IsNullOrEmpty(candidateName)) continue;
+                    if (string.Equals(candidateName, sceneName, StringComparison.OrdinalIgnoreCase)) { matchedToken = tok; break; }
+                }
+                catch { }
+            }
+
+            if (matchedToken != null) foreach (var prop in fullObj.Properties()) matchedToken[prop.Name] = prop.Value;
+            else cities.Add(fullObj);
+
+            try
+            {
+                try { File.Copy(jsonPath, bakPath, true); } catch { }
+                var tmp = Path.Combine(Path.GetDirectoryName(jsonPath) ?? Path.GetTempPath(), $"TravelButton_Cities_tmp_{Guid.NewGuid():N}.json");
+                File.WriteAllText(tmp, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+                try { File.Replace(tmp, jsonPath, bakPath, ignoreMetadataErrors: true); } catch (PlatformNotSupportedException) { File.Copy(tmp, jsonPath, true); File.Delete(tmp); }
+                TBLog.Info("UpdateSceneEntryFromRuntime: wrote updated cities JSON to disk.");
+                return true;
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn("UpdateSceneEntryFromRuntime: write failed: " + exWrite);
+                try { if (File.Exists(bakPath)) File.Copy(bakPath, jsonPath, true); } catch { }
+                return false;
+            }
+        }
+        catch (Exception exTop)
+        {
+            TBLog.Warn("UpdateSceneEntryFromRuntime: unexpected: " + exTop);
+            return false;
+        }
+    }
+
+    // UpdateSceneEntryWithCoords: write a full canonical city entry using coords + sensible defaults.
+    static bool UpdateSceneEntryWithCoords(string sceneName, IEnumerable<double> coordsDoubles, string targetGameObjectName = null, string displayName = null, int? price = null, bool? visited = null)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(sceneName)) { TBLog.Warn("UpdateSceneEntryWithCoords: empty sceneName"); return false; }
+
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath) || !File.Exists(jsonPath)) { TBLog.Warn($"UpdateSceneEntryWithCoords: cities JSON not found at '{jsonPath}'"); return false; }
+
+            string bakPath = jsonPath + ".bak";
+            string text = File.ReadAllText(jsonPath);
+            JObject root;
+            try { root = string.IsNullOrWhiteSpace(text) ? new JObject() : JObject.Parse(text); } catch (Exception ex) { TBLog.Warn("UpdateSceneEntryWithCoords: failed to parse JSON: " + ex); return false; }
+
+            if (root["cities"] == null || root["cities"].Type != JTokenType.Array) root["cities"] = new JArray();
+            var cities = (JArray)root["cities"];
+
+            JObject fullObj = new JObject();
+            Action<string, object> setToken = (k, v) => { if (v == null) return; try { fullObj[k] = JToken.FromObject(v); } catch { fullObj[k] = JToken.FromObject(v?.ToString()); } };
+
+            setToken("sceneName", sceneName);
+            setToken("name", string.IsNullOrEmpty(displayName) ? sceneName : displayName);
+
+            if (coordsDoubles != null)
+            {
+                var arr = new JArray();
+                foreach (var d in coordsDoubles) arr.Add(Math.Round(d, 3));
+                if (arr.Count > 0) fullObj["coords"] = arr;
+            }
+
+            if (price.HasValue) setToken("price", price.Value);
+            else setToken("price", 200);
+
+            if (!string.IsNullOrEmpty(targetGameObjectName)) setToken("targetGameObjectName", targetGameObjectName);
+            else setToken("targetGameObjectName", sceneName + "_Location");
+
+            setToken("desc", "");
+            setToken("visited", visited ?? true);
+
+            if (fullObj["variants"] == null) fullObj["variants"] = new JArray();
+            if (fullObj["variantNormalName"] == null) fullObj["variantNormalName"] = "";
+            if (fullObj["variantDestroyedName"] == null) fullObj["variantDestroyedName"] = "";
+            if (fullObj["lastKnownVariant"] == null) fullObj["lastKnownVariant"] = "";
+
+            JObject matched = null;
+            foreach (var tok in cities.Children<JObject>())
+            {
+                try
+                {
+                    var candidateName = ((string)(tok["sceneName"] ?? tok["name"]))?.Trim();
+                    if (string.IsNullOrEmpty(candidateName)) continue;
+                    if (string.Equals(candidateName, sceneName, StringComparison.OrdinalIgnoreCase)) { matched = tok; break; }
+                }
+                catch { }
+            }
+
+            if (matched != null) foreach (var prop in fullObj.Properties()) matched[prop.Name] = prop.Value;
+            else cities.Add(fullObj);
+
+            try
+            {
+                try { File.Copy(jsonPath, bakPath, true); } catch { }
+                var tmp = Path.Combine(Path.GetDirectoryName(jsonPath) ?? Path.GetTempPath(), $"TravelButton_Cities_tmp_{Guid.NewGuid():N}.json");
+                File.WriteAllText(tmp, root.ToString(Formatting.Indented), System.Text.Encoding.UTF8);
+                try { File.Replace(tmp, jsonPath, bakPath, ignoreMetadataErrors: true); } catch (PlatformNotSupportedException) { File.Copy(tmp, jsonPath, true); File.Delete(tmp); }
+                TBLog.Info("UpdateSceneEntryWithCoords: wrote updated cities JSON to disk.");
+                return true;
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn("UpdateSceneEntryWithCoords: failed to write updated JSON: " + exWrite);
+                try { if (File.Exists(bakPath)) File.Copy(bakPath, jsonPath, true); } catch { }
+                return false;
+            }
+        }
+        catch (Exception exTop)
+        {
+            TBLog.Warn("UpdateSceneEntryWithCoords: unexpected error: " + exTop);
+            return false;
+        }
+    }
+
+    // Debug helper: dumps the current TravelButton.Cities state to logs.
+    // context: brief message where called from. If sceneFilter is provided only entries matching it are shown.
+    static void DumpRuntimeCitiesState(string context = null, string sceneFilter = null)
+    {
+        try
+        {
+            TBLog.Info($"DumpRuntimeCitiesState: BEGIN {context ?? ""} (sceneFilter='{sceneFilter ?? ""}')");
+
+            if (TravelButton.Cities == null)
+            {
+                TBLog.Info("DumpRuntimeCitiesState: TravelButton.Cities == null");
+                return;
+            }
+
+            var citiesEnum = TravelButton.Cities as System.Collections.IEnumerable;
+            if (citiesEnum == null)
+            {
+                TBLog.Info("DumpRuntimeCitiesState: TravelButton.Cities is not IEnumerable");
+                return;
+            }
+
+            int idx = 0;
+            foreach (var c in citiesEnum)
+            {
+                if (c == null)
+                {
+                    TBLog.Info($"DumpRuntimeCitiesState: city[{idx}] == null");
+                    idx++;
+                    continue;
+                }
+
+                try
+                {
+                    var t = c.GetType();
+                    // read common fields/props with reflection, ignore exceptions per field
+                    string sceneName = null;
+                    try { sceneName = t.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    if (string.IsNullOrEmpty(sceneName))
+                    {
+                        try { sceneName = t.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    }
+
+                    string name = null;
+                    try { name = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    if (string.IsNullOrEmpty(name))
+                    {
+                        try { name = t.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    }
+
+                    object coordsObj = null;
+                    try
+                    {
+                        var coordsProp = t.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                        var coordsField = t.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                        coordsObj = coordsProp != null ? coordsProp.GetValue(c) : coordsField != null ? coordsField.GetValue(c) : null;
+                    }
+                    catch { coordsObj = null; }
+
+                    string lastKnown = null;
+                    try { lastKnown = t.GetProperty("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    string variantNormal = null;
+                    try { variantNormal = t.GetProperty("variantNormalName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    string variantDestroyed = null;
+                    try { variantDestroyed = t.GetProperty("variantDestroyedName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    int? price = null;
+                    try { var pv = t.GetProperty("price", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c); if (pv != null) price = Convert.ToInt32(pv); } catch { }
+                    string target = null;
+                    try { target = t.GetProperty("targetGameObjectName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c) as string; } catch { }
+                    bool? visited = null;
+                    try { var vp = t.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c); if (vp is bool b) visited = b; } catch { }
+
+                    // collect variants array if present
+                    var variants = new List<string>();
+                    try
+                    {
+                        var variantsProp = t.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase);
+                        if (variantsProp != null)
+                        {
+                            var val = variantsProp.GetValue(c);
+                            if (val is System.Collections.IEnumerable ev)
+                            {
+                                foreach (var x in ev) if (x is string s && !string.IsNullOrEmpty(s)) variants.Add(s);
+                            }
+                        }
+                    }
+                    catch { }
+
+                    // Build coords text
+                    string coordsTxt = "null";
+                    try
+                    {
+                        if (coordsObj is System.Collections.IEnumerable en)
+                        {
+                            var list = new List<string>();
+                            foreach (var x in en)
+                            {
+                                if (x == null) continue;
+                                list.Add(x.ToString());
+                            }
+                            coordsTxt = list.Count > 0 ? string.Join(", ", list) : "empty";
+                        }
+                    }
+                    catch { coordsTxt = "error"; }
+
+                    // If sceneFilter provided, skip entries that don't match
+                    if (!string.IsNullOrEmpty(sceneFilter) && !string.Equals(sceneFilter.Trim(), (sceneName ?? name ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        // increment and continue
+                        TBLog.Info($"DumpRuntimeCitiesState: city[{idx}] scene='{sceneName ?? name}' (skipped by filter)");
+                        idx++;
+                        continue;
+                    }
+
+                    TBLog.Info($"DumpRuntimeCitiesState: city[{idx}] sceneName='{sceneName}' name='{name}' coords={coordsTxt} price={(price.HasValue ? price.Value.ToString() : "null")} target='{target}' visited={(visited.HasValue ? visited.Value.ToString() : "null")}");
+                    TBLog.Info($"DumpRuntimeCitiesState: city[{idx}] variants.Count={variants.Count} lastKnown='{lastKnown}' variantNormal='{variantNormal}' variantDestroyed='{variantDestroyed}'");
+                }
+                catch (Exception exEntry)
+                {
+                    TBLog.Warn("DumpRuntimeCitiesState: per-entry dump failed: " + exEntry);
+                }
+
+                idx++;
+            }
+
+            TBLog.Info($"DumpRuntimeCitiesState: END {context ?? ""} - total entries logged: {idx}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("DumpRuntimeCitiesState: unexpected: " + ex);
+        }
+    }
+
+    // Optional: short-lived coroutine to periodically dump TravelButton.Cities for diagnosis.
+    // pollIntervalSeconds: e.g. 1.0f, durationSeconds: total time to run (e.g. 10f)
+    static System.Collections.IEnumerator MonitorRuntimeCitiesStateCoroutine(string context, float pollIntervalSeconds = 1f, float durationSeconds = 10f, string sceneFilter = null)
+    {
+        float waited = 0f;
+        // start with immediate dump
+        DumpRuntimeCitiesState(context + " (initial)", sceneFilter);
+        while (waited < durationSeconds)
+        {
+            yield return new UnityEngine.WaitForSecondsRealtime(pollIntervalSeconds);
+            waited += pollIntervalSeconds;
+            DumpRuntimeCitiesState(context + $" (t={waited:0.0}s)", sceneFilter);
+        }
+        TBLog.Info($"MonitorRuntimeCitiesStateCoroutine: finished monitoring {context}, total time {durationSeconds}s");
+    }
+
     /// <summary>
     /// Store a newly discovered/visited scene into the canonical TravelButton_Cities.json.
     /// Safe-guards:
@@ -7043,6 +7856,10 @@ public static class TravelButton
     /// </summary>
     public static void StoreVisitedSceneToJson(string newSceneName, Vector3? playerPos = null, string detectedTarget = null, string sceneDesc = null)
     {
+
+        // right after `yield return null;` in DetectAndPersistCoordsCoroutine
+        DumpRuntimeCitiesState($"DetectAndPersist start for '{newSceneName}'");
+
         try
         {
             if (string.IsNullOrWhiteSpace(newSceneName))
@@ -7168,26 +7985,34 @@ public static class TravelButton
                 return;
             }
 
-            // If coords missing/invalid, defer detection using plugin coroutine (if available)
+            // If coords missing/invalid, defer detection using plugin coroutine (if available) or internal helper
             if (IsInvalidCoords(playerPos))
             {
-                if (TravelButtonPlugin.Instance != null)
+                TBLog.Info($"StoreVisitedSceneToJson: coords absent/invalid for '{newSceneName}', deferring detection to coroutine.");
+                try
                 {
-                    TBLog.Info($"StoreVisitedSceneToJson: coords absent/invalid for '{newSceneName}', deferring detection to coroutine.");
-                    try
+                    // Prefer plugin-provided coroutine if it exists (keeps original behavior)
+                    if (TravelButtonPlugin.Instance != null)
                     {
-                        TravelButtonPlugin.Instance.StartWaitForPlayerPlacementAndStore(newSceneName);
-                        return; // coroutine will call this method again with good coords
+                        try
+                        {
+                            TravelButtonPlugin.Instance.StartWaitForPlayerPlacementAndStore(newSceneName);
+                            return; // coroutine will call this method again with good coords
+                        }
+                        catch (Exception exStartPlugin)
+                        {
+                            TBLog.Warn("StoreVisitedSceneToJson: plugin StartWaitForPlayerPlacementAndStore failed, falling back to internal coroutine: " + exStartPlugin.Message);
+                        }
                     }
-                    catch (Exception exStart)
-                    {
-                        TBLog.Warn("StoreVisitedSceneToJson: failed to start deferred coroutine; falling back to immediate write: " + exStart.Message);
-                        // fall through and write without coords
-                    }
+
+                    // Fallback: use local coroutine helper to wait for coords & persist later
+                    EnsureCoordsPersistedLater(newSceneName);
+                    return; // coroutine will call TryUpdateAndPersist once coords available
                 }
-                else
+                catch (Exception exStart)
                 {
-                    TBLog.Info("StoreVisitedSceneToJson: plugin instance not available to defer coords; proceeding with best-effort (coords will be null).");
+                    TBLog.Warn("StoreVisitedSceneToJson: failed to start deferred coroutine; falling back to immediate write: " + exStart.Message);
+                    // fall through and write without coords
                 }
             }
 
