@@ -52,7 +52,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     // Filenames used by the plugin
     public const string CitiesJsonFileName = "TravelButton_Cities.json";
     public const string LegacyCfgFileName = "cz.valheimskal.travelbutton.cfg";
-
+     
     /// <summary>
     /// Directory that contains the plugin DLL. Detected at runtime from Assembly location.
     /// </summary>
