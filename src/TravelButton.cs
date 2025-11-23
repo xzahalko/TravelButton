@@ -871,55 +871,53 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         }
                         catch { /* ignore errors from visited mapping */ }
 
-                        // Map variants and lastKnownVariant (new fields)
+                        // Map variants and lastKnownVariant (new fields) - ALWAYS set even if null/empty
                         try
                         {
                             // Use reflection to support different runtime City implementations
                             var cityType = c.GetType();
                             
-                            // Try to set variants field/property
-                            if (cc.variants != null)
+                            // ALWAYS set variants field/property (default to empty array if null)
+                            try
                             {
-                                try
+                                string[] variantsToSet = (cc.variants != null && cc.variants.Length > 0) ? cc.variants : new string[0];
+                                
+                                var variantsField = cityType.GetField("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                if (variantsField != null && (variantsField.FieldType == typeof(string[]) || variantsField.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
                                 {
-                                    var variantsField = cityType.GetField("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                    if (variantsField != null && (variantsField.FieldType == typeof(string[]) || variantsField.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
+                                    variantsField.SetValue(c, variantsToSet);
+                                }
+                                else
+                                {
+                                    var variantsProp = cityType.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                    if (variantsProp != null && variantsProp.CanWrite)
                                     {
-                                        variantsField.SetValue(c, cc.variants);
-                                    }
-                                    else
-                                    {
-                                        var variantsProp = cityType.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                        if (variantsProp != null && variantsProp.CanWrite)
-                                        {
-                                            variantsProp.SetValue(c, cc.variants);
-                                        }
+                                        variantsProp.SetValue(c, variantsToSet);
                                     }
                                 }
-                                catch { /* ignore reflection errors */ }
                             }
+                            catch { /* ignore reflection errors */ }
                             
-                            // Try to set lastKnownVariant field/property
-                            if (!string.IsNullOrEmpty(cc.lastKnownVariant))
+                            // ALWAYS set lastKnownVariant field/property (default to empty string if null)
+                            try
                             {
-                                try
+                                string lastKnownVariantToSet = cc.lastKnownVariant ?? "";
+                                
+                                var lastKnownVariantField = cityType.GetField("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                if (lastKnownVariantField != null && lastKnownVariantField.FieldType == typeof(string))
                                 {
-                                    var lastKnownVariantField = cityType.GetField("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                    if (lastKnownVariantField != null && lastKnownVariantField.FieldType == typeof(string))
+                                    lastKnownVariantField.SetValue(c, lastKnownVariantToSet);
+                                }
+                                else
+                                {
+                                    var lastKnownVariantProp = cityType.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                    if (lastKnownVariantProp != null && lastKnownVariantProp.CanWrite)
                                     {
-                                        lastKnownVariantField.SetValue(c, cc.lastKnownVariant);
-                                    }
-                                    else
-                                    {
-                                        var lastKnownVariantProp = cityType.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                                        if (lastKnownVariantProp != null && lastKnownVariantProp.CanWrite)
-                                        {
-                                            lastKnownVariantProp.SetValue(c, cc.lastKnownVariant);
-                                        }
+                                        lastKnownVariantProp.SetValue(c, lastKnownVariantToSet);
                                     }
                                 }
-                                catch { /* ignore reflection errors */ }
                             }
+                            catch { /* ignore reflection errors */ }
                         }
                         catch (Exception exVariants)
                         {
@@ -3410,8 +3408,9 @@ public static class TravelButton
             this.enabled = false;
             bool visited = false; 
             this.sceneName = null;
-            this.variants = null;
-            this.lastKnownVariant = null;
+            // Initialize variants and lastKnownVariant with safe defaults
+            this.variants = new string[0];  // Empty array, not null
+            this.lastKnownVariant = "";  // Empty string, not null
         }
 
         // Compatibility properties expected by older code:
@@ -7396,6 +7395,219 @@ public static class TravelButton
         ["CierzoNewTerrain"] = null,
         // add other scenes as you identify authoritative component names
     };
+
+    /// <summary>
+    /// Build a JObject representing a city with all required keys including variants and lastKnownVariant.
+    /// Ensures consistent JSON structure for atomic writes.
+    /// </summary>
+    /// <param name="city">The city object to serialize</param>
+    /// <returns>JObject with name, sceneName, coords, price, targetGameObjectName, desc, visited, variants, lastKnownVariant</returns>
+    public static JObject BuildJObjectForCity(City city)
+    {
+        if (city == null)
+        {
+            TBLog.Warn("BuildJObjectForCity: city is null, returning empty JObject");
+            return new JObject();
+        }
+
+        try
+        {
+            var jobj = new JObject();
+            
+            // Always include name
+            jobj["name"] = city.name ?? "";
+            
+            // sceneName
+            jobj["sceneName"] = city.sceneName ?? city.name ?? "";
+            
+            // coords array (or null if not present)
+            if (city.coords != null && city.coords.Length >= 3)
+            {
+                jobj["coords"] = new JArray(
+                    Math.Round(city.coords[0], 3),
+                    Math.Round(city.coords[1], 3),
+                    Math.Round(city.coords[2], 3)
+                );
+            }
+            else
+            {
+                jobj["coords"] = null;
+            }
+            
+            // price
+            jobj["price"] = city.price ?? 200;
+            
+            // targetGameObjectName
+            jobj["targetGameObjectName"] = city.targetGameObjectName ?? "";
+            
+            // desc
+            jobj["desc"] = "";  // Keep empty as per existing behavior
+            
+            // visited
+            jobj["visited"] = city.visited;
+            
+            // variants array (ALWAYS present, empty array if null)
+            if (city.variants != null && city.variants.Length > 0)
+            {
+                jobj["variants"] = new JArray(city.variants);
+            }
+            else
+            {
+                jobj["variants"] = new JArray();  // Empty array, not null
+            }
+            
+            // lastKnownVariant (ALWAYS present, empty string if null)
+            jobj["lastKnownVariant"] = city.lastKnownVariant ?? "";
+            
+            return jobj;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"BuildJObjectForCity: failed to build JObject for city '{city?.name}': {ex}");
+            return new JObject();
+        }
+    }
+
+    /// <summary>
+    /// Append or update a city entry in the canonical TravelButton_Cities.json file using atomic write.
+    /// Reads the existing JSON, removes any entry with matching name, adds the new city object, and writes atomically.
+    /// </summary>
+    /// <param name="city">The city to append or update</param>
+    public static void AppendOrUpdateCityInJsonAndSave(City city)
+    {
+        if (city == null)
+        {
+            TBLog.Warn("AppendOrUpdateCityInJsonAndSave: city is null, skipping");
+            return;
+        }
+
+        try
+        {
+            string jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (string.IsNullOrEmpty(jsonPath))
+            {
+                TBLog.Warn("AppendOrUpdateCityInJsonAndSave: canonical json path unknown; skipping");
+                return;
+            }
+
+            TBLog.Info($"AppendOrUpdateCityInJsonAndSave: updating city '{city.name}' in {jsonPath}");
+
+            // Ensure directory exists
+            try
+            {
+                var dir = Path.GetDirectoryName(jsonPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+            }
+            catch (Exception exDir)
+            {
+                TBLog.Warn("AppendOrUpdateCityInJsonAndSave: failed creating json directory: " + exDir.Message);
+            }
+
+            // Read existing JSON or create new root
+            JObject root = null;
+            JArray cities = null;
+
+            if (File.Exists(jsonPath))
+            {
+                try
+                {
+                    var text = File.ReadAllText(jsonPath);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        root = JObject.Parse(text);
+                    }
+                }
+                catch (Exception exParse)
+                {
+                    TBLog.Warn("AppendOrUpdateCityInJsonAndSave: failed parsing existing JSON, creating new root: " + exParse.Message);
+                    root = null;
+                }
+            }
+
+            if (root == null)
+            {
+                root = new JObject();
+            }
+
+            // Ensure cities array exists
+            if (root["cities"] == null || root["cities"].Type != JTokenType.Array)
+            {
+                cities = new JArray();
+                root["cities"] = cities;
+            }
+            else
+            {
+                cities = (JArray)root["cities"];
+            }
+
+            // Remove existing entry with same name (case-insensitive)
+            JToken toRemove = null;
+            foreach (var item in cities)
+            {
+                if (item is JObject jobj)
+                {
+                    var nameVal = jobj["name"]?.ToString();
+                    if (!string.IsNullOrEmpty(nameVal) && 
+                        string.Equals(nameVal.Trim(), city.name?.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        toRemove = item;
+                        break;
+                    }
+                }
+            }
+            
+            if (toRemove != null)
+            {
+                cities.Remove(toRemove);
+                TBLog.Info($"AppendOrUpdateCityInJsonAndSave: removed existing entry for '{city.name}'");
+            }
+
+            // Add new city object
+            var newCityObj = BuildJObjectForCity(city);
+            cities.Add(newCityObj);
+
+            // Atomic write: write to temp file then replace
+            string tempPath = jsonPath + ".tmp";
+            try
+            {
+                string json = root.ToString(Formatting.Indented);
+                
+                // Write to temp file
+                File.WriteAllText(tempPath, json, System.Text.Encoding.UTF8);
+                
+                // Atomic replace
+                if (File.Exists(jsonPath))
+                {
+                    string backupPath = jsonPath + ".bak";
+                    if (File.Exists(backupPath))
+                    {
+                        File.Delete(backupPath);
+                    }
+                    File.Move(jsonPath, backupPath);
+                }
+                File.Move(tempPath, jsonPath);
+                
+                TBLog.Info($"AppendOrUpdateCityInJsonAndSave: successfully updated {jsonPath}");
+            }
+            catch (Exception exWrite)
+            {
+                TBLog.Warn($"AppendOrUpdateCityInJsonAndSave: atomic write failed: {exWrite.Message}");
+                
+                // Cleanup temp file if it exists
+                try
+                {
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"AppendOrUpdateCityInJsonAndSave: unexpected error for city '{city?.name}': {ex}");
+        }
+    }
 
 
 }

@@ -983,10 +983,16 @@ public static class CityMappingHelpers
             var visited = GetBoolFromSource(src, "visited") ?? GetBoolFromSource(src, "Visited");
             SetBoolOnTarget(dst, visited ?? false, "visited", "Visited");
 
+            // ALWAYS set variants (default to empty array if not present)
             var variants = GetStringArrayFromSource(src, "variants") ?? GetStringArrayFromSource(src, "Variants");
+            if (variants == null || variants.Length == 0)
+            {
+                variants = new string[0];  // Empty array, not null
+            }
             SetStringArrayOnTarget(dst, variants, "variants", "Variants");
 
-            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? GetStringFromSource(src, "LastKnownVariant");
+            // ALWAYS set lastKnownVariant (default to empty string if not present)
+            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? GetStringFromSource(src, "LastKnownVariant") ?? "";
             SetStringOnTarget(dst, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
         }
         catch (Exception ex)
@@ -1007,8 +1013,18 @@ public static class CityMappingHelpers
             SetStringOnTarget(dst, GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene"), "sceneName", "scene");
             SetStringOnTarget(dst, GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description"), "desc", "description");
             SetBoolOnTarget(dst, GetBoolFromSource(src, "visited") ?? false, "visited", "Visited");
-            SetStringArrayOnTarget(dst, GetStringArrayFromSource(src, "variants"), "variants", "Variants");
-            SetStringOnTarget(dst, GetStringFromSource(src, "lastKnownVariant"), "lastKnownVariant", "LastKnownVariant");
+            
+            // ALWAYS set variants (default to empty array if not present)
+            var variants = GetStringArrayFromSource(src, "variants");
+            if (variants == null || variants.Length == 0)
+            {
+                variants = new string[0];  // Empty array, not null
+            }
+            SetStringArrayOnTarget(dst, variants, "variants", "Variants");
+            
+            // ALWAYS set lastKnownVariant (default to empty string if not present)
+            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? "";
+            SetStringOnTarget(dst, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
         }
         catch (Exception ex)
         {
