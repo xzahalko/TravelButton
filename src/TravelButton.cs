@@ -3739,7 +3739,7 @@ public static class TravelButton
             {
                 TBLog.Warn($"MapSingleCityFromObject: '{cname}' price read failed: {ex.Message}");
             }
-
+             
             // Try centralized resolver implemented in CityMappingHelpers
             try
             {
