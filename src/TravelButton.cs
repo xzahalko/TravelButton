@@ -7091,25 +7091,19 @@ public static class TravelButton
                 }
             }
 
-            // Build new city object
-            var newCity = new JObject
+            // Build new city object using the standard helper to ensure consistent structure
+            var tempCity = new City(normScene);
+            tempCity.sceneName = normScene;
+            if (playerPos.HasValue && !IsInvalidCoords(playerPos))
             {
-                ["name"] = normScene,
-                ["sceneName"] = normScene,
-                ["coords"] = (playerPos.HasValue && !IsInvalidCoords(playerPos)) ? new JArray { JToken.FromObject(Math.Round(playerPos.Value.x, 3)), JToken.FromObject(Math.Round(playerPos.Value.y, 3)), JToken.FromObject(Math.Round(playerPos.Value.z, 3)) } : null,
-                ["price"] = 200,
-                ["targetGameObjectName"] = !string.IsNullOrEmpty(detectedTarget) ? detectedTarget : (normScene + "_Location"),
-                ["desc"] = sceneDesc ?? "",
-                ["visited"] = true
-            };
-
-            // Remove null properties
-            var cleanedCity = new JObject();
-            foreach (var prop in newCity.Properties())
-            {
-                if (prop.Value == null || prop.Value.Type == JTokenType.Null) continue;
-                cleanedCity[prop.Name] = prop.Value;
+                tempCity.coords = new float[] { playerPos.Value.x, playerPos.Value.y, playerPos.Value.z };
             }
+            tempCity.price = 200;
+            tempCity.targetGameObjectName = !string.IsNullOrEmpty(detectedTarget) ? detectedTarget : (normScene + "_Location");
+            tempCity.visited = true;
+            // variants and lastKnownVariant are already initialized to empty array and empty string by constructor
+            
+            var cleanedCity = BuildJObjectForCity(tempCity);
 
             cities.Add(cleanedCity);
 
