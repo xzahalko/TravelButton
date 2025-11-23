@@ -274,80 +274,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // sanity checks to confirm BepInEx receives logs:
         TBLog.Info("[TravelButton] BepInEx Logger is available (this.Logger) - test message");
 
+        // Consolidated initialization flow
         try
         {
-            CityMappingHelpers.InitCities();
+            InitializeCitiesAndConfig();
         }
         catch (Exception ex)
         {
-            TBLog.Warn("InitCities: unexpected error in Awake: " + ex);
-        }
-
-        // Attempt to load TravelButton_Cities.json from likely locations and populate TravelButtonMod.Cities.
-        // This is a best-effort load for deterministic defaults so that other initialization steps can observe cities.
-        try
-        {
-            TryLoadCitiesJsonIntoTravelButtonMod();
-        }
-        catch (Exception ex)
-        {
-            try { LogSource?.LogWarning(Prefix + "Failed to load TravelButton_Cities.json during Initialize: " + ex.Message); } catch { }
-        }
-        
-        try
-        {
-            TBLog.Info("TravelButton: startup - loaded cities:");
-            if (TravelButton.Cities == null) TBLog.Info(" - Cities == null");
-            else
-            {
-                foreach (var c in TravelButton.Cities)
-                {
-                    try
-                    {
-                        TBLog.Info($" - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}]");
-                    }
-                    catch { }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("Startup city log failed: " + ex);
-        }
-
-        try
-        {
-            TBLog.Info("TravelButtonPlugin.Awake: plugin initializing.");
-            TravelButton.InitFromConfig();
-            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
-            {
-                TBLog.Info($"Successfully loaded {TravelButton.Cities.Count} cities from TravelButton_Cities.json.");
-            }
-            else
-            {
-                TBLog.Warn("Failed to load cities from TravelButton_Cities.json or the file is empty.");
-            }
-            // Start coroutine that will attempt to initialize config safely (may call ConfigManager.Load when safe)
-            StartCoroutine(TryInitConfigCoroutine());
-        }
-        catch (Exception ex)
-        {
-            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake exception: " + ex);
-        }
-
-        try
-        {
-            // existing initialization (logger, config, etc.)
-            // ensure BepInEx bindings are created (this populates bex entries and sets city runtime values)
-            CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
-            EnsureBepInExConfigBindings();
-
-            // start the file watcher so external edits to the config file are detected
-            StartConfigWatcher();
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("Awake initialization failed: " + ex);
+            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake: InitializeCitiesAndConfig failed: " + ex);
         }
 
         ShowPlayerNotification = (msg) =>
@@ -359,6 +293,162 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // in Awake/Init:
         cfgUseTransitionScene = Config.Bind("Travel", "UseTransitionScene", false, "Load LowMemory_TransitionScene before the real target to force engine re-init.");
 
+    }
+
+    /// <summary>
+    /// Consolidated initialization flow that:
+    /// 1. CityMappingHelpers.InitCities() (diagnostic only)
+    /// 2. TryLoadCitiesJsonIntoTravelButtonMod() (map JSON into runtime with variants/lastKnownVariant)
+    /// 3. TravelButton.InitFromConfig() (attempt external config)
+    /// 4. CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() (final ensure & persist-if-missing)
+    /// 5. EnsureBepInExConfigBindings() (create BepInEx bindings with SettingChanged handlers that WRITE to files only)
+    /// 6. StartConfigWatcher() (watch legacy cfg)
+    /// 7. Start TryInitConfigCoroutine() as before (retrier)
+    /// </summary>
+    private void InitializeCitiesAndConfig()
+    {
+        TBLog.Info("InitializeCitiesAndConfig: BEGIN consolidated initialization.");
+
+        // Step 1: Diagnostic city initialization
+        try
+        {
+            CityMappingHelpers.InitCities();
+            TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() completed.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() failed: " + ex);
+        }
+
+        // Step 2: Load and map TravelButton_Cities.json into runtime with variants/lastKnownVariant
+        try
+        {
+            TryLoadCitiesJsonIntoTravelButtonMod();
+            TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed.");
+            DumpRuntimeCitiesState("After TryLoadCitiesJsonIntoTravelButtonMod");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() failed: " + ex);
+        }
+
+        // Step 3: Attempt external config initialization
+        try
+        {
+            TravelButton.InitFromConfig();
+            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0)
+            {
+                TBLog.Info($"InitializeCitiesAndConfig: TravelButton.InitFromConfig() loaded {TravelButton.Cities.Count} cities.");
+            }
+            else
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: TravelButton.InitFromConfig() did not produce cities or file is empty.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: TravelButton.InitFromConfig() failed: " + ex);
+        }
+
+        // Step 4: Ensure cities initialized from JSON or defaults & persist canonical JSON if missing
+        try
+        {
+            CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
+            TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed.");
+            DumpRuntimeCitiesState("After EnsureCitiesInitializedFromJsonOrDefaults");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults() failed: " + ex);
+        }
+
+        // Step 5: Create BepInEx config bindings with SettingChanged handlers (write-only)
+        try
+        {
+            EnsureBepInExConfigBindings();
+            TBLog.Info("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() completed.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() failed: " + ex);
+        }
+
+        // Step 6: Start config file watcher for external edits to legacy cfg
+        try
+        {
+            StartConfigWatcher();
+            TBLog.Info("InitializeCitiesAndConfig: StartConfigWatcher() completed.");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: StartConfigWatcher() failed: " + ex);
+        }
+
+        // Step 7: Start the existing TryInitConfigCoroutine as a retrier
+        try
+        {
+            StartCoroutine(TryInitConfigCoroutine());
+            TBLog.Info("InitializeCitiesAndConfig: Started TryInitConfigCoroutine().");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: Failed to start TryInitConfigCoroutine(): " + ex);
+        }
+
+        TBLog.Info("InitializeCitiesAndConfig: END consolidated initialization.");
+    }
+
+    /// <summary>
+    /// Diagnostic helper: dump runtime TravelButton.Cities state to log.
+    /// </summary>
+    private void DumpRuntimeCitiesState(string context)
+    {
+        try
+        {
+            TBLog.Info($"DumpRuntimeCitiesState [{context}]: Cities count = {TravelButton.Cities?.Count ?? 0}");
+            if (TravelButton.Cities != null)
+            {
+                foreach (var c in TravelButton.Cities)
+                {
+                    try
+                    {
+                        // Try to read variants and lastKnownVariant via reflection
+                        string variantsStr = "null";
+                        string lastKnownVariantStr = "null";
+                        
+                        try
+                        {
+                            var ct = c.GetType();
+                            var variantsProp = ct.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (variantsProp != null)
+                            {
+                                var variantsVal = variantsProp.GetValue(c);
+                                if (variantsVal is string[] vArr)
+                                    variantsStr = $"[{string.Join(", ", vArr)}]";
+                            }
+
+                            var lastKnownVariantProp = ct.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                            if (lastKnownVariantProp != null)
+                            {
+                                var lastKnownVariantVal = lastKnownVariantProp.GetValue(c) as string;
+                                lastKnownVariantStr = lastKnownVariantVal ?? "null";
+                            }
+                        }
+                        catch { }
+
+                        TBLog.Info($"  - '{c.name}' scene='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}] variants={variantsStr} lastKnownVariant={lastKnownVariantStr}");
+                    }
+                    catch (Exception exCity)
+                    {
+                        TBLog.Warn($"DumpRuntimeCitiesState: failed to dump city: {exCity.Message}");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"DumpRuntimeCitiesState [{context}]: failed: {ex}");
+        }
     }
 
     // Add OnDestroy to clean up the watcher and any resources:
@@ -1879,14 +1969,17 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         var localCity = city;
                         var localEnabledKey = enabledKey;
+                        var pluginInstance = this; // capture instance for PersistConfigToCfg
                         localEnabledKey.SettingChanged += (s, e) =>
                         {
                             try
                             {
                                 localCity.enabled = localEnabledKey.Value;
-                                TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Enabled = {localEnabledKey.Value}");
+                                TBLog.Info($"SettingChanged: {localCity.name}.Enabled = {localEnabledKey.Value}");
                                 try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
+                                // City.Enabled -> persist to legacy cfg
+                                try { pluginInstance.PersistConfigToCfg(); } catch (Exception exPersist) { TBLog.Warn("SettingChanged Enabled: PersistConfigToCfg failed: " + exPersist.Message); }
+                                try { pluginInstance.DumpRuntimeCitiesState($"After SettingChanged {localCity.name}.Enabled"); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Enabled SettingChanged handler failed: " + ex.Message); }
                         };
@@ -1895,14 +1988,17 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         var localCity = city;
                         var localPriceKey = priceKeyNormal;
+                        var pluginInstance = this;
                         localPriceKey.SettingChanged += (s, e) =>
                         {
                             try
                             {
                                 localCity.price = localPriceKey.Value;
-                                TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Price = {localPriceKey.Value}");
+                                TBLog.Info($"SettingChanged: {localCity.name}.Price = {localPriceKey.Value}");
                                 try { TravelButtonUI.RebuildTravelDialog(); } catch { }
-                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
+                                // City.Price -> persist to JSON
+                                try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception exPersist) { TBLog.Warn("SettingChanged Price: PersistCitiesToPluginFolder failed: " + exPersist.Message); }
+                                try { pluginInstance.DumpRuntimeCitiesState($"After SettingChanged {localCity.name}.Price"); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Price SettingChanged handler failed: " + ex.Message); }
                         };
@@ -1911,6 +2007,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         var localCity = city;
                         var localVisitedKey = visitedKey;
+                        var pluginInstance = this;
                         localVisitedKey.SettingChanged += (s, e) =>
                         {
                             try
@@ -1934,8 +2031,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 }
                                 catch { }
 
-                                TBLog.Info($"EnsureBepInExConfigBindings: applied {localCity.name}.Visited = {newVal}");
-                                try { TravelButton.PersistCitiesToPluginFolder(); } catch { }
+                                TBLog.Info($"SettingChanged: {localCity.name}.Visited = {newVal}");
+                                // City.Visited -> persist to JSON
+                                try { TravelButton.PersistCitiesToPluginFolder(); } catch (Exception exPersist) { TBLog.Warn("SettingChanged Visited: PersistCitiesToPluginFolder failed: " + exPersist.Message); }
+                                try { pluginInstance.DumpRuntimeCitiesState($"After SettingChanged {localCity.name}.Visited"); } catch { }
                             }
                             catch (Exception ex) { TBLog.Warn("Visited SettingChanged handler failed: " + ex.Message); }
                         };
@@ -2022,6 +2121,51 @@ public class TravelButtonPlugin : BaseUnityPlugin
     ///
     /// Use TravelButtonUIRefresh.RefreshUI() from SettingChanged handlers.
     ///—</summary>
+
+    /// <summary>
+    /// Helper to persist config values to the legacy .cfg file.
+    /// Attempts to call existing TravelButton static persist method if present; 
+    /// fallback to PersistCitiesToPluginFolder.
+    /// </summary>
+    private void PersistConfigToCfg()
+    {
+        try
+        {
+            TBLog.Info("PersistConfigToCfg: attempting to persist config to legacy cfg file.");
+            
+            // Try to find and call a static persist method on TravelButton if it exists
+            try
+            {
+                var tbType = typeof(TravelButton);
+                var persistMethod = tbType.GetMethod("PersistConfigToCfg", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (persistMethod != null)
+                {
+                    persistMethod.Invoke(null, null);
+                    TBLog.Info("PersistConfigToCfg: called TravelButton.PersistConfigToCfg() successfully.");
+                    return;
+                }
+            }
+            catch (Exception exReflect)
+            {
+                TBLog.Warn("PersistConfigToCfg: reflection attempt to call TravelButton.PersistConfigToCfg() failed: " + exReflect.Message);
+            }
+
+            // Fallback: persist cities to plugin folder (canonical JSON)
+            try
+            {
+                TravelButton.PersistCitiesToPluginFolder();
+                TBLog.Info("PersistConfigToCfg: fallback to PersistCitiesToPluginFolder() completed.");
+            }
+            catch (Exception exFallback)
+            {
+                TBLog.Warn("PersistConfigToCfg: fallback PersistCitiesToPluginFolder() failed: " + exFallback.Message);
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("PersistConfigToCfg: unexpected error: " + ex);
+        }
+    }
 
     public static void RefreshUI()
     {
