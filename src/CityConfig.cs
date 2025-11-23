@@ -16,6 +16,11 @@ public class CityConfig
     public string sceneName;
     public string desc;
     public bool visited = false;
+    
+    // New fields for multi-variant support
+    public string[] variants;
+    public string lastKnownVariant;
+    
     public CityConfig() { }
 
     public CityConfig(string name) { this.name = name; }
@@ -201,6 +206,33 @@ public class TravelConfig
             // Try to extract visited flag if present
             bool? visitedVal = ExtractBool(cityJson, "visited");
             city.visited = visitedVal ?? false;
+            
+            // Try to extract variants array if present
+            city.variants = ExtractStringArray(cityJson, "variants");
+            
+            // Try to extract lastKnownVariant if present
+            city.lastKnownVariant = ExtractString(cityJson, "lastKnownVariant");
+            
+            // Backward compatibility: if variants not present but legacy variant fields exist, migrate them
+            if ((city.variants == null || city.variants.Length == 0))
+            {
+                var variantNormal = ExtractString(cityJson, "variantNormalName");
+                var variantDestroyed = ExtractString(cityJson, "variantDestroyedName");
+                
+                if (!string.IsNullOrEmpty(variantNormal) || !string.IsNullOrEmpty(variantDestroyed))
+                {
+                    var variantsList = new List<string>();
+                    if (!string.IsNullOrEmpty(variantNormal)) variantsList.Add(variantNormal);
+                    if (!string.IsNullOrEmpty(variantDestroyed)) variantsList.Add(variantDestroyed);
+                    city.variants = variantsList.ToArray();
+                    
+                    // If lastKnownVariant not present, default to normal variant
+                    if (string.IsNullOrEmpty(city.lastKnownVariant) && !string.IsNullOrEmpty(variantNormal))
+                    {
+                        city.lastKnownVariant = variantNormal;
+                    }
+                }
+            }
 
             return city;
         }
@@ -303,6 +335,50 @@ public class TravelConfig
         if (token.StartsWith("true")) return true;
         if (token.StartsWith("false")) return false;
         return null;
+    }
+
+    private static string[] ExtractStringArray(string json, string propName)
+    {
+        int idx = json.IndexOf($"\"{propName}\"", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+
+        int colonIdx = json.IndexOf(':', idx);
+        if (colonIdx < 0) return null;
+
+        int i = colonIdx + 1;
+        while (i < json.Length && char.IsWhiteSpace(json[i])) i++;
+
+        if (i >= json.Length || json[i] != '[') return null;
+
+        int arrStart = i;
+        int arrEnd = FindMatchingBracket(json, arrStart);
+        if (arrEnd < 0) return null;
+
+        string arrContent = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+        
+        // Parse array content - handle quoted strings
+        var strings = new List<string>();
+        int pos = 0;
+        while (pos < arrContent.Length)
+        {
+            // Skip whitespace and commas
+            while (pos < arrContent.Length && (char.IsWhiteSpace(arrContent[pos]) || arrContent[pos] == ','))
+                pos++;
+            
+            if (pos >= arrContent.Length) break;
+            
+            // Expect quoted string
+            if (arrContent[pos] != '"') break;
+            
+            int strEnd = FindClosingQuote(arrContent, pos);
+            if (strEnd < 0) break;
+            
+            string str = arrContent.Substring(pos + 1, strEnd - pos - 1);
+            strings.Add(str);
+            pos = strEnd + 1;
+        }
+
+        return strings.Count > 0 ? strings.ToArray() : null;
     }
 
     private static int FindClosingQuote(string json, int startIdx)

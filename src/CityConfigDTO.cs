@@ -16,6 +16,10 @@ public class JsonCityConfig
     public string sceneName;
     public string desc;
     public bool visited = false;
+    
+    // New fields for multi-variant support
+    public string[] variants;
+    public string lastKnownVariant;
 
     public JsonCityConfig() { }
     public JsonCityConfig(string name) { this.name = name; }
@@ -121,7 +125,9 @@ public class JsonTravelConfig
                             targetGameObjectName = TryGetStringFromObject(src, "targetGameObjectName") ?? TryGetStringFromObject(src, "target"),
                             sceneName = TryGetStringFromObject(src, "sceneName") ?? TryGetStringFromObject(src, "scene"),
                             desc = TryGetStringFromObject(src, "desc") ?? TryGetStringFromObject(src, "description"),
-                            visited = TryGetBoolFromObject(src, "visited") ?? false
+                            visited = TryGetBoolFromObject(src, "visited") ?? false,
+                            variants = TryGetStringArrayFromObject(src, "variants"),
+                            lastKnownVariant = TryGetStringFromObject(src, "lastKnownVariant")
                         };
                         result.cities.Add(jc);
                     }
@@ -149,7 +155,9 @@ public class JsonTravelConfig
                             targetGameObjectName = TryGetStringFromObject(item, "targetGameObjectName") ?? TryGetStringFromObject(item, "target"),
                             sceneName = TryGetStringFromObject(item, "sceneName") ?? TryGetStringFromObject(item, "scene"),
                             desc = TryGetStringFromObject(item, "desc") ?? TryGetStringFromObject(item, "description"),
-                            visited = TryGetBoolFromObject(item, "visited") ?? false
+                            visited = TryGetBoolFromObject(item, "visited") ?? false,
+                            variants = TryGetStringArrayFromObject(item, "variants"),
+                            lastKnownVariant = TryGetStringFromObject(item, "lastKnownVariant")
                         };
                         result.cities.Add(jc);
                         mapped++;
@@ -258,6 +266,37 @@ public class JsonTravelConfig
                 foreach (var it in e)
                 {
                     try { list.Add(Convert.ToSingle(it)); } catch { }
+                }
+                if (list.Count > 0) return list.ToArray();
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static string[] TryGetStringArrayFromObject(object obj, string propName)
+    {
+        if (obj == null) return null;
+        var t = obj.GetType();
+        try
+        {
+            var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            object val = null;
+            if (p != null && p.CanRead) val = p.GetValue(obj);
+            else
+            {
+                var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null) val = f.GetValue(obj);
+            }
+            if (val == null) return null;
+            if (val is string[] sa) return sa;
+            if (val is IEnumerable e)
+            {
+                var list = new List<string>();
+                foreach (var it in e)
+                {
+                    if (it != null)
+                        list.Add(it.ToString());
                 }
                 if (list.Count > 0) return list.ToArray();
             }
