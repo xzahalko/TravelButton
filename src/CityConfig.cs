@@ -16,6 +16,11 @@ public class CityConfig
     public string sceneName;
     public string desc;
     public bool visited = false;
+    
+    // New fields for multi-variant support
+    public string[] variants;
+    public string lastKnownVariant;
+    
     public CityConfig() { }
 
     public CityConfig(string name) { this.name = name; }
