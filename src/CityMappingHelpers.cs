@@ -12,11 +12,20 @@ using static TravelButtonUI;
 /// <summary>
 /// Helper utilities to convert parsed JSON DTOs (CityEntry) and ConfigManager defaults
 /// into the runtime collection type expected by TravelButton.Cities.
+/// - Robust parsing of TravelButton_Cities.json (supports variants[] and lastKnownVariant)
+/// - Converts parsed DTO -> runtime city instances via reflection (three strategies)
+/// - Converts ConfigManager.Default() -> runtime collection if JSON missing
+/// - Assigns converted collection to TravelButton.Cities (static field/property) if compatible
+/// - Minimizes duplicate reads/writes: this helper reads JSON/defaults and prepares runtime objects.
 /// </summary>
 public static class CityMappingHelpers
 {
-    // Holds the parsed city list from JSON
+    // Holds the parsed city list from JSON (kept for diagnostics)
     private static List<CityEntry> loadedCities;
+
+    // ----------------
+    // Public entrypoints
+    // ----------------
 
     // Attempt to initialize city list.
     // First try the canonical path provided by TravelButton.GetCitiesJsonPath(),
@@ -81,7 +90,6 @@ public static class CityMappingHelpers
                             string fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
                             try
                             {
-                                // Prefer the canonical filename constant if available
                                 fileName = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static) != null
                                     ? TravelButtonPlugin.CitiesJsonFileName
                                     : fileName;
@@ -152,8 +160,15 @@ public static class CityMappingHelpers
         }
     }
 
-    // Parsing helper reusing the same tolerant JSON parsing as your LoadCitiesFromJson implementation.
-    // Returns null on parse error or no entries.
+    /// <summary>
+    /// Parse a JSON file into a list of CityEntry DTOs.
+    /// Tolerant to leading comment lines and supports:
+    ///  - single object root (treated as one city)
+    ///  - object root with 'cities' array
+    ///  - array root
+    /// Supports fields: name, sceneName, targetGameObjectName, coords, price, visited, variants, lastKnownVariant, desc
+    /// Returns null on parse error or zero entries.
+    /// </summary>
     public static List<CityEntry> ParseCitiesJsonFile(string filePath)
     {
         try
@@ -276,7 +291,6 @@ public static class CityMappingHelpers
                     {
                         try { price = priceToken.Value<int>(); } catch { try { price = Convert.ToInt32(priceToken.Value<double>()); } catch { price = -1; } }
                     }
-                    // Try to set an int property/field named "price" / "Price"
                     try
                     {
                         var t = city.GetType();
@@ -396,14 +410,38 @@ public static class CityMappingHelpers
         }
     }
 
+    // Diagnostic preview of loadedCities
     private static void DumpLoadedCitiesPreview()
     {
         try
         {
+            if (loadedCities == null) { TBLog.Info("DumpLoadedCitiesPreview: loadedCities null"); return; }
             for (int i = 0; i < Math.Min(loadedCities.Count, 10); i++)
             {
                 var c = loadedCities[i];
-                TBLog.Info($"  city[{i}] name='{c?.name}' scene='{c?.sceneName}' coords={(c?.coords == null ? "null" : string.Join(",", c.coords))}");
+                // Use reflection-safe getters to avoid compile-time errors when underlying CityEntry varies across assemblies
+                string name = GetStringFromSource(c, "name") ?? GetStringFromSource(c, "Name") ?? "(null)";
+                string scene = GetStringFromSource(c, "sceneName") ?? GetStringFromSource(c, "scene") ?? "(null)";
+
+                string coordsStr;
+                try
+                {
+                    var coords = GetFloatArrayFromSource(c, "coords") ?? GetFloatArrayFromSource(c, "Coords");
+                    coordsStr = coords == null ? "null" : string.Join(",", coords);
+                }
+                catch { coordsStr = "null"; }
+
+                string variantsStr;
+                try
+                {
+                    var variants = GetStringArrayFromSource(c, "variants") ?? GetStringArrayFromSource(c, "Variants");
+                    variantsStr = variants == null ? "null" : $"[{string.Join(", ", variants)}]";
+                }
+                catch { variantsStr = "null"; }
+
+                string lastKnownVariant = GetStringFromSource(c, "lastKnownVariant") ?? GetStringFromSource(c, "LastKnownVariant") ?? "null";
+
+                TBLog.Info($"  city[{i}] name='{name}' scene='{scene}' coords=[{coordsStr}] variants={variantsStr} lastKnownVariant={lastKnownVariant}");
             }
         }
         catch { }
@@ -435,24 +473,926 @@ public static class CityMappingHelpers
         return false;
     }
 
-    // Helper: if explicit coordsHint/haveCoordsHint provided prefer them, otherwise use resolved coords
-    private static Vector3 haveCoordsHintOrResolved(Vector3 coordsHint, bool haveCoordsHint, Vector3 resolvedCoords, bool resolvedHaveCoords, out bool haveCoordsFinal)
+    // Try to resolve cities from canonical JSON or ConfigManager defaults, convert to runtime, assign, and persist only if needed.
+    // This method is intended to be called once at startup by the plugin bootstrap.
+    public static void EnsureCitiesInitializedFromJsonOrDefaults()
     {
-        if (haveCoordsHint)
+        try
         {
-            haveCoordsFinal = true;
-            return coordsHint;
+            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
+            if (File.Exists(jsonPath))
+            {
+                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loading cities from canonical JSON: {jsonPath}");
+                var list = ParseCitiesJsonFile(jsonPath);
+                if (list != null && list.Count > 0)
+                {
+                    object converted = ConvertParsedCitiesToRuntime(list);
+                    if (AssignConvertedCitiesToTravelButton(converted))
+                    {
+                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loaded {GetRuntimeCitiesCount()} cities from JSON.");
+                        return;
+                    }
+                    else
+                    {
+                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: converted collection was not assignable to TravelButton.Cities (attempting fallback assignment).");
+                        // fallback: if converted is List<CityEntry> try assigning as-is
+                        TryAssignFallbackListOfCityEntry(converted);
+                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: TravelButton.Cities count after fallback = {GetRuntimeCitiesCount()}");
+                        return;
+                    }
+                }
+                else
+                {
+                    TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: JSON file present but parsing returned no entries. Falling back to defaults.");
+                }
+            }
+            else
+            {
+                TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON not found; falling back to ConfigManager defaults.");
+            }
+
+            // Fallback: populate from ConfigManager.Default() and persist canonical JSON only if missing
+            object defaults = null;
+            try
+            {
+                // ConfigManager.Default() call - safe reflection fallback
+                var cfgMgr = TravelButton.GetLocalType("ConfigManager");
+                if (cfgMgr != null)
+                {
+                    var defMi = cfgMgr.GetMethod("Default", BindingFlags.Public | BindingFlags.Static);
+                    if (defMi != null)
+                        defaults = defMi.Invoke(null, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: reading ConfigManager.Default() failed: " + ex.Message);
+            }
+
+            if (defaults == null)
+            {
+                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: no defaults object available; leaving TravelButton.Cities as-is.");
+                return;
+            }
+
+            object convertedDefaults = ConvertConfigManagerDefaultsToRuntime(defaults);
+            if (AssignConvertedCitiesToTravelButton(convertedDefaults))
+            {
+                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: populated TravelButton.Cities from ConfigManager defaults (count={GetRuntimeCitiesCount()})");
+            }
+            else
+            {
+                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to assign ConfigManager defaults to TravelButton.Cities via reflection.");
+                TryAssignFallbackListOfCityEntry(convertedDefaults);
+            }
+
+            // Persist canonical JSON only if it does not exist and JsonTravelConfig.Default() produces entries
+            try
+            {
+                var jsonDefaults = JsonTravelConfig.Default();
+                int mappedCount = jsonDefaults?.cities?.Count ?? 0;
+                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced {mappedCount} entries.");
+
+                if (mappedCount > 0 && !File.Exists(jsonPath))
+                {
+                    try
+                    {
+                        // write canonical JSON next to plugin DLL
+                        jsonDefaults.SaveToJson(jsonPath);
+                        TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: persisted canonical JSON from JsonTravelConfig.Default().");
+                    }
+                    catch (Exception pex)
+                    {
+                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to persist canonical JSON: " + pex);
+                    }
+                }
+                else if (mappedCount > 0)
+                {
+                    TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON already exists -> not overwriting.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: error while optionally persisting default JSON: " + ex);
+            }
         }
-        if (resolvedHaveCoords)
+        catch (Exception ex)
         {
-            haveCoordsFinal = true;
-            return resolvedCoords;
+            TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: unexpected error: " + ex);
         }
-        haveCoordsFinal = false;
-        return Vector3.zero;
     }
 
-    // Add this public wrapper
+    // -----------------------
+    // Conversion & assignment
+    // -----------------------
+
+    // Convert parsed DTOs to the runtime collection expected by TravelButton.Cities.
+    // Strategy:
+    //  1) If travelButton.Cities element type is discoverable, try to instantiate elementType and map fields via reflection
+    //  2) If that fails, JSON roundtrip to elementType
+    //  3) If still fails, attempt GetUninitializedObject + reflection mapping
+    public static object ConvertParsedCitiesToRuntime(List<CityEntry> parsed)
+    {
+        if (parsed == null) return null;
+        try
+        {
+            var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            var citiesProp = typeof(TravelButton).GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic) as PropertyInfo;
+            Type citiesType = null;
+
+            if (citiesField != null) citiesType = citiesField.FieldType;
+            else if (citiesProp != null) citiesType = citiesProp.PropertyType;
+
+            if (citiesType != null)
+            {
+                Type elementType = GetElementTypeFromCollectionType(citiesType);
+                if (elementType != null)
+                {
+                    var listType = typeof(List<>).MakeGenericType(elementType);
+                    var listInstance = (IList)Activator.CreateInstance(listType);
+
+                    foreach (var src in parsed)
+                    {
+                        try
+                        {
+                            object dst = null;
+                            // 1) default ctor + map
+                            try
+                            {
+                                dst = Activator.CreateInstance(elementType);
+                                MapParsedCityToTarget(src, dst);
+                            }
+                            catch { dst = null; }
+
+                            // 2) json roundtrip
+                            if (dst == null)
+                            {
+                                try
+                                {
+                                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(src);
+                                    dst = Newtonsoft.Json.JsonConvert.DeserializeObject(json, elementType);
+                                }
+                                catch (Exception jex)
+                                {
+                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: json roundtrip conversion failed for elementType={elementType}: {jex.Message}");
+                                    dst = null;
+                                }
+                            }
+
+                            // 3) uninitialized + map
+                            if (dst == null)
+                            {
+                                try
+                                {
+                                    var uninit = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(elementType);
+                                    if (uninit != null)
+                                    {
+                                        MapParsedCityToTarget(src, uninit);
+                                        dst = uninit;
+                                    }
+                                }
+                                catch (Exception uex)
+                                {
+                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: GetUninitializedObject failed for {elementType}: {uex.Message}");
+                                }
+                            }
+
+                            if (dst != null) listInstance.Add(dst);
+                            else
+                            {
+                                TBLog.Warn($"ConvertParsedCitiesToRuntime: unable to convert parsed item to {elementType}; aborting conversion.");
+                                return null;
+                            }
+                        }
+                        catch (Exception exItem)
+                        {
+                            TBLog.Warn("ConvertParsedCitiesToRuntime: failed converting a parsed city entry: " + exItem);
+                        }
+                    }
+
+                    return listInstance;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("CityMappingHelpers.ConvertParsedCitiesToRuntime: reflection-based conversion failed: " + ex);
+        }
+
+        // fallback: return parsed list (List<CityEntry>)
+        return parsed;
+    }
+
+    // Convert ConfigManager.Default() defaults object into runtime collection expected by TravelButton.Cities.
+    public static object ConvertConfigManagerDefaultsToRuntime(object configManagerDefaults)
+    {
+        if (configManagerDefaults == null) return null;
+
+        try
+        {
+            var defaultsType = configManagerDefaults.GetType();
+            IEnumerable<object> defaultsCities = null;
+
+            // try property or field named 'cities' (instance)
+            var prop = defaultsType.GetProperty("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop != null)
+            {
+                var val = prop.GetValue(configManagerDefaults);
+                if (val is IEnumerable e) defaultsCities = e.Cast<object>().ToList();
+            }
+            else
+            {
+                var field = defaultsType.GetField("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null)
+                {
+                    var val = field.GetValue(configManagerDefaults);
+                    if (val is IEnumerable e) defaultsCities = e.Cast<object>().ToList();
+                }
+            }
+
+            if (defaultsCities == null)
+            {
+                TBLog.Warn("ConvertConfigManagerDefaultsToRuntime: could not locate a 'cities' collection on defaults - returning empty list.");
+                return new List<CityEntry>();
+            }
+
+            var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            var citiesProp = typeof(TravelButton).GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic) as PropertyInfo;
+            Type citiesType = (citiesField != null) ? citiesField.FieldType : (citiesProp != null ? citiesProp.PropertyType : null);
+
+            if (citiesType != null)
+            {
+                Type elementType = GetElementTypeFromCollectionType(citiesType);
+                if (elementType != null)
+                {
+                    var listType = typeof(List<>).MakeGenericType(elementType);
+                    var listInstance = (IList)Activator.CreateInstance(listType);
+
+                    foreach (var src in defaultsCities)
+                    {
+                        var dst = Activator.CreateInstance(elementType);
+                        MapDefaultCityToTarget(src, dst);
+                        listInstance.Add(dst);
+                    }
+                    return listInstance;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ConvertConfigManagerDefaultsToRuntime: conversion failed: " + ex);
+        }
+
+        // fallback: try to build List<CityEntry> from defaults
+        try
+        {
+            var fallback = new List<CityEntry>();
+            var defaultsType2 = configManagerDefaults.GetType();
+            var prop2 = defaultsType2.GetProperty("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (prop2 != null)
+            {
+                var val = prop2.GetValue(configManagerDefaults) as IEnumerable;
+                if (val != null)
+                {
+                    foreach (var item in val)
+                    {
+                        var ce = new CityEntry();
+                        SetStringOnTarget(ce, GetStringFromSource(item, "name"), "name");
+                        SetStringOnTarget(ce, GetStringFromSource(item, "sceneName") ?? GetStringFromSource(item, "scene"), "sceneName");
+                        SetStringOnTarget(ce, GetStringFromSource(item, "targetGameObjectName") ?? GetStringFromSource(item, "target"), "targetGameObjectName");
+                        SetStringOnTarget(ce, GetStringFromSource(item, "desc") ?? GetStringFromSource(item, "description"), "desc");
+                        var price = GetIntFromSource(item, "price");
+                        ce.price = price ?? -1;
+                        var v = GetBoolFromSource(item, "visited");
+                        ce.visited = v ?? false;
+                        var coords = GetFloatArrayFromSource(item, "coords");
+                        ce.coords = coords;
+                        fallback.Add(ce);
+                    }
+                    return fallback;
+                }
+            }
+        }
+        catch { }
+
+        return new List<CityEntry>();
+    }
+
+    // Assign the converted collection object into TravelButton.Cities (static field or property).
+    // Returns true if assignment succeeded.
+    private static bool AssignConvertedCitiesToTravelButton(object converted)
+    {
+        if (converted == null) return false;
+
+        var travelButtonType = typeof(TravelButton);
+
+        var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field != null)
+        {
+            if (field.FieldType.IsAssignableFrom(converted.GetType()))
+            {
+                field.SetValue(null, converted);
+                return true;
+            }
+
+            if (TryBuildAndAssignCollectionFromEnumerable(converted as IEnumerable, field.FieldType, out object built))
+            {
+                field.SetValue(null, built);
+                return true;
+            }
+
+            TBLog.Warn($"AssignConvertedCitiesToTravelButton: field 'Cities' exists but type '{converted.GetType()}' is not assignable to '{field.FieldType}'.");
+            return false;
+        }
+
+        var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (prop != null && prop.CanWrite)
+        {
+            if (prop.PropertyType.IsAssignableFrom(converted.GetType()))
+            {
+                prop.SetValue(null, converted, null);
+                return true;
+            }
+
+            if (TryBuildAndAssignCollectionFromEnumerable(converted as IEnumerable, prop.PropertyType, out object built))
+            {
+                prop.SetValue(null, built, null);
+                return true;
+            }
+
+            TBLog.Warn($"AssignConvertedCitiesToTravelButton: property 'Cities' exists but type '{converted.GetType()}' is not assignable to '{prop.PropertyType}'.");
+            return false;
+        }
+
+        TBLog.Warn("AssignConvertedCitiesToTravelButton: no static field/property named 'Cities' found on TravelButton.");
+        return false;
+    }
+
+    // Try to create a collection of targetCollectionType and copy elements from source enumerable.
+    private static bool TryBuildAndAssignCollectionFromEnumerable(IEnumerable sourceEnum, Type targetCollectionType, out object built)
+    {
+        built = null;
+        if (sourceEnum == null || targetCollectionType == null) return false;
+
+        Type elementType = GetElementTypeFromCollectionType(targetCollectionType);
+        if (elementType == null) return false;
+
+        try
+        {
+            var listType = typeof(List<>).MakeGenericType(elementType);
+            var listInstance = (IList)Activator.CreateInstance(listType);
+
+            foreach (var item in sourceEnum)
+            {
+                if (item == null)
+                {
+                    listInstance.Add(null);
+                    continue;
+                }
+
+                if (elementType.IsAssignableFrom(item.GetType()))
+                {
+                    listInstance.Add(item);
+                }
+                else
+                {
+                    if (item is CityEntry ce)
+                    {
+                        var dst = Activator.CreateInstance(elementType);
+                        MapParsedCityToTarget(ce, dst);
+                        listInstance.Add(dst);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            var json = Newtonsoft.Json.JsonConvert.SerializeObject(item);
+                            var dst = Newtonsoft.Json.JsonConvert.DeserializeObject(json, elementType);
+                            listInstance.Add(dst);
+                        }
+                        catch
+                        {
+                            TBLog.Warn($"TryBuildAndAssignCollectionFromEnumerable: unable to convert item of type {item.GetType()} to {elementType}");
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            if (targetCollectionType.IsArray)
+            {
+                var toArrayMethod = listType.GetMethod("ToArray");
+                var arr = toArrayMethod.Invoke(listInstance, null);
+                built = arr;
+            }
+            else if (targetCollectionType.IsAssignableFrom(listInstance.GetType()))
+            {
+                built = listInstance;
+            }
+            else
+            {
+                try
+                {
+                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(listInstance);
+                    built = Newtonsoft.Json.JsonConvert.DeserializeObject(json, targetCollectionType);
+                }
+                catch
+                {
+                    TBLog.Warn($"TryBuildAndAssignCollectionFromEnumerable: cannot create target collection of type {targetCollectionType}");
+                    return false;
+                }
+            }
+
+            return built != null;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryBuildAndAssignCollectionFromEnumerable: exception: " + ex);
+            return false;
+        }
+    }
+
+    private static void TryAssignFallbackListOfCityEntry(object convertedDefaults)
+    {
+        try
+        {
+            if (convertedDefaults is List<CityEntry> asList)
+            {
+                var travelButtonType = typeof(TravelButton);
+                var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null && field.FieldType.IsAssignableFrom(typeof(List<CityEntry>)))
+                {
+                    field.SetValue(null, asList);
+                    TBLog.Info("Assigned List<CityEntry> fallback to TravelButton.Cities.");
+                    return;
+                }
+                var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null && prop.CanWrite && prop.PropertyType.IsAssignableFrom(typeof(List<CityEntry>)))
+                {
+                    prop.SetValue(null, asList, null);
+                    TBLog.Info("Assigned List<CityEntry> fallback to TravelButton.Cities (prop).");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TryAssignFallbackListOfCityEntry: " + ex);
+        }
+    }
+
+    // -----------------------
+    // Reflection mapping helpers
+    // -----------------------
+
+    private static Type GetElementTypeFromCollectionType(Type collectionType)
+    {
+        if (collectionType.IsArray) return collectionType.GetElementType();
+        if (collectionType.IsGenericType)
+        {
+            var genArgs = collectionType.GetGenericArguments();
+            if (genArgs != null && genArgs.Length == 1) return genArgs[0];
+        }
+        var iface = collectionType.GetInterfaces().FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+        if (iface != null) return iface.GetGenericArguments()[0];
+        return null;
+    }
+
+    public static void MapParsedCityToTarget(object src, object dst)
+    {
+        if (src == null || dst == null) return;
+        try
+        {
+            SetStringOnTarget(dst, GetStringFromSource(src, "name") ?? GetStringFromSource(src, "Name"), "name");
+
+            var price = GetIntFromSource(src, "price") ?? GetIntFromSource(src, "Price");
+            SetIntOnTarget(dst, price ?? -1, "price");
+
+            var coords = GetFloatArrayFromSource(src, "coords") ?? GetFloatArrayFromSource(src, "Coords");
+            SetFloatArrayOnTarget(dst, coords, "coords");
+
+            var targetName = GetStringFromSource(src, "targetGameObjectName") ?? GetStringFromSource(src, "target") ?? GetStringFromSource(src, "targetName");
+            SetStringOnTarget(dst, targetName, "targetGameObjectName", "target", "targetName");
+
+            var scene = GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene");
+            SetStringOnTarget(dst, scene, "sceneName", "scene");
+
+            var desc = GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description") ?? GetStringFromSource(src, "descText");
+            SetStringOnTarget(dst, desc, "desc", "description", "descText");
+
+            var visited = GetBoolFromSource(src, "visited") ?? GetBoolFromSource(src, "Visited");
+            SetBoolOnTarget(dst, visited ?? false, "visited", "Visited");
+
+            var variants = GetStringArrayFromSource(src, "variants") ?? GetStringArrayFromSource(src, "Variants");
+            SetStringArrayOnTarget(dst, variants, "variants", "Variants");
+
+            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? GetStringFromSource(src, "LastKnownVariant");
+            SetStringOnTarget(dst, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("MapParsedCityToTarget: failed mapping city '" + GetStringFromSource(src, "name") + "': " + ex);
+        }
+    }
+
+    public static void MapDefaultCityToTarget(object src, object dst)
+    {
+        if (src == null || dst == null) return;
+        try
+        {
+            SetStringOnTarget(dst, GetStringFromSource(src, "name"), "name");
+            SetIntOnTarget(dst, GetIntFromSource(src, "price") ?? -1, "price");
+            SetFloatArrayOnTarget(dst, GetFloatArrayFromSource(src, "coords"), "coords");
+            SetStringOnTarget(dst, GetStringFromSource(src, "targetGameObjectName") ?? GetStringFromSource(src, "target"), "targetGameObjectName", "target", "targetName");
+            SetStringOnTarget(dst, GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene"), "sceneName", "scene");
+            SetStringOnTarget(dst, GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description"), "desc", "description");
+            SetBoolOnTarget(dst, GetBoolFromSource(src, "visited") ?? false, "visited", "Visited");
+            SetStringArrayOnTarget(dst, GetStringArrayFromSource(src, "variants"), "variants", "Variants");
+            SetStringOnTarget(dst, GetStringFromSource(src, "lastKnownVariant"), "lastKnownVariant", "LastKnownVariant");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("MapDefaultCityToTarget: failed mapping default city: " + ex);
+        }
+    }
+
+    private static void SetStringOnTarget(object target, string value, params string[] candidateNames)
+    {
+        if (target == null) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && p.PropertyType == typeof(string))
+                {
+                    p.SetValue(target, value);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && f.FieldType == typeof(string))
+                {
+                    f.SetValue(target, value);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void SetIntOnTarget(object target, int value, params string[] candidateNames)
+    {
+        if (target == null) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && (p.PropertyType == typeof(int) || p.PropertyType == typeof(int?)))
+                {
+                    p.SetValue(target, value);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && (f.FieldType == typeof(int) || f.FieldType == typeof(int?)))
+                {
+                    f.SetValue(target, value);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void SetBoolOnTarget(object target, bool value, params string[] candidateNames)
+    {
+        if (target == null) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && (p.PropertyType == typeof(bool) || p.PropertyType == typeof(bool?)))
+                {
+                    p.SetValue(target, value);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && (f.FieldType == typeof(bool) || f.FieldType == typeof(bool?)))
+                {
+                    f.SetValue(target, value);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    public static string GetStringFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (p != null && p.CanRead && p.PropertyType == typeof(string)) return p.GetValue(src) as string;
+        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (f != null && f.FieldType == typeof(string)) return f.GetValue(src) as string;
+        return null;
+    }
+
+    private static int? GetIntFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (p != null && p.CanRead)
+        {
+            var v = p.GetValue(src);
+            if (v is int i) return i;
+            try { return Convert.ToInt32(v); } catch { }
+        }
+        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (f != null)
+        {
+            var v = f.GetValue(src);
+            if (v is int i2) return i2;
+            try { return Convert.ToInt32(v); } catch { }
+        }
+        return null;
+    }
+
+    private static bool? GetBoolFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (p != null && p.CanRead)
+        {
+            var v = p.GetValue(src);
+            if (v is bool b) return b;
+            if (v != null) { if (bool.TryParse(v.ToString(), out var parsed)) return parsed; }
+        }
+        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        if (f != null)
+        {
+            var v = f.GetValue(src);
+            if (v is bool b2) return b2;
+            if (v != null) { if (bool.TryParse(v.ToString(), out var parsed2)) return parsed2; }
+        }
+        return null;
+    }
+
+    private static float[] GetFloatArrayFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        object val = null;
+        if (p != null && p.CanRead) val = p.GetValue(src);
+        else
+        {
+            var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            if (f != null) val = f.GetValue(src);
+        }
+        if (val == null) return null;
+        if (val is float[] fa) return fa;
+        if (val is IEnumerable e)
+        {
+            var list = new List<float>();
+            foreach (var it in e)
+            {
+                try { list.Add(Convert.ToSingle(it)); } catch { }
+            }
+            if (list.Count > 0) return list.ToArray();
+        }
+        return null;
+    }
+
+    private static string[] GetStringArrayFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        object val = null;
+        if (p != null && p.CanRead) val = p.GetValue(src);
+        else
+        {
+            var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            if (f != null) val = f.GetValue(src);
+        }
+        if (val == null) return null;
+        if (val is string[] sa) return sa;
+        if (val is IEnumerable e)
+        {
+            var list = new List<string>();
+            foreach (var it in e) if (it != null) list.Add(it.ToString());
+            if (list.Count > 0) return list.ToArray();
+        }
+        return null;
+    }
+
+    private static void SetStringArrayOnTarget(object target, string[] arr, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && (p.PropertyType == typeof(string[]) || p.PropertyType.IsAssignableFrom(typeof(IEnumerable<string>))))
+                {
+                    p.SetValue(target, arr);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && (f.FieldType == typeof(string[]) || f.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
+                {
+                    f.SetValue(target, arr);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void SetFloatArrayOnTarget(object target, float[] arr, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && p.PropertyType == typeof(float[]))
+                {
+                    p.SetValue(target, arr);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && f.FieldType == typeof(float[]))
+                {
+                    f.SetValue(target, arr);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    private static void SetStringMember(object target, string value, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && p.PropertyType == typeof(string))
+                {
+                    p.SetValue(target, value);
+                    return;
+                }
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && f.FieldType == typeof(string))
+                {
+                    f.SetValue(target, value);
+                    return;
+                }
+            }
+            catch { }
+        }
+    }
+
+    // -------------------
+    // Utility / filesystem
+    // -------------------
+
+    // Build fallback candidate paths for TravelButton_Cities.json
+    private static List<string> BuildCandidatePaths()
+    {
+        var candidates = new List<string>();
+        try
+        {
+            var pathsType = Type.GetType("BepInEx.Paths, BepInEx");
+            if (pathsType != null)
+            {
+                var prop = pathsType.GetProperty("ConfigPath", BindingFlags.Static | BindingFlags.Public);
+                if (prop != null)
+                {
+                    var cfg = prop.GetValue(null) as string;
+                    if (!string.IsNullOrEmpty(cfg))
+                    {
+                        candidates.Add(Path.Combine(cfg, TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json"));
+                    }
+                }
+            }
+        }
+        catch { }
+
+        try { candidates.Add(Path.GetFullPath(Path.Combine(Application.dataPath, "..", "BepInEx", "config", "TravelButton_Cities.json"))); } catch { }
+        try
+        {
+            var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
+            if (!string.IsNullOrEmpty(asmDir)) candidates.Add(Path.Combine(asmDir, "TravelButton_Cities.json"));
+        }
+        catch { }
+        try { candidates.Add(Path.Combine(Directory.GetCurrentDirectory(), "TravelButton_Cities.json")); } catch { }
+        return candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    // Try to obtain canonical JSON path using TravelButtonPlugin helper first (preferred).
+    private static string TryGetCanonicalCitiesJsonPath()
+    {
+        try
+        {
+            var mi = typeof(TravelButtonPlugin).GetMethod("GetCitiesJsonPath", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            if (mi != null)
+            {
+                var res = mi.Invoke(null, null) as string;
+                if (!string.IsNullOrEmpty(res)) return res;
+            }
+        }
+        catch (Exception ex) { TBLog.Warn("TryGetCanonicalCitiesJsonPath: TravelButton.GetCitiesJsonPath() reflection failed: " + ex.Message); }
+
+        // BepInEx.Paths.ConfigPath
+        try
+        {
+            var pathsType = Type.GetType("BepInEx.Paths, BepInEx");
+            if (pathsType != null)
+            {
+                var prop = pathsType.GetProperty("ConfigPath", BindingFlags.Static | BindingFlags.Public);
+                if (prop != null)
+                {
+                    var cfg = prop.GetValue(null) as string;
+                    if (!string.IsNullOrEmpty(cfg))
+                    {
+                        var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
+                        return Path.Combine(cfg, fileName);
+                    }
+                }
+            }
+        }
+        catch { }
+
+        // Plugin folder
+        try
+        {
+            var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            if (!string.IsNullOrEmpty(asmDir))
+            {
+                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
+                return Path.Combine(asmDir, fileName);
+            }
+        }
+        catch { }
+
+        try
+        {
+            var cwd = Directory.GetCurrentDirectory();
+            if (!string.IsNullOrEmpty(cwd))
+            {
+                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
+                return Path.Combine(cwd, fileName);
+            }
+        }
+        catch { }
+
+        return null;
+    }
+
+    // Return runtime TravelButton.Cities count for logging; uses reflection
+    private static int GetRuntimeCitiesCount()
+    {
+        try
+        {
+            var travelButtonType = typeof(TravelButton);
+            var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+            object val = null;
+            if (field != null) val = field.GetValue(null);
+            else
+            {
+                var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (prop != null) val = prop.GetValue(null, null);
+            }
+
+            if (val is ICollection coll) return coll.Count;
+            if (val is IEnumerable e)
+            {
+                int cnt = 0;
+                foreach (var _ in e) cnt++;
+                return cnt;
+            }
+        }
+        catch { }
+        return -1;
+    }
+
+    // Public wrapper that callers should use
     public static bool TryResolveCityDataFromObject(object cityObj,
                                                     out string sceneName,
                                                     out string targetName,
@@ -465,10 +1405,6 @@ public static class CityMappingHelpers
         return TryResolveCityDataFromObject_Internal(cityObj, out sceneName, out targetName, out coords, out haveCoords, out price);
     }
 
-
-    // Try to resolve sceneName/target/coords/price from the supplied object.
-    // Returns true if at least one of the destination fields (sceneName or coords) was found (or price/target).
-    // Replace the existing TryResolveCityDataFromObject method with this enhanced resolver.
     private static bool TryResolveCityDataFromObject_Internal(object cityObj, out string outSceneName, out string outTargetName, out Vector3 outCoords, out bool outHaveCoords, out int outPrice)
     {
         outSceneName = null;
@@ -755,996 +1691,6 @@ public static class CityMappingHelpers
             catch { }
         }
         return ok;
-    }
-
-    /// <summary>
-    /// Convert List&lt;CityEntry&gt; (parsed JSON) into the runtime collection expected by TravelButton.Cities.
-    /// Returns an object which is typically List&lt;TRuntimeCity&gt; — caller should assign to TravelButton.Cities.
-    /// If conversion cannot be performed it returns the original parsed list as a fallback.
-    /// </summary>
-    // Replace existing ConvertParsedCitiesToRuntime with this implementation.
-    public static object ConvertParsedCitiesToRuntime(List<CityEntry> parsed)
-    {
-        if (parsed == null) return null;
-
-        try
-        {
-            var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            var citiesProp = typeof(TravelButton).GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic) as PropertyInfo;
-            Type citiesType = null;
-
-            if (citiesField != null) citiesType = citiesField.FieldType;
-            else if (citiesProp != null) citiesType = citiesProp.PropertyType;
-
-            if (citiesType != null)
-            {
-                Type elementType = GetElementTypeFromCollectionType(citiesType);
-                if (elementType != null)
-                {
-                    var listType = typeof(List<>).MakeGenericType(elementType);
-                    var listInstance = (IList)Activator.CreateInstance(listType);
-
-                    foreach (var src in parsed)
-                    {
-                        try
-                        {
-                            object dst = null;
-
-                            // First try: create instance with default ctor and map via reflection
-                            try
-                            {
-                                dst = Activator.CreateInstance(elementType);
-                                MapParsedCityToTarget(src, dst);
-                            }
-                            catch
-                            {
-                                dst = null;
-                            }
-
-                            // Second try: JSON roundtrip - serialize the parsed DTO and deserialize into the target element type.
-                            // This works even if the element type has no public default constructor (Json.NET uses constructors/non-public if possible).
-                            if (dst == null)
-                            {
-                                try
-                                {
-                                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(src);
-                                    dst = Newtonsoft.Json.JsonConvert.DeserializeObject(json, elementType);
-                                }
-                                catch (Exception jex)
-                                {
-                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: json roundtrip conversion failed for elementType={elementType}: {jex.Message}");
-                                    dst = null;
-                                }
-                            }
-
-                            // Third try: if still null, try to create an uninitialized object (no ctor) and map fields
-                            if (dst == null)
-                            {
-                                try
-                                {
-                                    var uninit = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(elementType);
-                                    if (uninit != null)
-                                    {
-                                        MapParsedCityToTarget(src, uninit);
-                                        dst = uninit;
-                                    }
-                                }
-                                catch (Exception uex)
-                                {
-                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: GetUninitializedObject failed for {elementType}: {uex.Message}");
-                                }
-                            }
-
-                            // If conversion succeeded, add to listInstance, otherwise fallback to mapping into a CityEntry instance (if elementType is CityEntry)
-                            if (dst != null)
-                            {
-                                listInstance.Add(dst);
-                            }
-                            else
-                            {
-                                // As last resort, try to map into a TravelButtonUI.CityEntry if that is the element type
-                                if (elementType.FullName == typeof(CityEntry).FullName)
-                                {
-                                    listInstance.Add(src);
-                                }
-                                else
-                                {
-                                    TBLog.Warn($"ConvertParsedCitiesToRuntime: unable to convert parsed item to {elementType}; aborting conversion.");
-                                    return null;
-                                }
-                            }
-                        }
-                        catch (Exception exItem)
-                        {
-                            TBLog.Warn("ConvertParsedCitiesToRuntime: failed converting a parsed city entry: " + exItem);
-                        }
-                    }
-
-                    return listInstance;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("CityMappingHelpers.ConvertParsedCitiesToRuntime: reflection-based conversion failed: " + ex);
-        }
-
-        // fallback: return parsed list (List<CityEntry>)
-        return parsed;
-    }
-
-    /// <summary>
-    /// Convert defaults object (e.g., ConfigManager.Default() return) into the runtime collection type.
-    /// Returns an object (List&lt;TRuntimeCity&gt;) or a fallback List&lt;CityEntry&gt; if conversion fails.
-    /// </summary>
-    public static object ConvertConfigManagerDefaultsToRuntime(object configManagerDefaults)
-    {
-        if (configManagerDefaults == null) return null;
-
-        try
-        {
-            var defaultsType = configManagerDefaults.GetType();
-            IEnumerable<object> defaultsCities = null;
-
-            // Try property named "cities"
-            var prop = defaultsType.GetProperty("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (prop != null)
-            {
-                var val = prop.GetValue(configManagerDefaults);
-                if (val is IEnumerable e)
-                {
-                    var list = new List<object>();
-                    foreach (var it in e) list.Add(it);
-                    defaultsCities = list;
-                }
-            }
-            else
-            {
-                // Try field named "cities"
-                var field = defaultsType.GetField("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (field != null)
-                {
-                    var val = field.GetValue(configManagerDefaults);
-                    if (val is IEnumerable e)
-                    {
-                        var list = new List<object>();
-                        foreach (var it in e) list.Add(it);
-                        defaultsCities = list;
-                    }
-                }
-            }
-
-            if (defaultsCities == null)
-            {
-                TBLog.Warn("CityMappingHelpers.ConvertConfigManagerDefaultsToRuntime: could not locate a 'cities' collection on defaults - falling back to empty list.");
-                return new List<CityEntry>();
-            }
-
-            var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            var citiesProp = typeof(TravelButton).GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic) as PropertyInfo;
-            Type citiesType = (citiesField != null) ? citiesField.FieldType : (citiesProp != null ? citiesProp.PropertyType : null);
-
-            if (citiesType != null)
-            {
-                Type elementType = GetElementTypeFromCollectionType(citiesType);
-                if (elementType != null)
-                {
-                    var listType = typeof(List<>).MakeGenericType(elementType);
-                    var listInstance = (IList)Activator.CreateInstance(listType);
-
-                    foreach (var src in defaultsCities)
-                    {
-                        var dst = Activator.CreateInstance(elementType);
-                        MapDefaultCityToTarget(src, dst);
-                        listInstance.Add(dst);
-                    }
-
-                    return listInstance;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("CityMappingHelpers.ConvertConfigManagerDefaultsToRuntime: conversion failed: " + ex);
-        }
-
-        // Fallback: attempt to produce a List<CityEntry> from the defaults object if possible
-        try
-        {
-            var fallback = new List<CityEntry>();
-            var defaultsType2 = configManagerDefaults.GetType();
-            var prop2 = defaultsType2.GetProperty("cities", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (prop2 != null)
-            {
-                var val = prop2.GetValue(configManagerDefaults) as IEnumerable;
-                if (val != null)
-                {
-                    foreach (var item in val)
-                    {
-                        var ce = new CityEntry();
-                        SetStringOnTarget(ce, GetStringFromSource(item, "name"), "name");
-                        SetStringOnTarget(ce, GetStringFromSource(item, "sceneName") ?? GetStringFromSource(item, "scene"), "sceneName");
-                        SetStringOnTarget(ce, GetStringFromSource(item, "targetGameObjectName") ?? GetStringFromSource(item, "target"), "targetGameObjectName");
-                        SetStringOnTarget(ce, GetStringFromSource(item, "desc") ?? GetStringFromSource(item, "description"), "desc");
-                        var price = GetIntFromSource(item, "price");
-                        ce.price = price ?? -1;
-                        var v = GetBoolFromSource(item, "visited");
-                        ce.visited = v ?? false;
-                        var coords = GetFloatArrayFromSource(item, "coords");
-                        ce.coords = coords;
-                        fallback.Add(ce);
-                    }
-                    return fallback;
-                }
-            }
-        }
-        catch { /* ignore fallback errors */ }
-
-        // Last resort, return an empty list
-        return new List<CityEntry>();
-    }
-
-    public static void EnsureCitiesInitializedFromJsonOrDefaults()
-    {
-        try
-        {
-            var jsonPath = TravelButtonPlugin.GetCitiesJsonPath();
-            if (File.Exists(jsonPath))
-            {
-                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loading cities from canonical JSON: {jsonPath}");
-                var list = CityMappingHelpers.ParseCitiesJsonFile(jsonPath);// your ParseCitiesJsonFile / LoadCitiesFromJson implementation
-                if (list != null && list.Count > 0)
-                {
-                    // Convert parsed CityEntry -> runtime City object structure used by TravelButton.Cities
-                    object converted = CityMappingHelpers.ConvertParsedCitiesToRuntime(list);
-                    if (AssignConvertedCitiesToTravelButton(converted))
-                    {
-                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loaded {GetRuntimeCitiesCount()} cities from JSON.");
-                        return;
-                    }
-                    else
-                    {
-                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: converted collection was not assignable to TravelButton.Cities (attempting fallbacks).");
-                    }
-                    TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: loaded {TravelButton.Cities.Count} cities from JSON.");
-                    return;
-                }
-                else
-                {
-                    TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: JSON file present but parsing returned no entries. Falling back to defaults.");
-                }
-            }
-            else
-            {
-                TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON not found; falling back to ConfigManager defaults.");
-            }
-
-            // Fallback: use ConfigManager defaults to seed runtime, and write JSON only if missing.
-            var defaults = ConfigManager.Default(); // existing canonical source
-            object convertedDefaults = CityMappingHelpers.ConvertConfigManagerDefaultsToRuntime(defaults);
-            if (AssignConvertedCitiesToTravelButton(convertedDefaults))
-            {
-                TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: populated TravelButton.Cities from ConfigManager defaults (count={GetRuntimeCitiesCount()})");
-            }
-            else
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to assign ConfigManager defaults to TravelButton.Cities via reflection.");
-                // final fallback: if TravelButton.Cities is of type List<CityEntry>, we can assign fallback directly:
-                TryAssignFallbackListOfCityEntry(convertedDefaults);
-            }
-            TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: populated TravelButton.Cities from ConfigManager defaults (count={TravelButton.Cities?.Count ?? 0})");
-
-            // Write canonical JSON only if it does not exist
-            try
-            {
-                try
-                {
-                    // Build the JsonTravelConfig we expect to persist
-                    var jsonDefaults = JsonTravelConfig.Default();
-                    int mappedCount = jsonDefaults?.cities?.Count ?? 0;
-                    TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced {mappedCount} entries.");
-
-                    // Write a debug copy so we can inspect what's produced independent of canonical persistence
-                    try
-                    {
-                        var debugPath = Path.Combine(Application.dataPath ?? ".", "..", "TravelButton_Cities_debug.json");
-                        jsonDefaults.SaveToJson(Path.GetFullPath(debugPath));
-                        TBLog.Info($"EnsureCitiesInitializedFromJsonOrDefaults: wrote debug JSON to {Path.GetFullPath(debugPath)}");
-                    }
-                    catch (Exception dbgEx)
-                    {
-                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to write debug JSON: " + dbgEx);
-                    }
-
-                    // Persist canonical JSON only if mapping produced one or more cities
-                    if (mappedCount > 0)
-                    {
-                        if (!File.Exists(jsonPath))
-                        {
-                            TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON missing -> persisting initial JSON from defaults.");
-                            // Prefer to persist using JsonTravelConfig directly to avoid type/shape mismatches
-                            try
-                            {
-                                jsonDefaults.SaveToJson(jsonPath);
-                                TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: persisted canonical JSON from JsonTravelConfig.Default().");
-                            }
-                            catch (Exception pex)
-                            {
-                                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to persist canonical JSON: " + pex);
-                            }
-                        }
-                        else TBLog.Info("EnsureCitiesInitializedFromJsonOrDefaults: canonical JSON already exists -> not overwriting.");
-                    }
-                    else
-                    {
-                        TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: JsonTravelConfig.Default() produced 0 entries; skipping canonical JSON write.");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: error in guarded persist logic: " + ex);
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: failed to conditionally persist initial JSON: " + ex);
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("EnsureCitiesInitializedFromJsonOrDefaults: unexpected error: " + ex);
-        }
-    }
-
-    // Attempt to assign the converted collection object into TravelButton.Cities (static field or property).
-    // Returns true if assignment succeeded.
-    private static bool AssignConvertedCitiesToTravelButton(object converted)
-    {
-        if (converted == null) return false;
-
-        var travelButtonType = typeof(TravelButton);
-
-        // Try static field first
-        var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-        if (field != null)
-        {
-            if (field.FieldType.IsAssignableFrom(converted.GetType()))
-            {
-                field.SetValue(null, converted);
-                return true;
-            }
-
-            // If converted is IEnumerable of compatible element type, attempt to copy elements into a new List<T> of the field's element type
-            if (TryBuildAndAssignCollectionFromEnumerable(converted as System.Collections.IEnumerable, field.FieldType, out object built))
-            {
-                field.SetValue(null, built);
-                return true;
-            }
-
-            TBLog.Warn($"AssignConvertedCitiesToTravelButton: field 'Cities' exists but type '{converted.GetType()}' is not assignable to '{field.FieldType}'.");
-            return false;
-        }
-
-        // Try static property next
-        var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-        if (prop != null && prop.CanWrite)
-        {
-            if (prop.PropertyType.IsAssignableFrom(converted.GetType()))
-            {
-                prop.SetValue(null, converted, null);
-                return true;
-            }
-
-            if (TryBuildAndAssignCollectionFromEnumerable(converted as System.Collections.IEnumerable, prop.PropertyType, out object built))
-            {
-                prop.SetValue(null, built, null);
-                return true;
-            }
-
-            TBLog.Warn($"AssignConvertedCitiesToTravelButton: property 'Cities' exists but type '{converted.GetType()}' is not assignable to '{prop.PropertyType}'.");
-            return false;
-        }
-
-        TBLog.Warn("AssignConvertedCitiesToTravelButton: no static field/property named 'Cities' found on TravelButton.");
-        return false;
-    }
-
-    // Try to create a collection of targetCollectionType (e.g. List<TargetElement>) and copy elements from source enumerable.
-    // Returns built object in 'built' and true on success. Otherwise false.
-    private static bool TryBuildAndAssignCollectionFromEnumerable(System.Collections.IEnumerable sourceEnum, Type targetCollectionType, out object built)
-    {
-        built = null;
-        if (sourceEnum == null || targetCollectionType == null) return false;
-
-        // Determine target element type (List<T>, IList<T>, IEnumerable<T>, or T[])
-        Type elementType = GetElementTypeFromCollectionType(targetCollectionType);
-        if (elementType == null) return false;
-
-        try
-        {
-            var listType = typeof(List<>).MakeGenericType(elementType);
-            var listInstance = (System.Collections.IList)Activator.CreateInstance(listType);
-
-            foreach (var item in sourceEnum)
-            {
-                // If item already of elementType assign directly, else try to map via CityMappingHelpers.MapParsedCityToTarget_Public if needed
-                if (item == null)
-                {
-                    listInstance.Add(null);
-                    continue;
-                }
-
-                if (elementType.IsAssignableFrom(item.GetType()))
-                {
-                    listInstance.Add(item);
-                }
-                else
-                {
-                    // If source items are CityEntry DTOs, use CityMappingHelpers to create target element instances
-                    if (item is CityEntry ce)
-                    {
-                        var dst = Activator.CreateInstance(elementType);
-                        MapParsedCityToTarget(ce, dst);
-                        listInstance.Add(dst);
-                    }
-                    else
-                    {
-                        // Attempt to convert by serializing+deserializing via JSON as last resort
-                        try
-                        {
-                            var json = Newtonsoft.Json.JsonConvert.SerializeObject(item);
-                            var dst = Newtonsoft.Json.JsonConvert.DeserializeObject(json, elementType);
-                            listInstance.Add(dst);
-                        }
-                        catch
-                        {
-                            TBLog.Warn($"TryBuildAndAssignCollectionFromEnumerable: unable to convert item of type {item.GetType()} to {elementType}");
-                            return false;
-                        }
-                    }
-                }
-            }
-
-            // If destination expects an array, convert List<T> to T[]
-            if (targetCollectionType.IsArray)
-            {
-                var toArrayMethod = listType.GetMethod("ToArray");
-                var arr = toArrayMethod.Invoke(listInstance, null);
-                built = arr;
-            }
-            else if (targetCollectionType.IsAssignableFrom(listInstance.GetType()))
-            {
-                built = listInstance;
-            }
-            else
-            {
-                // If targetCollectionType is another assignable generic, try to convert via Json roundtrip
-                try
-                {
-                    var json = Newtonsoft.Json.JsonConvert.SerializeObject(listInstance);
-                    built = Newtonsoft.Json.JsonConvert.DeserializeObject(json, targetCollectionType);
-                }
-                catch
-                {
-                    TBLog.Warn($"TryBuildAndAssignCollectionFromEnumerable: cannot create target collection of type {targetCollectionType}");
-                    return false;
-                }
-            }
-
-            return built != null;
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryBuildAndAssignCollectionFromEnumerable: exception: " + ex);
-            return false;
-        }
-    }
-
-    // Helper to try assigning fallback when convertedDefaults was a List<CityEntry> and TravelButton.Cities expecting List<CityEntry>
-    private static void TryAssignFallbackListOfCityEntry(object convertedDefaults)
-    {
-        try
-        {
-            if (convertedDefaults is List<CityEntry> asList)
-            {
-                var travelButtonType = typeof(TravelButton);
-                var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                if (field != null && field.FieldType.IsAssignableFrom(typeof(List<CityEntry>)))
-                {
-                    field.SetValue(null, asList);
-                    TBLog.Info("Assigned List<CityEntry> fallback to TravelButton.Cities.");
-                    return;
-                }
-                var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop != null && prop.CanWrite && prop.PropertyType.IsAssignableFrom(typeof(List<CityEntry>)))
-                {
-                    prop.SetValue(null, asList, null);
-                    TBLog.Info("Assigned List<CityEntry> fallback to TravelButton.Cities (prop).");
-                    return;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryAssignFallbackListOfCityEntry: " + ex);
-        }
-    }
-
-    // Return runtime TravelButton.Cities count for logging; uses reflection
-    private static int GetRuntimeCitiesCount()
-    {
-        try
-        {
-            var travelButtonType = typeof(TravelButton);
-            var field = travelButtonType.GetField("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-            object val = null;
-            if (field != null) val = field.GetValue(null);
-            else
-            {
-                var prop = travelButtonType.GetProperty("Cities", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
-                if (prop != null) val = prop.GetValue(null, null);
-            }
-
-            if (val is System.Collections.ICollection coll) return coll.Count;
-            if (val is System.Collections.IEnumerable e)
-            {
-                int cnt = 0;
-                foreach (var _ in e) cnt++;
-                return cnt;
-            }
-        }
-        catch { }
-        return -1;
-    }
-
-    // Helper: try common ways to obtain the canonical cities JSON path.
-    // Returns the first plausible candidate path or null if none found.
-    // This consolidates the earlier reflection attempts and uses correct BindingFlags.
-    private static string TryGetCanonicalCitiesJsonPath()
-    {
-        // 1) Try TravelButton.GetCitiesJsonPath() if present (static method)
-        try
-        {
-            var tbType = typeof(TravelButton);
-            if (tbType != null)
-            {
-                var mi = tbType.GetMethod("GetCitiesJsonPath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
-                if (mi != null)
-                {
-                    var res = mi.Invoke(null, null) as string;
-                    if (!string.IsNullOrEmpty(res)) return res;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryGetCanonicalCitiesJsonPath: TravelButton.GetCitiesJsonPath() reflection failed: " + ex.Message);
-        }
-
-        // 2) Try BepInEx.Paths.ConfigPath (public static property) via reflection
-        try
-        {
-            var pathsType = Type.GetType("BepInEx.Paths, BepInEx");
-            if (pathsType != null)
-            {
-                var prop = pathsType.GetProperty("ConfigPath", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-                if (prop != null)
-                {
-                    var cfg = prop.GetValue(null) as string;
-                    if (!string.IsNullOrEmpty(cfg))
-                    {
-                        string fileName = null;
-                        try
-                        {
-                            // Prefer the canonical filename constant if available
-                            fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
-                        }
-                        catch { /* ignore */ }
-
-                        if (string.IsNullOrEmpty(fileName)) fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
-                        var candidate = Path.Combine(cfg, fileName);
-                        if (!string.IsNullOrEmpty(candidate)) return candidate;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("TryGetCanonicalCitiesJsonPath: BepInEx.Paths.ConfigPath reflection failed: " + ex.Message);
-        }
-
-        // 3) Try plugin assembly directory
-        try
-        {
-            var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-            if (!string.IsNullOrEmpty(asmDir))
-            {
-                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
-                try
-                {
-                    var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    if (f != null) fileName = TravelButtonPlugin.CitiesJsonFileName;
-                }
-                catch { }
-                var candidate = Path.Combine(asmDir, fileName);
-                return candidate;
-            }
-        }
-        catch { /* ignore */ }
-
-        // 4) Fallback: current working directory
-        try
-        {
-            var cwd = Directory.GetCurrentDirectory();
-            if (!string.IsNullOrEmpty(cwd))
-            {
-                var fileName = TravelButtonPlugin.CitiesJsonFileName ?? "TravelButton_Cities.json";
-                try
-                {
-                    var f = typeof(TravelButtonPlugin).GetField("CitiesJsonFileName", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                    if (f != null) fileName = TravelButtonPlugin.CitiesJsonFileName;
-                }
-                catch { }
-                return Path.Combine(cwd, fileName);
-            }
-        }
-        catch { }
-
-        return null;
-    }
-
-    // ----------------------
-    // Reflection mapping helpers
-    // ----------------------
-
-    private static Type GetElementTypeFromCollectionType(Type collectionType)
-    {
-        if (collectionType.IsArray) return collectionType.GetElementType();
-
-        if (collectionType.IsGenericType)
-        {
-            var genArgs = collectionType.GetGenericArguments();
-            if (genArgs != null && genArgs.Length == 1) return genArgs[0];
-        }
-
-        var iface = collectionType.GetInterfaces()
-                    .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>));
-        if (iface != null) return iface.GetGenericArguments()[0];
-
-        return null;
-    }
-
-    // Map parsed CityEntry (or any parsed DTO) -> target runtime instance (via reflection)
-    public static void MapParsedCityToTarget(object src, object dst)
-    {
-        if (src == null || dst == null) return;
-        try
-        {
-            // name
-            SetStringOnTarget(dst, GetStringFromSource(src, "name") ?? GetStringFromSource(src, "Name"), "name");
-
-            // price (int? in source)
-            var price = GetIntFromSource(src, "price") ?? GetIntFromSource(src, "Price");
-            SetIntOnTarget(dst, price ?? -1, "price");
-
-            // coords (float[] or enumerable)
-            var coords = GetFloatArrayFromSource(src, "coords") ?? GetFloatArrayFromSource(src, "Coords");
-            SetFloatArrayOnTarget(dst, coords, "coords");
-
-            // targetGameObjectName / target aliases
-            var targetName = GetStringFromSource(src, "targetGameObjectName") ?? GetStringFromSource(src, "target") ?? GetStringFromSource(src, "targetName");
-            SetStringOnTarget(dst, targetName, "targetGameObjectName", "target", "targetName");
-
-            // sceneName / scene
-            var scene = GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene");
-            SetStringOnTarget(dst, scene, "sceneName", "scene");
-
-            // desc / description / descText
-            var desc = GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description") ?? GetStringFromSource(src, "descText");
-            SetStringOnTarget(dst, desc, "desc", "description", "descText");
-
-            // visited flag
-            var visited = GetBoolFromSource(src, "visited") ?? GetBoolFromSource(src, "Visited");
-            SetBoolOnTarget(dst, visited ?? false, "visited", "Visited");
-            
-            // variants array
-            var variants = GetStringArrayFromSource(src, "variants") ?? GetStringArrayFromSource(src, "Variants");
-            SetStringArrayOnTarget(dst, variants, "variants", "Variants");
-            
-            // lastKnownVariant
-            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? GetStringFromSource(src, "LastKnownVariant");
-            SetStringOnTarget(dst, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("CityMappingHelpers.MapParsedCityToTarget: failed mapping city '" + GetStringFromSource(src, "name") + "': " + ex);
-        }
-    }
-
-    public static void MapDefaultCityToTarget(object src, object dst)
-    {
-        if (src == null || dst == null) return;
-        try
-        {
-            SetStringOnTarget(dst, GetStringFromSource(src, "name"), "name");
-            SetIntOnTarget(dst, GetIntFromSource(src, "price") ?? -1, "price");
-            SetFloatArrayOnTarget(dst, GetFloatArrayFromSource(src, "coords"), "coords");
-            SetStringOnTarget(dst, GetStringFromSource(src, "targetGameObjectName") ?? GetStringFromSource(src, "target"), "targetGameObjectName", "target", "targetName");
-            SetStringOnTarget(dst, GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene"), "sceneName", "scene");
-            SetStringOnTarget(dst, GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description"), "desc", "description");
-            SetBoolOnTarget(dst, GetBoolFromSource(src, "visited") ?? false, "visited", "Visited");
-            SetStringArrayOnTarget(dst, GetStringArrayFromSource(src, "variants"), "variants", "Variants");
-            SetStringOnTarget(dst, GetStringFromSource(src, "lastKnownVariant"), "lastKnownVariant", "LastKnownVariant");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("CityMappingHelpers.MapDefaultCityToTarget: failed mapping default city: " + ex);
-        }
-    }
-
-    private static void SetStringOnTarget(object target, string value, params string[] candidateNames)
-    {
-        if (target == null) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && p.PropertyType == typeof(string))
-                {
-                    p.SetValue(target, value);
-                    return;
-                }
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && f.FieldType == typeof(string))
-                {
-                    f.SetValue(target, value);
-                    return;
-                }
-            }
-            catch { }
-        }
-    }
-
-    private static void SetIntOnTarget(object target, int value, params string[] candidateNames)
-    {
-        if (target == null) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && (p.PropertyType == typeof(int) || p.PropertyType == typeof(int?)))
-                {
-                    p.SetValue(target, value);
-                    return;
-                }
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && (f.FieldType == typeof(int) || f.FieldType == typeof(int?)))
-                {
-                    f.SetValue(target, value);
-                    return;
-                }
-            }
-            catch { }
-        }
-    }
-
-    private static void SetBoolOnTarget(object target, bool value, params string[] candidateNames)
-    {
-        if (target == null) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && (p.PropertyType == typeof(bool) || p.PropertyType == typeof(bool?)))
-                {
-                    p.SetValue(target, value);
-                    return;
-                }
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && (f.FieldType == typeof(bool) || f.FieldType == typeof(bool?)))
-                {
-                    f.SetValue(target, value);
-                    return;
-                }
-            }
-            catch { }
-        }
-    }
-
-    public static string GetStringFromSource(object src, string propName)
-    {
-        if (src == null) return null;
-        var t = src.GetType();
-        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (p != null && p.CanRead && p.PropertyType == typeof(string)) return p.GetValue(src) as string;
-        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (f != null && f.FieldType == typeof(string)) return f.GetValue(src) as string;
-        return null;
-    }
-
-    private static int? GetIntFromSource(object src, string propName)
-    {
-        if (src == null) return null;
-        var t = src.GetType();
-        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (p != null && p.CanRead)
-        {
-            var v = p.GetValue(src);
-            if (v is int i) return i;
-            try { return Convert.ToInt32(v); } catch { }
-        }
-        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (f != null)
-        {
-            var v = f.GetValue(src);
-            if (v is int i2) return i2;
-            try { return Convert.ToInt32(v); } catch { }
-        }
-        return null;
-    }
-
-    private static bool? GetBoolFromSource(object src, string propName)
-    {
-        if (src == null) return null;
-        var t = src.GetType();
-        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (p != null && p.CanRead)
-        {
-            var v = p.GetValue(src);
-            if (v is bool b) return b;
-            if (v != null) { if (bool.TryParse(v.ToString(), out var parsed)) return parsed; }
-        }
-        var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        if (f != null)
-        {
-            var v = f.GetValue(src);
-            if (v is bool b2) return b2;
-            if (v != null) { if (bool.TryParse(v.ToString(), out var parsed2)) return parsed2; }
-        }
-        return null;
-    }
-
-    private static float[] GetFloatArrayFromSource(object src, string propName)
-    {
-        if (src == null) return null;
-        var t = src.GetType();
-        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        object val = null;
-        if (p != null && p.CanRead) val = p.GetValue(src);
-        else
-        {
-            var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-            if (f != null) val = f.GetValue(src);
-        }
-        if (val == null) return null;
-        if (val is float[] fa) return fa;
-        if (val is IEnumerable e)
-        {
-            var list = new List<float>();
-            foreach (var it in e)
-            {
-                try
-                {
-                    list.Add(Convert.ToSingle(it));
-                }
-                catch { }
-            }
-            if (list.Count > 0) return list.ToArray();
-        }
-        return null;
-    }
-
-    private static string[] GetStringArrayFromSource(object src, string propName)
-    {
-        if (src == null) return null;
-        var t = src.GetType();
-        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-        object val = null;
-        if (p != null && p.CanRead) val = p.GetValue(src);
-        else
-        {
-            var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-            if (f != null) val = f.GetValue(src);
-        }
-        if (val == null) return null;
-        if (val is string[] sa) return sa;
-        if (val is IEnumerable e)
-        {
-            var list = new List<string>();
-            foreach (var it in e)
-            {
-                if (it != null)
-                    list.Add(it.ToString());
-            }
-            if (list.Count > 0) return list.ToArray();
-        }
-        return null;
-    }
-
-
-    private static void SetStringMember(object target, string value, params string[] candidateNames)
-    {
-        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && p.PropertyType == typeof(string))
-                {
-                    p.SetValue(target, value);
-                    return;
-                }
-
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && f.FieldType == typeof(string))
-                {
-                    f.SetValue(target, value);
-                    return;
-                }
-            }
-            catch { /* swallow - try next candidate */ }
-        }
-    }
-
-    // Optionally helper for float[] coords if CityEntry uses different member name
-    private static void SetFloatArrayOnTarget(object target, float[] arr, params string[] candidateNames)
-    {
-        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && p.PropertyType == typeof(float[]))
-                {
-                    p.SetValue(target, arr);
-                    return;
-                }
-
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && f.FieldType == typeof(float[]))
-                {
-                    f.SetValue(target, arr);
-                    return;
-                }
-            }
-            catch { /* swallow - try next candidate */ }
-        }
-    }
-
-    private static void SetStringArrayOnTarget(object target, string[] arr, params string[] candidateNames)
-    {
-        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
-        var t = target.GetType();
-        foreach (var name in candidateNames)
-        {
-            try
-            {
-                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (p != null && p.CanWrite && (p.PropertyType == typeof(string[]) || p.PropertyType.IsAssignableFrom(typeof(IEnumerable<string>))))
-                {
-                    p.SetValue(target, arr);
-                    return;
-                }
-
-                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
-                if (f != null && (f.FieldType == typeof(string[]) || f.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
-                {
-                    f.SetValue(target, arr);
-                    return;
-                }
-            }
-            catch { /* swallow - try next candidate */ }
-        }
     }
 
 }

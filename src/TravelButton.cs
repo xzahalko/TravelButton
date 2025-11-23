@@ -3609,7 +3609,6 @@ public static class TravelButton
         if (cfgInstance == null) return;
         try
         {
-            // top-level mappings
             try
             {
                 var enabledMember = cfgInstance.GetType().GetField("enabled") ?? (MemberInfo)cfgInstance.GetType().GetProperty("enabled");
@@ -3629,7 +3628,6 @@ public static class TravelButton
                 TBLog.Warn("MapConfigInstanceToLocal: top-level map failed: " + ex.Message);
             }
 
-            // cities
             try
             {
                 Cities = new List<City>();
@@ -3659,7 +3657,6 @@ public static class TravelButton
                     }
                     else
                     {
-                        // try enumerator approach for generic IDictionary<,>
                         var getEnum = citiesObj.GetType().GetMethod("GetEnumerator");
                         if (getEnum != null)
                         {
@@ -3700,42 +3697,266 @@ public static class TravelButton
         }
     }
 
+    // Corrected MapSingleCityFromObject implementation that calls CityMappingHelpers.TryResolveCityDataFromObject
+    // Merge/replace this method in your TravelButton.cs class.
+
     private static City MapSingleCityFromObject(string cname, object cityCfgObj)
     {
         try
         {
-            var city = new City(cname);
-
-            var enabledMember = cityCfgObj.GetType().GetField("enabled") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("enabled");
-            if (enabledMember is FieldInfo fe) city.enabled = SafeGetBool(fe.GetValue(cityCfgObj));
-            else if (enabledMember is PropertyInfo pe) city.enabled = SafeGetBool(pe.GetValue(cityCfgObj));
-
-            var priceMember = cityCfgObj.GetType().GetField("price") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("price");
-            if (priceMember is FieldInfo fprice) city.price = SafeGetNullableInt(fprice.GetValue(cityCfgObj));
-            else if (priceMember is PropertyInfo pprice) city.price = SafeGetNullableInt(pprice.GetValue(cityCfgObj));
-
-            var coordsMember = cityCfgObj.GetType().GetField("coords") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("coords");
-            object coordsVal = coordsMember is FieldInfo fc ? fc.GetValue(cityCfgObj) : coordsMember is PropertyInfo pc ? pc.GetValue(cityCfgObj) : null;
-            if (coordsVal != null)
+            if (string.IsNullOrEmpty(cname) || cityCfgObj == null)
             {
-                var list = coordsVal as System.Collections.IList;
-                if (list != null && list.Count >= 3)
-                {
-                    try
-                    {
-                        city.coords = new float[3] { Convert.ToSingle(list[0]), Convert.ToSingle(list[1]), Convert.ToSingle(list[2]) };
-                    }
-                    catch { city.coords = null; }
-                }
+                TBLog.Info($"MapSingleCityFromObject: skipping empty cname or null cityCfgObj (cname='{cname}').");
+                return null;
             }
 
-            var tgnMember = cityCfgObj.GetType().GetField("targetGameObjectName") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("targetGameObjectName");
-            if (tgnMember is FieldInfo ftgn) city.targetGameObjectName = SafeGetString(ftgn.GetValue(cityCfgObj));
-            else if (tgnMember is PropertyInfo ptgn) city.targetGameObjectName = SafeGetString(ptgn.GetValue(cityCfgObj));
+            TBLog.Info($"MapSingleCityFromObject: mapping city '{cname}' from object type '{cityCfgObj.GetType().FullName}'.");
 
-            var sceneMember = cityCfgObj.GetType().GetField("sceneName") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("sceneName");
-            if (sceneMember is FieldInfo fsc) city.sceneName = SafeGetString(fsc.GetValue(cityCfgObj));
-            else if (sceneMember is PropertyInfo psc) city.sceneName = SafeGetString(psc.GetValue(cityCfgObj));
+            var city = new City(cname);
+
+            // enabled
+            try
+            {
+                var enabledMember = cityCfgObj.GetType().GetField("enabled") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("enabled");
+                if (enabledMember is FieldInfo fe) city.enabled = SafeGetBool(fe.GetValue(cityCfgObj));
+                else if (enabledMember is PropertyInfo pe) city.enabled = SafeGetBool(pe.GetValue(cityCfgObj));
+                TBLog.Info($"MapSingleCityFromObject: '{cname}' enabled={city.enabled} (from reflected field/property).");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' enabled read failed: {ex.Message}");
+            }
+
+            // price (from reflected object)
+            try
+            {
+                var priceMember = cityCfgObj.GetType().GetField("price") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("price");
+                if (priceMember is FieldInfo fprice) city.price = SafeGetNullableInt(fprice.GetValue(cityCfgObj));
+                else if (priceMember is PropertyInfo pprice) city.price = SafeGetNullableInt(pprice.GetValue(cityCfgObj));
+                TBLog.Info($"MapSingleCityFromObject: '{cname}' price={(city.price.HasValue ? city.price.Value.ToString() : "null")} (from reflected field/property).");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' price read failed: {ex.Message}");
+            }
+
+            // Try centralized resolver implemented in CityMappingHelpers
+            try
+            {
+                if (CityMappingHelpers.TryResolveCityDataFromObject(
+                    cityCfgObj,
+                    out string resolvedSceneName,
+                    out string resolvedTargetGameObjectName,
+                    out UnityEngine.Vector3 resolvedCoordsVec,
+                    out bool resolvedHaveCoords,
+                    out int resolvedPrice))
+                {
+                    TBLog.Info($"MapSingleCityFromObject: CityMappingHelpers resolved for '{cname}': scene='{resolvedSceneName}', target='{resolvedTargetGameObjectName}', haveCoords={resolvedHaveCoords}, price={resolvedPrice}");
+                    if (resolvedHaveCoords)
+                    {
+                        city.coords = new float[] { resolvedCoordsVec.x, resolvedCoordsVec.y, resolvedCoordsVec.z };
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' coords set from resolver = [{city.coords[0]}, {city.coords[1]}, {city.coords[2]}].");
+                    }
+
+                    if (!string.IsNullOrEmpty(resolvedTargetGameObjectName))
+                    {
+                        city.targetGameObjectName = resolvedTargetGameObjectName;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' targetGameObjectName set from resolver = '{city.targetGameObjectName}'.");
+                    }
+
+                    if (!string.IsNullOrEmpty(resolvedSceneName))
+                    {
+                        city.sceneName = resolvedSceneName;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' sceneName set from resolver = '{city.sceneName}'.");
+                    }
+
+                    // Only override price if helper returned a meaningful non-zero value
+                    if (resolvedPrice != 0)
+                    {
+                        city.price = resolvedPrice;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' price overridden from resolver = {resolvedPrice}.");
+                    }
+                }
+                else
+                {
+                    TBLog.Info($"MapSingleCityFromObject: CityMappingHelpers.TryResolveCityDataFromObject returned false for '{cname}'.");
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("MapSingleCityFromObject: CityMappingHelpers.TryResolveCityDataFromObject threw: " + ex.Message);
+            }
+
+            // Defensive fallbacks: if any key piece of data is still missing, try to read it individually
+            try
+            {
+                if (city.coords == null)
+                {
+                    var coordsMember = cityCfgObj.GetType().GetField("coords") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("coords");
+                    object coordsVal = coordsMember is FieldInfo fc ? fc.GetValue(cityCfgObj) : coordsMember is PropertyInfo pc ? pc.GetValue(cityCfgObj) : null;
+                    if (coordsVal != null)
+                    {
+                        var list = coordsVal as System.Collections.IList;
+                        if (list != null && list.Count >= 3)
+                        {
+                            try
+                            {
+                                city.coords = new float[3] { Convert.ToSingle(list[0]), Convert.ToSingle(list[1]), Convert.ToSingle(list[2]) };
+                                TBLog.Info($"MapSingleCityFromObject: '{cname}' coords set from coords field/list = [{city.coords[0]}, {city.coords[1]}, {city.coords[2]}].");
+                            }
+                            catch (Exception ex)
+                            {
+                                city.coords = null;
+                                TBLog.Warn($"MapSingleCityFromObject: '{cname}' coords conversion failed: {ex.Message}");
+                            }
+                        }
+                        else if (coordsVal is float[] farr && farr.Length >= 3)
+                        {
+                            city.coords = new float[3] { farr[0], farr[1], farr[2] };
+                            TBLog.Info($"MapSingleCityFromObject: '{cname}' coords set from float[] = [{city.coords[0]}, {city.coords[1]}, {city.coords[2]}].");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' coords fallback failed: {ex.Message}");
+            }
+
+            try
+            {
+                if (string.IsNullOrEmpty(city.targetGameObjectName))
+                {
+                    var tgnMember = cityCfgObj.GetType().GetField("targetGameObjectName") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("targetGameObjectName");
+                    object tgnVal = tgnMember is FieldInfo ftgn ? ftgn.GetValue(cityCfgObj) : tgnMember is PropertyInfo ptgn ? ptgn.GetValue(cityCfgObj) : null;
+                    var tgnStr = SafeGetString(tgnVal);
+                    if (!string.IsNullOrEmpty(tgnStr))
+                    {
+                        city.targetGameObjectName = tgnStr;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' targetGameObjectName set from reflected field/property = '{city.targetGameObjectName}'.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' targetGameObjectName fallback failed: {ex.Message}");
+            }
+
+            try
+            {
+                if (string.IsNullOrEmpty(city.sceneName))
+                {
+                    var sceneMember = cityCfgObj.GetType().GetField("sceneName") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("sceneName");
+                    object sceneVal = sceneMember is FieldInfo fsc ? fsc.GetValue(cityCfgObj) : sceneMember is PropertyInfo psc ? psc.GetValue(cityCfgObj) : null;
+                    var s = SafeGetString(sceneVal);
+                    if (!string.IsNullOrEmpty(s))
+                    {
+                        city.sceneName = s;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' sceneName set from reflected field/property = '{city.sceneName}'.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' sceneName fallback failed: {ex.Message}");
+            }
+
+            // Variants and lastKnownVariant handling: check multiple possible fields
+            try
+            {
+                bool variantsPopulated = false;
+
+                // 1) try 'variants' field/property (array or list)
+                var varMember = cityCfgObj.GetType().GetField("variants") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("variants");
+                object varVal = varMember is FieldInfo fv ? fv.GetValue(cityCfgObj) : varMember is PropertyInfo pv ? pv.GetValue(cityCfgObj) : null;
+                if (varVal != null)
+                {
+                    if (varVal is string[] sarr && sarr.Length > 0)
+                    {
+                        city.variants = sarr;
+                        variantsPopulated = true;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from 'variants' string[] (count={sarr.Length}).");
+                    }
+                    else if (varVal is System.Collections.IList vlist)
+                    {
+                        var list = new List<string>();
+                        foreach (var item in vlist) { var ss = SafeGetString(item); if (!string.IsNullOrEmpty(ss)) list.Add(ss); }
+                        if (list.Count > 0)
+                        {
+                            city.variants = list.ToArray();
+                            variantsPopulated = true;
+                            TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from 'variants' IList (count={list.Count}).");
+                        }
+                    }
+                    else
+                    {
+                        var single = SafeGetString(varVal);
+                        if (!string.IsNullOrEmpty(single))
+                        {
+                            city.variants = new string[] { single };
+                            variantsPopulated = true;
+                            TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from single 'variants' value = '{single}'.");
+                        }
+                    }
+                }
+
+                // 2) try separate variant names if variants still empty (variantNormalName / variantDestroyedName)
+                if (!variantsPopulated)
+                {
+                    var normal = SafeGetString(cityCfgObj.GetType().GetField("variantNormalName")?.GetValue(cityCfgObj) ?? cityCfgObj.GetType().GetProperty("variantNormalName")?.GetValue(cityCfgObj));
+                    var destroyed = SafeGetString(cityCfgObj.GetType().GetField("variantDestroyedName")?.GetValue(cityCfgObj) ?? cityCfgObj.GetType().GetProperty("variantDestroyedName")?.GetValue(cityCfgObj));
+                    var vt = new List<string>();
+                    if (!string.IsNullOrEmpty(normal)) vt.Add(normal);
+                    if (!string.IsNullOrEmpty(destroyed)) vt.Add(destroyed);
+                    if (vt.Count > 0)
+                    {
+                        city.variants = vt.ToArray();
+                        variantsPopulated = true;
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' variants assembled from variantNormalName/variantDestroyedName: [{string.Join(", ", city.variants)}].");
+                    }
+                }
+
+                // 3) lastKnownVariant
+                if (string.IsNullOrEmpty(city.lastKnownVariant))
+                {
+                    // Prefer 'lastKnownVariant' field/property
+                    var lastVarMember = cityCfgObj.GetType().GetField("lastKnownVariant") ?? (MemberInfo)cityCfgObj.GetType().GetProperty("lastKnownVariant");
+                    if (lastVarMember != null)
+                    {
+                        object lastVal = lastVarMember is FieldInfo fl ? fl.GetValue(cityCfgObj) : lastVarMember is PropertyInfo pl ? pl.GetValue(cityCfgObj) : null;
+                        var sv = SafeGetString(lastVal);
+                        if (!string.IsNullOrEmpty(sv))
+                        {
+                            city.lastKnownVariant = sv;
+                            TBLog.Info($"MapSingleCityFromObject: '{cname}' lastKnownVariant set from reflected field/property = '{city.lastKnownVariant}'.");
+                        }
+                    }
+
+                    // If still empty, try to infer from variantNormalName
+                    if (string.IsNullOrEmpty(city.lastKnownVariant))
+                    {
+                        var inferred = SafeGetString(cityCfgObj.GetType().GetField("variantNormalName")?.GetValue(cityCfgObj) ?? cityCfgObj.GetType().GetProperty("variantNormalName")?.GetValue(cityCfgObj));
+                        if (!string.IsNullOrEmpty(inferred))
+                        {
+                            city.lastKnownVariant = inferred;
+                            TBLog.Info($"MapSingleCityFromObject: '{cname}' lastKnownVariant inferred from variantNormalName = '{city.lastKnownVariant}'.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"MapSingleCityFromObject: '{cname}' variants/lastKnownVariant handling failed: {ex.Message}");
+            }
+
+            // Final debug dump for this city mapping
+            try
+            {
+                string coordsStr = city.coords != null ? string.Join(", ", city.coords) : "null";
+                string variantsStr = city.variants != null ? ("[" + string.Join(", ", city.variants) + "]") : "null";
+                TBLog.Info($"MapSingleCityFromObject: mapped city '{cname}' => scene='{city.sceneName ?? ""}', coords=[{coordsStr}], target='{city.targetGameObjectName ?? ""}', price={(city.price.HasValue ? city.price.Value.ToString() : "null")}, variants={variantsStr}, lastKnownVariant='{city.lastKnownVariant ?? ""}'");
+            }
+            catch { /* ignore final logging failures */ }
 
             return city;
         }
