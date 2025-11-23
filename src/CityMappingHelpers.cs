@@ -333,6 +333,44 @@ public static class CityMappingHelpers
                         catch { /* ignore invalid coords */ }
                     }
 
+                    // variants (string[] array)
+                    var variantsToken = obj["variants"] ?? obj["Variants"];
+                    if (variantsToken != null && variantsToken.Type == JTokenType.Array)
+                    {
+                        try
+                        {
+                            var varArr = (JArray)variantsToken;
+                            var variants = new List<string>();
+                            foreach (var vToken in varArr)
+                            {
+                                if (vToken != null && vToken.Type == JTokenType.String)
+                                {
+                                    variants.Add(vToken.Value<string>());
+                                }
+                            }
+                            if (variants.Count > 0)
+                            {
+                                SetStringArrayOnTarget(city, variants.ToArray(), "variants", "Variants");
+                            }
+                        }
+                        catch { /* ignore invalid variants */ }
+                    }
+
+                    // lastKnownVariant (string)
+                    var lastKnownVariantToken = obj["lastKnownVariant"] ?? obj["LastKnownVariant"];
+                    if (lastKnownVariantToken != null && lastKnownVariantToken.Type == JTokenType.String)
+                    {
+                        try
+                        {
+                            var lastKnownVariant = lastKnownVariantToken.Value<string>();
+                            if (!string.IsNullOrEmpty(lastKnownVariant))
+                            {
+                                SetStringOnTarget(city, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
+                            }
+                        }
+                        catch { /* ignore invalid lastKnownVariant */ }
+                    }
+
                     result.Add(city);
                 }
                 catch (Exception exItem)
@@ -1408,6 +1446,14 @@ public static class CityMappingHelpers
             // visited flag
             var visited = GetBoolFromSource(src, "visited") ?? GetBoolFromSource(src, "Visited");
             SetBoolOnTarget(dst, visited ?? false, "visited", "Visited");
+            
+            // variants array
+            var variants = GetStringArrayFromSource(src, "variants") ?? GetStringArrayFromSource(src, "Variants");
+            SetStringArrayOnTarget(dst, variants, "variants", "Variants");
+            
+            // lastKnownVariant
+            var lastKnownVariant = GetStringFromSource(src, "lastKnownVariant") ?? GetStringFromSource(src, "LastKnownVariant");
+            SetStringOnTarget(dst, lastKnownVariant, "lastKnownVariant", "LastKnownVariant");
         }
         catch (Exception ex)
         {
@@ -1427,6 +1473,8 @@ public static class CityMappingHelpers
             SetStringOnTarget(dst, GetStringFromSource(src, "sceneName") ?? GetStringFromSource(src, "scene"), "sceneName", "scene");
             SetStringOnTarget(dst, GetStringFromSource(src, "desc") ?? GetStringFromSource(src, "description"), "desc", "description");
             SetBoolOnTarget(dst, GetBoolFromSource(src, "visited") ?? false, "visited", "Visited");
+            SetStringArrayOnTarget(dst, GetStringArrayFromSource(src, "variants"), "variants", "Variants");
+            SetStringOnTarget(dst, GetStringFromSource(src, "lastKnownVariant"), "lastKnownVariant", "LastKnownVariant");
         }
         catch (Exception ex)
         {
@@ -1592,6 +1640,33 @@ public static class CityMappingHelpers
         return null;
     }
 
+    private static string[] GetStringArrayFromSource(object src, string propName)
+    {
+        if (src == null) return null;
+        var t = src.GetType();
+        var p = t.GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+        object val = null;
+        if (p != null && p.CanRead) val = p.GetValue(src);
+        else
+        {
+            var f = t.GetField(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+            if (f != null) val = f.GetValue(src);
+        }
+        if (val == null) return null;
+        if (val is string[] sa) return sa;
+        if (val is IEnumerable e)
+        {
+            var list = new List<string>();
+            foreach (var it in e)
+            {
+                if (it != null)
+                    list.Add(it.ToString());
+            }
+            if (list.Count > 0) return list.ToArray();
+        }
+        return null;
+    }
+
 
     private static void SetStringMember(object target, string value, params string[] candidateNames)
     {
@@ -1637,6 +1712,32 @@ public static class CityMappingHelpers
 
                 var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
                 if (f != null && f.FieldType == typeof(float[]))
+                {
+                    f.SetValue(target, arr);
+                    return;
+                }
+            }
+            catch { /* swallow - try next candidate */ }
+        }
+    }
+
+    private static void SetStringArrayOnTarget(object target, string[] arr, params string[] candidateNames)
+    {
+        if (target == null || candidateNames == null || candidateNames.Length == 0) return;
+        var t = target.GetType();
+        foreach (var name in candidateNames)
+        {
+            try
+            {
+                var p = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (p != null && p.CanWrite && (p.PropertyType == typeof(string[]) || p.PropertyType.IsAssignableFrom(typeof(IEnumerable<string>))))
+                {
+                    p.SetValue(target, arr);
+                    return;
+                }
+
+                var f = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase);
+                if (f != null && (f.FieldType == typeof(string[]) || f.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
                 {
                     f.SetValue(target, arr);
                     return;

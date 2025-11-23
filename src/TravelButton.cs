@@ -256,6 +256,148 @@ public class TravelButtonPlugin : BaseUnityPlugin
         { }
     }
 
+    /// <summary>
+    /// Consolidated initialization helper that performs a single, deterministic load/merge of
+    /// TravelButton_Cities.json, ConfigManager defaults, and BepInEx config bindings.
+    /// This method performs the canonical sequence exactly once during Awake.
+    /// </summary>
+    private void InitializeCitiesAndConfig()
+    {
+        try
+        {
+            TBLog.Info("InitializeCitiesAndConfig: begin consolidated initialization sequence");
+            
+            // Step a) InitCities for diagnostics - reads parsed DTOs into helper.loadedCities
+            try
+            {
+                CityMappingHelpers.InitCities();
+                TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() completed");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: InitCities failed: " + ex);
+            }
+            
+            // Step b) Load TravelButton_Cities.json into runtime TravelButton.Cities (metadata only)
+            // This includes reading new keys variants and lastKnownVariant
+            try
+            {
+                TryLoadCitiesJsonIntoTravelButtonMod();
+                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed");
+                
+                // Diagnostic dump after loading from JSON
+                try
+                {
+                    TBLog.Info("InitializeCitiesAndConfig: Runtime cities state after JSON load:");
+                    if (TravelButton.Cities == null)
+                    {
+                        TBLog.Info("  - Cities == null");
+                    }
+                    else
+                    {
+                        TBLog.Info($"  - Cities.Count = {TravelButton.Cities.Count}");
+                        foreach (var c in TravelButton.Cities)
+                        {
+                            try
+                            {
+                                var variantsStr = c.variants != null ? $"[{string.Join(", ", c.variants)}]" : "null";
+                                TBLog.Info($"  - '{c.name}' sceneName='{c.sceneName ?? ""}' coords=[{(c.coords != null ? string.Join(", ", c.coords) : "")}] variants={variantsStr} lastKnownVariant='{c.lastKnownVariant ?? ""}'");
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch (Exception exDump)
+                {
+                    TBLog.Warn("InitializeCitiesAndConfig: diagnostic dump failed: " + exDump);
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod failed: " + ex);
+            }
+            
+            // Step c) Attempt to load external ConfigManager config (or fallback to local Default)
+            try
+            {
+                TravelButton.InitFromConfig();
+                TBLog.Info("InitializeCitiesAndConfig: TravelButton.InitFromConfig() completed");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: InitFromConfig failed: " + ex);
+            }
+            
+            // Step d) Ensure TravelButton.Cities is assigned and complete
+            // This should not overwrite runtime values that came from TryLoadCitiesJsonIntoTravelButtonMod
+            try
+            {
+                CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
+                TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed");
+                
+                // Diagnostic dump after ensuring cities initialized
+                try
+                {
+                    TBLog.Info("InitializeCitiesAndConfig: Runtime cities state after EnsureCitiesInitializedFromJsonOrDefaults:");
+                    if (TravelButton.Cities == null)
+                    {
+                        TBLog.Info("  - Cities == null");
+                    }
+                    else
+                    {
+                        TBLog.Info($"  - Cities.Count = {TravelButton.Cities.Count}");
+                        foreach (var c in TravelButton.Cities)
+                        {
+                            try
+                            {
+                                var variantsStr = c.variants != null ? $"[{string.Join(", ", c.variants)}]" : "null";
+                                TBLog.Info($"  - '{c.name}' sceneName='{c.sceneName ?? ""}' enabled={c.enabled} price={c.price} visited={c.visited} variants={variantsStr} lastKnownVariant='{c.lastKnownVariant ?? ""}'");
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch (Exception exDump)
+                {
+                    TBLog.Warn("InitializeCitiesAndConfig: diagnostic dump failed: " + exDump);
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults failed: " + ex);
+            }
+            
+            // Step e) Create BepInEx bindings for cities and global settings
+            // Attach SettingChanged handlers to persist updates to files
+            try
+            {
+                EnsureBepInExConfigBindings();
+                TBLog.Info("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() completed");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings failed: " + ex);
+            }
+            
+            // Step f) Start file watcher for cfg file (only watches legacy cfg, not JSON)
+            try
+            {
+                StartConfigWatcher();
+                TBLog.Info("InitializeCitiesAndConfig: StartConfigWatcher() completed");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("InitializeCitiesAndConfig: StartConfigWatcher failed: " + ex);
+            }
+            
+            TBLog.Info("InitializeCitiesAndConfig: consolidated initialization sequence completed successfully");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("InitializeCitiesAndConfig: unexpected top-level error: " + ex);
+        }
+    }
+
     private void Awake()
     {
         DebugConfig.IsDebug = true;
@@ -863,6 +1005,61 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             }
                         }
                         catch { /* ignore errors from visited mapping */ }
+
+                        // Map variants and lastKnownVariant (new fields)
+                        try
+                        {
+                            // Use reflection to support different runtime City implementations
+                            var cityType = c.GetType();
+                            
+                            // Try to set variants field/property
+                            if (cc.variants != null)
+                            {
+                                try
+                                {
+                                    var variantsField = cityType.GetField("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                    if (variantsField != null && (variantsField.FieldType == typeof(string[]) || variantsField.FieldType.IsAssignableFrom(typeof(IEnumerable<string>))))
+                                    {
+                                        variantsField.SetValue(c, cc.variants);
+                                    }
+                                    else
+                                    {
+                                        var variantsProp = cityType.GetProperty("variants", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                        if (variantsProp != null && variantsProp.CanWrite)
+                                        {
+                                            variantsProp.SetValue(c, cc.variants);
+                                        }
+                                    }
+                                }
+                                catch { /* ignore reflection errors */ }
+                            }
+                            
+                            // Try to set lastKnownVariant field/property
+                            if (!string.IsNullOrEmpty(cc.lastKnownVariant))
+                            {
+                                try
+                                {
+                                    var lastKnownVariantField = cityType.GetField("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                    if (lastKnownVariantField != null && lastKnownVariantField.FieldType == typeof(string))
+                                    {
+                                        lastKnownVariantField.SetValue(c, cc.lastKnownVariant);
+                                    }
+                                    else
+                                    {
+                                        var lastKnownVariantProp = cityType.GetProperty("lastKnownVariant", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                                        if (lastKnownVariantProp != null && lastKnownVariantProp.CanWrite)
+                                        {
+                                            lastKnownVariantProp.SetValue(c, cc.lastKnownVariant);
+                                        }
+                                    }
+                                }
+                                catch { /* ignore reflection errors */ }
+                            }
+                        }
+                        catch (Exception exVariants)
+                        {
+                            LWarn($"Error mapping variants/lastKnownVariant for city '{cc?.name}': {exVariants.Message}");
+                        }
 
                         map[c.name] = c;
                     }
@@ -3334,6 +3531,10 @@ public static class TravelButton
         public bool visited;
 
         public string sceneName;
+        
+        // New fields for multi-variant support
+        public string[] variants;
+        public string lastKnownVariant;
 
         public City(string name)
         {
@@ -3344,6 +3545,8 @@ public static class TravelButton
             this.enabled = false;
             bool visited = false; 
             this.sceneName = null;
+            this.variants = null;
+            this.lastKnownVariant = null;
         }
 
         // Compatibility properties expected by older code:
