@@ -319,6 +319,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 1) Prepare any internal city mapping helpers (build any runtime lookup tables)
             CityMappingHelpers.InitCities();
             TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() completed.");
         }
@@ -329,9 +330,10 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 2) Load JSON city definitions first and merge into runtime list
             if (TryLoadCitiesJsonIntoTravelButtonMod())
             {
-                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed and loaded JSON.");
+                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed and parsed/merged JSON.");
             }
             else
             {
@@ -345,6 +347,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 3) Read legacy/ConfigManager defaults into mapped objects (will be merged, not overwrite)
             TravelButton.InitFromConfig();
             TBLog.Info("InitializeCitiesAndConfig: TravelButton.InitFromConfig() completed.");
         }
@@ -355,6 +358,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 4) Ensure every default city exists and only fill missing fields (scene/coords/target) — won't overwrite JSON fields
             CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
             TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed.");
         }
@@ -365,6 +369,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 5) Create/apply BepInEx config bindings for all cities and apply any cfg overrides (price/enabled/visited) into memory
             EnsureBepInExConfigBindings();
             TBLog.Info("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() completed.");
         }
@@ -375,6 +380,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 6) Start watcher/watchers for legacy cfg changes, etc.
             StartConfigWatcher();
             TBLog.Info("InitializeCitiesAndConfig: StartConfigWatcher() completed.");
         }
@@ -385,6 +391,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         try
         {
+            // 7) Start coroutine that attempts to fully initialize config (if needed)
             StartCoroutine(TryInitConfigCoroutine());
             TBLog.Info("InitializeCitiesAndConfig: Started TryInitConfigCoroutine().");
         }
@@ -773,7 +780,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 return false;
             }
 
-            var loaded = new List<TravelButton.City>();
+            var parsed = new List<TravelButton.City>();
             foreach (var token in jCities.OfType<JObject>())
             {
                 var name = token.Value<string>("name");
@@ -794,9 +801,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         city.coords = new float[3]
                         {
-                            coordsToken[0].Value<float>(),
-                            coordsToken[1].Value<float>(),
-                            coordsToken[2].Value<float>()
+                        coordsToken[0].Value<float>(),
+                        coordsToken[1].Value<float>(),
+                        coordsToken[2].Value<float>()
                         };
                     }
                     catch { city.coords = null; }
@@ -810,24 +817,110 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 }
                 else
                 {
-                    // attempt old keys fallback
                     var normal = token.Value<string>("variantNormalName");
                     var destroyed = token.Value<string>("variantDestroyedName");
                     var vt = new List<string>();
                     if (!string.IsNullOrEmpty(normal)) vt.Add(normal);
                     if (!string.IsNullOrEmpty(destroyed)) vt.Add(destroyed);
-                    city.variants = vt.ToArray(); // empty array if none found
+                    city.variants = vt.ToArray(); // possibly empty
                 }
 
                 // lastKnownVariant (default to empty string to ensure key exists downstream)
                 city.lastKnownVariant = token.Value<string>("lastKnownVariant") ?? "";
 
-                loaded.Add(city);
+                parsed.Add(city);
                 TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: parsed city '{name}' (scene='{city.sceneName}', variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant}').");
             }
 
-            TravelButton.Cities = loaded;
-            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: successfully parsed {loaded.Count} cities from: {path}");
+            // Merge parsed JSON entries into existing TravelButton.Cities (do not blindly overwrite)
+            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
+            {
+                TravelButton.Cities = parsed;
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: TravelButton.Cities was empty — assigned parsed list ({parsed.Count} cities).");
+            }
+            else
+            {
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merging parsed JSON ({parsed.Count}) into existing TravelButton.Cities ({TravelButton.Cities.Count}).");
+                // Build dictionary for case-insensitive lookup
+                var existingDict = TravelButton.Cities.ToDictionary(c => (c.name ?? "").Trim(), StringComparer.OrdinalIgnoreCase);
+
+                foreach (var p in parsed)
+                {
+                    if (string.IsNullOrEmpty(p.name))
+                        continue;
+
+                    if (!existingDict.TryGetValue(p.name, out var existing))
+                    {
+                        // new city from JSON -> add
+                        TravelButton.Cities.Add(p);
+                        existingDict[p.name] = p;
+                        TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: added JSON-only city '{p.name}'");
+                    }
+                    else
+                    {
+                        // merge: only overwrite fields that JSON explicitly provided (and prefer JSON when it is explicit),
+                        // but avoid clobbering already set runtime/config values accidentally.
+                        // sceneName/target/coords: if JSON provided a non-empty value, ensure it's set on existing (if missing or different, log)
+                        if (!string.IsNullOrEmpty(p.sceneName))
+                        {
+                            if (string.IsNullOrEmpty(existing.sceneName) || !string.Equals(existing.sceneName, p.sceneName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merging sceneName for '{existing.name}': '{existing.sceneName}' -> '{p.sceneName}'");
+                                existing.sceneName = p.sceneName;
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(p.targetGameObjectName))
+                        {
+                            if (string.IsNullOrEmpty(existing.targetGameObjectName) || !string.Equals(existing.targetGameObjectName, p.targetGameObjectName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merging targetGameObjectName for '{existing.name}': '{existing.targetGameObjectName}' -> '{p.targetGameObjectName}'");
+                                existing.targetGameObjectName = p.targetGameObjectName;
+                            }
+                        }
+
+                        if (p.coords != null && p.coords.Length >= 3)
+                        {
+                            if (existing.coords == null || existing.coords.Length < 3)
+                            {
+                                existing.coords = p.coords;
+                                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged coords for '{existing.name}' from JSON");
+                            }
+                        }
+
+                        // price: only overwrite if JSON provided a value (non-null)
+                        if (p.price.HasValue)
+                        {
+                            existing.price = p.price;
+                            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged JSON price for '{existing.name}': {p.price}");
+                        }
+
+                        // variants/lastKnown: accept JSON-provided arrays/lastKnown if present (replace only if JSON has content)
+                        if (p.variants != null && p.variants.Length > 0)
+                        {
+                            existing.variants = p.variants;
+                            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged JSON variants for '{existing.name}' (count={p.variants.Length})");
+                        }
+
+                        if (!string.IsNullOrEmpty(p.lastKnownVariant))
+                        {
+                            existing.lastKnownVariant = p.lastKnownVariant;
+                            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged JSON lastKnownVariant for '{existing.name}' = '{p.lastKnownVariant}'");
+                        }
+
+                        // desc / visited
+                        if (!string.IsNullOrEmpty(p.desc))
+                        {
+                            existing.GetType().GetField("desc", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.SetValue(existing, p.desc);
+                        }
+
+                        existing.visited = p.visited;
+                    }
+                }
+
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merge completed. TravelButton.Cities count = {TravelButton.Cities.Count}");
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -2673,11 +2766,332 @@ public class TravelButtonPlugin : BaseUnityPlugin
             if (finalVariants.Count == 0 && foundVariants.Count > 0)
                 finalVariants = foundVariants.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+            // Inline variant detection (no hardcoded "Normal"/"Destroyed").
+            // Prefer exact known variant token matches against root/child names (active preferred), then fall back.
             string finalLast = null;
-            if (!string.IsNullOrEmpty(foundLastVariant)) finalLast = foundLastVariant;
-            else if (finalVariants.Count > 0) finalLast = finalVariants[0];
-            else finalLast = city.lastKnownVariant ?? "";
+            try
+            {
+                // collect candidate tokens: finalVariants (computed earlier) or city.variants if empty
+                var candidates = new System.Collections.Generic.List<string>();
+                if (finalVariants != null && finalVariants.Count > 0)
+                {
+                    candidates.AddRange(finalVariants.Where(s => !string.IsNullOrWhiteSpace(s)));
+                }
+                else
+                {
+                    try
+                    {
+                        var ctype = city.GetType();
+                        var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
+                                  ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
+                        if (cv != null) candidates.AddRange(cv.Where(s => !string.IsNullOrWhiteSpace(s)));
+                    }
+                    catch { }
+                }
 
+                // also include city.name token (if present) as a weak candidate (no hardcoded Normal/Destroyed)
+                string cityNameForLog = "";
+                try
+                {
+                    var ctype = city.GetType();
+                    var cityName = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
+                                ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
+                    if (!string.IsNullOrWhiteSpace(cityName) && !candidates.Contains(cityName, StringComparer.OrdinalIgnoreCase))
+                        candidates.Add(cityName);
+                    cityNameForLog = cityName ?? "";
+                }
+                catch { }
+
+                // dedupe (case-insensitive)
+                candidates = candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+                if (candidates.Count > 0)
+                {
+                    var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                    var roots = scene.GetRootGameObjects();
+                    var allTransforms = roots.SelectMany(r => r.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
+
+                    // reference pos for proximity scoring: city.coords if available, else player/camera
+                    UnityEngine.Vector3 refPos = UnityEngine.Vector3.zero;
+                    bool haveRef = false;
+                    try
+                    {
+                        var ctype = city.GetType();
+                        var coords = (float[])(ctype.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
+                                   ?? ctype.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
+                        if (coords != null && coords.Length >= 3) { refPos = new UnityEngine.Vector3(coords[0], coords[1], coords[2]); haveRef = true; }
+                    }
+                    catch { }
+                    if (!haveRef)
+                    {
+                        var pgo = UnityEngine.GameObject.FindWithTag("Player");
+                        if (pgo != null) { refPos = pgo.transform.position; haveRef = true; }
+                        else if (UnityEngine.Camera.main != null) { refPos = UnityEngine.Camera.main.transform.position; haveRef = true; }
+                    }
+
+                    // small blacklist to avoid manager roots if they accidentally match tokens
+                    var blacklistPrefixes = new[] { "Effects", "Drops", "Spawn", "Assets", "SoundPool", "Weather", "UI", "Canvas" };
+
+                    var scored = new System.Collections.Generic.List<(string name, long score, int total, int active, float nearest)>();
+
+                    foreach (var candidate in candidates)
+                    {
+                        if (string.IsNullOrWhiteSpace(candidate)) continue;
+                        // skip obvious manager-like tokens
+                        if (blacklistPrefixes.Any(b => candidate.StartsWith(b, System.StringComparison.OrdinalIgnoreCase))) continue;
+
+                        var matches = allTransforms.Where(t =>
+                        {
+                            if (t == null) return false;
+                            var n = t.name ?? "";
+                            // match if transform name contains candidate token or vice-versa
+                            return (n.IndexOf(candidate, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                   || (candidate.IndexOf(n, System.StringComparison.OrdinalIgnoreCase) >= 0);
+                        }).ToArray();
+
+                        int total = matches.Length;
+                        int active = matches.Count(m => m.gameObject.activeInHierarchy);
+
+                        float nearest = float.MaxValue;
+                        if (haveRef && matches.Length > 0)
+                        {
+                            foreach (var m in matches)
+                            {
+                                try { var d = UnityEngine.Vector3.Distance(refPos, m.position); if (d < nearest) nearest = d; } catch { }
+                            }
+                        }
+
+                        long score = 0;
+                        // strong boost for exact known-variant token (very authoritative)
+                        bool isKnownVariant = false;
+                        try
+                        {
+                            var ctype = city.GetType();
+                            var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
+                                      ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
+                            if (cv != null && cv.Any(v => string.Equals(v, candidate, System.StringComparison.OrdinalIgnoreCase))) isKnownVariant = true;
+                        }
+                        catch { }
+
+                        if (isKnownVariant) score += 200000;      // very strong
+                        score += active * 2000;                 // active preference
+                        score += total * 50;                    // number of matches as tie-breaker
+                        if (haveRef && nearest < float.MaxValue) score -= (long)nearest; // prefer closer
+
+                        // require some positive indicator to consider (either known-variant or matches)
+                        if (isKnownVariant || total > 0)
+                        {
+                            scored.Add((candidate, score, total, active, nearest));
+                        }
+                    }
+
+                    // Insert this immediately AFTER you build `scored` (List<(string name,long score,int total,int active,float nearest)>)
+                    // and BEFORE you pick the best candidate (e.g. before `var best = scored.OrderByDescending(s => s.score)...`).
+                    try
+                    {
+                        var blacklistTokens = new[] {
+        "Gate","Vigil","Trigger","Lever","Visual","Template",
+        "Spawn","Respawn","Entrance","Portal","TriggerZone","GateTrigger","GateLever"
+    };
+
+                        var cityTokens = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                        try
+                        {
+                            var ctype = city.GetType();
+                            var sceneName = (ctype.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
+                                         ?? (ctype.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
+                            var cityName = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
+                                         ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
+
+                            if (!string.IsNullOrWhiteSpace(sceneName))
+                            {
+                                var cleaned = System.Text.RegularExpressions.Regex.Replace(sceneName, @"NewTerrain|Terrain|_Terrain|Clone", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                foreach (var t in cleaned.Split(new[] { ' ', '_' }, System.StringSplitOptions.RemoveEmptyEntries))
+                                    if (t.Length >= 2) cityTokens.Add(t.Trim());
+                            }
+                            if (!string.IsNullOrWhiteSpace(cityName))
+                            {
+                                var cleaned = System.Text.RegularExpressions.Regex.Replace(cityName, @"NewTerrain|Terrain|_Terrain|Clone", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                foreach (var t in cleaned.Split(new[] { ' ', '_' }, System.StringSplitOptions.RemoveEmptyEntries))
+                                    if (t.Length >= 2) cityTokens.Add(t.Trim());
+                            }
+                        }
+                        catch { /* non-fatal */ }
+
+                        for (int i = 0; i < scored.Count; i++)
+                        {
+                            var item = scored[i];
+                            long adjust = 0;
+
+                            if (blacklistTokens.Any(bt => item.name.IndexOf(bt, System.StringComparison.OrdinalIgnoreCase) >= 0))
+                                adjust -= 200000;
+
+                            if (cityTokens.Count > 0 && cityTokens.Any(tok => item.name.IndexOf(tok, System.StringComparison.OrdinalIgnoreCase) >= 0))
+                                adjust += 300000;
+
+                            if (item.name.IndexOf("Normal", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                adjust += 100000;
+
+                            try
+                            {
+                                var ctype = city.GetType();
+                                var fullScene = (ctype.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
+                                             ?? (ctype.GetProperty("sceneName")?.GetValue(city) as string);
+                                var fullCity = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
+                                             ?? (ctype.GetProperty("name")?.GetValue(city) as string);
+                                if (!string.IsNullOrWhiteSpace(fullScene) && item.name.IndexOf(fullScene, System.StringComparison.OrdinalIgnoreCase) >= 0) adjust += 200000;
+                                if (!string.IsNullOrWhiteSpace(fullCity) && item.name.IndexOf(fullCity, System.StringComparison.OrdinalIgnoreCase) >= 0) adjust += 200000;
+                            }
+                            catch { }
+
+                            scored[i] = (item.name, item.score + adjust, item.total, item.active, item.nearest);
+                        }
+                    }
+                    catch
+                    {
+                        // non-fatal: leave `scored` unchanged on error
+                    }
+
+                    if (scored.Count > 0)
+                    {
+                        var best = scored.OrderByDescending(s => s.score)
+                                         .ThenByDescending(s => s.active)
+                                         .ThenByDescending(s => s.total)
+                                         .ThenBy(s => s.name)
+                                         .First();
+                        finalLast = best.name;
+                        // log for later verification
+                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: selected variant='{finalLast}' score={best.score} for city='{cityNameForLog}'");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: dynamic root-name detection failed: {ex.Message}");
+            }
+            
+            // New persistence-guard: avoid overwriting a persisted token that is still present in scene
+            try
+            {
+                // read current persisted value
+                string persisted = null;
+                try
+                {
+                    var ctype = city.GetType();
+                    persisted = ctype.GetField("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string
+                             ?? ctype.GetProperty("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string;
+                }
+                catch { persisted = null; }
+
+                // helper: check whether a token exists as a scene object (roots/children)
+                bool ExistsInScene(string token)
+                {
+                    if (string.IsNullOrWhiteSpace(token)) return false;
+                    var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                    var roots = scene.GetRootGameObjects();
+                    foreach (var r in roots)
+                    {
+                        if (r == null) continue;
+                        if ((r.name ?? "").IndexOf(token, System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        foreach (UnityEngine.Transform ch in r.transform)
+                        {
+                            if (ch == null) continue;
+                            if ((ch.name ?? "").IndexOf(token, System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        }
+                    }
+                    return false;
+                }
+
+                // If there is a persisted token and it appears in the scene, keep it (do not overwrite)
+                if (!string.IsNullOrEmpty(persisted) && ExistsInScene(persisted))
+                {
+                    // keep persisted as finalLast (safe)
+                    finalLast = persisted;
+                    TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: keeping existing persisted variant='{persisted}' for city='{city?.name}' because it is present in scene");
+                }
+                else
+                {
+                    // No persisted-variant present in scene (or none existed). Only persist finalLast if it is confident.
+                    bool confidentToPersist = false;
+                    // Consider confident if finalLast is an exact knownVariant OR component evidence exists OR score>threshold
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(finalLast))
+                        {
+                            // exact knownVariant?
+                            var ctype = city.GetType();
+                            var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
+                                      ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
+                            if (cv != null && cv.Any(v => string.Equals(v, finalLast, System.StringComparison.OrdinalIgnoreCase)))
+                            {
+                                confidentToPersist = true;
+                            }
+
+                            // (Optional) component evidence test: quick scan for components exposing finalLast as field/property
+                            if (!confidentToPersist)
+                            {
+                                var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                                var roots = scene.GetRootGameObjects();
+                                foreach (var r in roots)
+                                {
+                                    if (r == null) continue;
+                                    foreach (var tr in r.GetComponentsInChildren<UnityEngine.Transform>(true))
+                                    {
+                                        if (tr == null) continue;
+                                        var go = tr.gameObject;
+                                        foreach (var comp in go.GetComponents<UnityEngine.Component>())
+                                        {
+                                            if (comp == null) continue;
+                                            var t = comp.GetType();
+                                            // inspect string fields/properties for match
+                                            foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+                                            {
+                                                if (f.FieldType == typeof(string))
+                                                {
+                                                    try { var sval = f.GetValue(comp) as string; if (!string.IsNullOrEmpty(sval) && sval.IndexOf(finalLast, System.StringComparison.OrdinalIgnoreCase) >= 0) { confidentToPersist = true; break; } } catch { }
+                                                }
+                                            }
+                                            if (confidentToPersist) break;
+                                            foreach (var p in t.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+                                            {
+                                                if (p.PropertyType == typeof(string) && p.GetIndexParameters().Length == 0 && p.CanRead)
+                                                {
+                                                    try { var sval = p.GetValue(comp) as string; if (!string.IsNullOrEmpty(sval) && sval.IndexOf(finalLast, System.StringComparison.OrdinalIgnoreCase) >= 0) { confidentToPersist = true; break; } } catch { }
+                                                }
+                                            }
+                                            if (confidentToPersist) break;
+                                        }
+                                        if (confidentToPersist) break;
+                                    }
+                                    if (confidentToPersist) break;
+                                }
+                            }
+
+                            // (Optional) bring in the detector score if your detection logic produced it (score variable)
+                            // Example: if (detectedScore > 100000) confidentToPersist = true;
+                        }
+                    }
+                    catch { confidentToPersist = false; }
+
+                    if (!confidentToPersist)
+                    {
+                        // keep persisted (even if null) — do not persist the noisy newly-detected finalLast
+                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: not confident to persist detected variant='{finalLast}' for city='{city?.name}', keeping persisted='{persisted}'");
+                        finalLast = persisted ?? ((!string.IsNullOrEmpty(foundLastVariant) ? foundLastVariant : (finalVariants != null && finalVariants.Count > 0 ? finalVariants[0] : (city?.lastKnownVariant ?? ""))));
+                    }
+                    else
+                    {
+                        // confidentToPersist == true -> finalLast remains what detection chose and will be persisted as usual
+                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: confident to persist detected variant='{finalLast}' for city='{city?.name}'");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: persistence-guard failed: {ex.Message}");
+            }
+
+            // Continue with persisting finalVariants/finalLast into city and JSON if changed
             var variantsArray = finalVariants.ToArray();
             bool changed = false;
             if (!Enumerable.SequenceEqual(city.variants ?? new string[0], variantsArray, StringComparer.OrdinalIgnoreCase))
@@ -2708,6 +3122,98 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
+    // Choose best variant from an explicit candidate list using the same heuristic used interactively:
+    // prefer active instances (most), tie-break by nearest to player/camera, then by total matches, then first.
+    private static string ResolveBestVariantFromCandidates(IEnumerable<string> candidates)
+    {
+        try
+        {
+            if (candidates == null) return string.Empty;
+            var variants = candidates.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToArray();
+            if (variants.Length == 0) return string.Empty;
+
+            var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            var roots = scene.GetRootGameObjects();
+            var allTransforms = roots.SelectMany(g => g.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
+
+            // try player or camera as reference
+            UnityEngine.Vector3? refPos = null;
+            try
+            {
+                var pgo = UnityEngine.GameObject.FindWithTag("Player");
+                if (pgo != null) refPos = pgo.transform.position;
+                else if (UnityEngine.Camera.main != null) refPos = UnityEngine.Camera.main.transform.position;
+            }
+            catch { refPos = null; }
+
+            string chosen = null;
+            int bestActive = -1;
+            int bestTotal = -1;
+            float bestDist = float.MaxValue;
+
+            foreach (var v in variants)
+            {
+                if (string.IsNullOrWhiteSpace(v)) continue;
+
+                var matches = allTransforms.Where(t =>
+                    t != null &&
+                    t.gameObject.scene == scene &&
+                    (string.Equals(t.name, v, StringComparison.OrdinalIgnoreCase) || t.name.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
+                ).ToArray();
+
+                int total = matches.Length;
+                int active = matches.Count(m => m.gameObject.activeInHierarchy);
+                float nearest = float.MaxValue;
+                if (refPos.HasValue && matches.Length > 0)
+                {
+                    foreach (var m in matches) { if (m == null) continue; var d = UnityEngine.Vector3.Distance(refPos.Value, m.position); if (d < nearest) nearest = d; }
+                }
+
+                TBLog.Info($"ResolveBestVariantFromCandidates: variant='{v}' total={total} active={active} nearest={(nearest == float.MaxValue ? "n/a" : nearest.ToString("F2"))}");
+
+                if (active > 0)
+                {
+                    if (active > bestActive || (active == bestActive && refPos.HasValue && nearest < bestDist))
+                    {
+                        chosen = v;
+                        bestActive = active;
+                        bestTotal = total;
+                        bestDist = nearest;
+                    }
+                }
+                else
+                {
+                    if (bestActive <= 0)
+                    {
+                        if (total > bestTotal || (total == bestTotal && refPos.HasValue && nearest < bestDist))
+                        {
+                            chosen = v;
+                            bestTotal = total;
+                            bestDist = nearest;
+                        }
+                    }
+                }
+            }
+
+            if (string.IsNullOrEmpty(chosen))
+            {
+                chosen = variants.FirstOrDefault() ?? string.Empty;
+                TBLog.Info($"ResolveBestVariantFromCandidates: fallback chosen='{chosen}'");
+            }
+            else
+            {
+                TBLog.Info($"ResolveBestVariantFromCandidates: selected='{chosen}' (bestActive={bestActive}, bestTotal={bestTotal}, bestDist={(bestDist == float.MaxValue ? "n/a" : bestDist.ToString("F2"))})");
+            }
+
+            return chosen ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("ResolveBestVariantFromCandidates: unexpected: " + ex.Message);
+            return string.Empty;
+        }
+    }
+
     // Normalize helper (unchanged)
     private static string NormalizeGameObjectName(string raw)
     {
@@ -2715,6 +3221,110 @@ public class TravelButtonPlugin : BaseUnityPlugin
         var s = Regex.Replace(raw, @"\s*\(Clone\)\s*$", "", RegexOptions.IgnoreCase).Trim();
         s = Regex.Replace(s, @"\s+", " ");
         return s;
+    }
+
+    // EnsureBepInExConfigBindingsForCity: create/read BepInEx bindings for one city and apply cfg/legacy overrides to the runtime city.
+    // Add this as an instance method to TravelButtonPlugin.
+    public void EnsureBepInExConfigBindingsForCity(TravelButton.City city)
+    {
+        if (city == null || string.IsNullOrEmpty(city.name)) return;
+
+        try
+        {
+            string section = city.name.Trim();
+            // Bind with sensible defaults (do not assume existing city.price is authoritative)
+            var priceEntry = this.Config.Bind(section, "Price", city.price ?? 200, $"Travel price for city '{section}'");
+            var enabledEntry = this.Config.Bind(section, "Enabled", city.enabled, $"Enable travel for city '{section}'");
+            var visitedEntry = this.Config.Bind(section, "Visited", city.visited, $"Visited flag for city '{section}'");
+
+            // Apply BepInEx values if they differ
+            try
+            {
+                // If value differs, apply and log
+                if (priceEntry != null)
+                {
+                    city.price = priceEntry.Value;
+                    TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied {section}.Price = {city.price} (from BepInEx config)");
+                }
+
+                if (enabledEntry != null)
+                {
+                    city.enabled = enabledEntry.Value;
+                    TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied {section}.Enabled = {city.enabled} (from BepInEx config)");
+                }
+
+                if (visitedEntry != null)
+                {
+                    city.visited = visitedEntry.Value;
+                    TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied {section}.Visited = {city.visited} (from BepInEx config)");
+                }
+            }
+            catch (Exception exApply)
+            {
+                TBLog.Warn($"EnsureBepInExConfigBindingsForCity: failed applying ConfigEntry.Value -> city fields for '{section}': {exApply.Message}");
+            }
+
+            // Also check legacy cz.valheimskal.travelbutton.cfg (if present) for explicit overrides and prefer those.
+            try
+            {
+                var legacy = TravelButtonPlugin.GetLegacyCfgPath();
+                if (!string.IsNullOrEmpty(legacy) && File.Exists(legacy))
+                {
+                    var lines = File.ReadAllLines(legacy);
+                    // simple regex to match e.g. "ChersoneseNewTerrain.Enabled = true" allowing optional whitespace
+                    var enabledRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + System.Text.RegularExpressions.Regex.Escape(section) + @"\.Enabled\s*=\s*(true|false|1|0)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var priceRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + System.Text.RegularExpressions.Regex.Escape(section) + @"\.Price\s*=\s*(\d+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var visitedRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + System.Text.RegularExpressions.Regex.Escape(section) + @"\.Visited\s*=\s*(true|false|1|0)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        var ln = lines[i].Trim();
+                        if (string.IsNullOrEmpty(ln)) continue;
+                        // skip comments
+                        if (ln.StartsWith("#") || ln.StartsWith(";")) continue;
+
+                        var me = enabledRegex.Match(ln);
+                        if (me.Success)
+                        {
+                            var v = me.Groups[1].Value.ToLowerInvariant();
+                            bool newVal = v.StartsWith("true") || v == "1";
+                            city.enabled = newVal;
+                            TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied LEGACY {section}.Enabled = {city.enabled} (from {legacy} line {i + 1})");
+                            continue;
+                        }
+
+                        var mp = priceRegex.Match(ln);
+                        if (mp.Success)
+                        {
+                            if (int.TryParse(mp.Groups[1].Value, out var foundPrice))
+                            {
+                                city.price = foundPrice;
+                                TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied LEGACY {section}.Price = {city.price} (from {legacy} line {i + 1})");
+                            }
+                            continue;
+                        }
+
+                        var mv = visitedRegex.Match(ln);
+                        if (mv.Success)
+                        {
+                            var v = mv.Groups[1].Value.ToLowerInvariant();
+                            bool newVal = v.StartsWith("true") || v == "1";
+                            city.visited = newVal;
+                            TBLog.Info($"EnsureBepInExConfigBindingsForCity: applied LEGACY {section}.Visited = {city.visited} (from {legacy} line {i + 1})");
+                            continue;
+                        }
+                    }
+                }
+            }
+            catch (Exception exLegacy)
+            {
+                TBLog.Warn($"EnsureBepInExConfigBindingsForCity: reading legacy cfg failed for '{city.name}': {exLegacy.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"EnsureBepInExConfigBindingsForCity: unexpected error for '{city?.name ?? "(null)"}': {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -2832,20 +3442,44 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         sceneName = sceneName,
                         coords = (detectedCoords.HasValue && !IsInvalidCoords(detectedCoords)) ? new float[] { detectedCoords.Value.x, detectedCoords.Value.y, detectedCoords.Value.z } : null,
                         targetGameObjectName = !string.IsNullOrEmpty(detectedTarget) ? detectedTarget : (sceneName + "_Location"),
-                        price = null,
-                        enabled = false,
+                        price = ResolveDefaultCityPrice(newName),
+                        enabled = true,
                         visited = true,
                         variants = new string[0],
                         lastKnownVariant = ""
                     };
 
-                    city.price = ResolveDefaultCityPrice(newName);
-
                     TravelButton.Cities.Add(city);
 
-                    // Persist only this city using canonical writer (ensures variants and lastKnownVariant keys are present)
-                    TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                    TBLog.Info($"StoreVisitedSceneToJson: appended new scene '{sceneName}' and persisted city entry.");
+                    try
+                    {
+                        // Ensure runtime config bindings and legacy overrides are applied for the new city
+                        try
+                        {
+                            // TravelButtonPlugin.Instance is the BepInEx plugin instance; may be null in some unit tests
+                            var pluginInstance = TravelButtonPlugin.Instance;
+                            if (pluginInstance != null)
+                            {
+                                pluginInstance.EnsureBepInExConfigBindingsForCity(city);
+                            }
+                            else
+                            {
+                                TBLog.Warn("StoreVisitedSceneToJson: TravelButtonPlugin.Instance is null; cannot apply per-city config bindings for new city.");
+                            }
+                        }
+                        catch (Exception exBind)
+                        {
+                            TBLog.Warn("StoreVisitedSceneToJson: failed to ensure bex bindings for new city: " + exBind.Message);
+                        }
+
+                        // Now persist (AppendOrUpdateCityInJsonAndSave will record the final city.price/enabled/visited)
+                        TravelButton.AppendOrUpdateCityInJsonAndSave(city);
+                        TBLog.Info($"StoreVisitedSceneToJson: appended new scene '{sceneName}' and persisted city entry.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TBLog.Warn("StoreVisitedSceneToJson: failed during post-create binding/persist: " + ex.Message);
+                    }
                     
                     // after TravelButton.AppendOrUpdateCityInJsonAndSave(city);
                     var plugin = TravelButtonPlugin.Instance;
@@ -3792,6 +4426,8 @@ public static class TravelButton
         public bool enabled;
 
         public bool visited;
+        
+        public string desc;
 
         public string sceneName;
         
@@ -4045,11 +4681,58 @@ public static class TravelButton
                                 string cname = key.ToString();
                                 var cityCfgObj = dict[key];
                                 var mapped = MapSingleCityFromObject(cname, cityCfgObj);
-                                if (mapped != null) Cities.Add(mapped);
+                                if (mapped == null) continue;
+
+                                if (TravelButton.Cities == null) TravelButton.Cities = new List<TravelButton.City>();
+
+                                // Try to find existing by name (case-insensitive)
+                                var existing = TravelButton.Cities.FirstOrDefault(c => string.Equals(c.name, mapped.name, StringComparison.OrdinalIgnoreCase));
+                                if (existing == null)
+                                {
+                                    TravelButton.Cities.Add(mapped);
+                                    TBLog.Info($"MapConfigInstanceToLocal: added mapped legacy-config city '{mapped.name}' (no existing JSON/runtime entry).");
+                                }
+                                else
+                                {
+                                    // Merge mapped values into existing only when fields are missing on existing
+                                    TBLog.Info($"MapConfigInstanceToLocal: merging mapped legacy-config city '{mapped.name}' into existing entry.");
+
+                                    if (string.IsNullOrEmpty(existing.sceneName) && !string.IsNullOrEmpty(mapped.sceneName))
+                                    {
+                                        existing.sceneName = mapped.sceneName;
+                                        TBLog.Info($"MapConfigInstanceToLocal: set sceneName for '{existing.name}' = '{existing.sceneName}'");
+                                    }
+
+                                    if ((existing.coords == null || existing.coords.Length < 3) && mapped.coords != null && mapped.coords.Length >= 3)
+                                    {
+                                        existing.coords = mapped.coords;
+                                        TBLog.Info($"MapConfigInstanceToLocal: set coords for '{existing.name}' from mapped config");
+                                    }
+
+                                    if (string.IsNullOrEmpty(existing.targetGameObjectName) && !string.IsNullOrEmpty(mapped.targetGameObjectName))
+                                    {
+                                        existing.targetGameObjectName = mapped.targetGameObjectName;
+                                        TBLog.Info($"MapConfigInstanceToLocal: set targetGameObjectName for '{existing.name}' = '{existing.targetGameObjectName}'");
+                                    }
+
+                                    // Do NOT overwrite price/enabled/visited here — those should be set by EnsureBepInExConfigBindings which runs after merging.
+                                    // However if a mapped city explicitly includes variants/lastKnownVariant and existing lacks them, merge those too:
+                                    if ((existing.variants == null || existing.variants.Length == 0) && mapped.variants != null && mapped.variants.Length > 0)
+                                    {
+                                        existing.variants = mapped.variants;
+                                        TBLog.Info($"MapConfigInstanceToLocal: merged variants for '{existing.name}' (count={mapped.variants.Length})");
+                                    }
+
+                                    if (string.IsNullOrEmpty(existing.lastKnownVariant) && !string.IsNullOrEmpty(mapped.lastKnownVariant))
+                                    {
+                                        existing.lastKnownVariant = mapped.lastKnownVariant;
+                                        TBLog.Info($"MapConfigInstanceToLocal: merged lastKnownVariant for '{existing.name}' = '{existing.lastKnownVariant}'");
+                                    }
+                                }
                             }
                             catch (Exception inner)
                             {
-                                TBLog.Warn("MapConfigInstanceToLocal: error mapping city entry: " + inner.Message);
+                                TBLog.Warn($"MapConfigInstanceToLocal: failed mapping legacy city for key '{key}': {inner.Message}");
                             }
                         }
                     }
@@ -7604,4 +8287,221 @@ public static class TravelButton
         }
     }
 
+    private static void test2()
+    {
+        try
+        {
+            Debug.Log("[VariantRefProbe] start");
+
+            var scene = SceneManager.GetActiveScene();
+            Debug.Log("[VariantRefProbe] active scene='" + scene.name + "' rootCount=" + scene.rootCount);
+
+            // helper: get full path of a transform
+            string GetFullPath(Transform tr)
+            {
+                if (tr == null) return "(null)";
+                var parts = new List<string>();
+                var cur = tr;
+                while (cur != null)
+                {
+                    parts.Add(cur.name);
+                    cur = cur.parent;
+                }
+                parts.Reverse();
+                return string.Join("/", parts);
+            }
+
+            // find Interactions root
+            GameObject interactionsRoot = null;
+            foreach (var r in scene.GetRootGameObjects())
+            {
+                if (r == null) continue;
+                if (string.Equals(r.name, "Interactions", StringComparison.OrdinalIgnoreCase) || r.name.IndexOf("Interactions", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    interactionsRoot = r;
+                    break;
+                }
+            }
+            if (interactionsRoot == null)
+            {
+                Debug.Log("[VariantRefProbe] Interactions root not found");
+                return;
+            }
+            Debug.Log("[VariantRefProbe] Interactions root: " + interactionsRoot.name);
+
+            // find NormalCierzo and DestroyedCierzo under Interactions (any depth)
+            GameObject normal = null;
+            GameObject destroyed = null;
+            var allTransforms = interactionsRoot.GetComponentsInChildren<Transform>(true);
+            foreach (var t in allTransforms)
+            {
+                if (t == null) continue;
+                var n = t.name ?? "";
+                if (normal == null && n.IndexOf("NormalCierzo", StringComparison.OrdinalIgnoreCase) >= 0) normal = t.gameObject;
+                if (destroyed == null && n.IndexOf("DestroyedCierzo", StringComparison.OrdinalIgnoreCase) >= 0) destroyed = t.gameObject;
+            }
+
+            Debug.Log("[VariantRefProbe] NormalCierzo found=" + (normal != null) + " DestroyedCierzo found=" + (destroyed != null));
+            if (normal != null) Debug.Log("[VariantRefProbe] NormalCierzo path: " + GetFullPath(normal.transform) + " active=" + normal.activeInHierarchy);
+            if (destroyed != null) Debug.Log("[VariantRefProbe] DestroyedCierzo path: " + GetFullPath(destroyed.transform) + " active=" + destroyed.activeInHierarchy);
+
+            // list components on Interactions root and children
+            Debug.Log("[VariantRefProbe] Components on Interactions root:");
+            foreach (var c in interactionsRoot.GetComponents<Component>()) Debug.Log("[VariantRefProbe]  - " + (c == null ? "(null)" : c.GetType().FullName));
+
+            if (normal != null)
+            {
+                Debug.Log("[VariantRefProbe] Components on NormalCierzo:");
+                foreach (var c in normal.GetComponents<Component>()) Debug.Log("[VariantRefProbe]  - " + (c == null ? "(null)" : c.GetType().FullName));
+            }
+            if (destroyed != null)
+            {
+                Debug.Log("[VariantRefProbe] Components on DestroyedCierzo:");
+                foreach (var c in destroyed.GetComponents<Component>()) Debug.Log("[VariantRefProbe]  - " + (c == null ? "(null)" : c.GetType().FullName));
+            }
+
+            // Scan scene for components that reference these objects or contain their names in strings
+            var sceneRoots = scene.GetRootGameObjects();
+            var sceneTransforms = sceneRoots.SelectMany(r => r.GetComponentsInChildren<Transform>(true)).ToArray();
+
+            int refMatches = 0;
+            int stringMatches = 0;
+            Debug.Log("[VariantRefProbe] Scanning scene components for references to NormalCierzo/DestroyedCierzo...");
+
+            foreach (var tr in sceneTransforms)
+            {
+                if (tr == null) continue;
+                var go = tr.gameObject;
+                foreach (var comp in go.GetComponents<Component>())
+                {
+                    if (comp == null) continue;
+                    var t = comp.GetType();
+
+                    // fields
+                    foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        object val = null;
+                        try { val = f.GetValue(comp); } catch { val = null; }
+                        if (val == null) continue;
+
+                        // handle GameObject
+                        if (val is GameObject g)
+                        {
+                            if (g == normal || g == destroyed)
+                            {
+                                Debug.Log("[VariantRefProbe] REF Field: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> references " + (g == normal ? "NormalCierzo" : "DestroyedCierzo"));
+                                refMatches++;
+                            }
+                            continue;
+                        }
+
+                        // handle Transform
+                        if (val is Transform tf)
+                        {
+                            if (tf == normal?.transform || tf == destroyed?.transform)
+                            {
+                                Debug.Log("[VariantRefProbe] REF Field: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> references Transform " + (tf == normal?.transform ? "NormalCierzo" : "DestroyedCierzo"));
+                                refMatches++;
+                            }
+                            continue;
+                        }
+
+                        // handle Component
+                        if (val is Component cm)
+                        {
+                            if (cm.gameObject == normal || cm.gameObject == destroyed)
+                            {
+                                Debug.Log("[VariantRefProbe] REF Field: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> references component on " + (cm.gameObject == normal ? "NormalCierzo" : "DestroyedCierzo"));
+                                refMatches++;
+                            }
+                            continue;
+                        }
+
+                        // arrays and lists (simple safe handling)
+                        if (val is Array arr)
+                        {
+                            foreach (var item in arr)
+                            {
+                                if (item is GameObject ga && (ga == normal || ga == destroyed))
+                                {
+                                    Debug.Log("[VariantRefProbe] REF Field(Array): GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> contains reference to " + (ga == normal ? "NormalCierzo" : "DestroyedCierzo"));
+                                    refMatches++;
+                                }
+                                else if (item is Transform ta && (ta == normal?.transform || ta == destroyed?.transform))
+                                {
+                                    Debug.Log("[VariantRefProbe] REF Field(Array): GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> contains Transform ref " + (ta == normal?.transform ? "NormalCierzo" : "DestroyedCierzo"));
+                                    refMatches++;
+                                }
+                                else if (item is Component cb && (cb.gameObject == normal || cb.gameObject == destroyed))
+                                {
+                                    Debug.Log("[VariantRefProbe] REF Field(Array): GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> contains Component ref on " + (cb.gameObject == normal ? "NormalCierzo" : "DestroyedCierzo"));
+                                    refMatches++;
+                                }
+                                else if (item is string ss && (!string.IsNullOrEmpty(ss) && ((normal != null && ss.IndexOf(normal.name, StringComparison.OrdinalIgnoreCase) >= 0) || (destroyed != null && ss.IndexOf(destroyed.name, StringComparison.OrdinalIgnoreCase) >= 0))))
+                                {
+                                    Debug.Log("[VariantRefProbe] STR Field(Array): GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> string contains token '" + ss + "'");
+                                    stringMatches++;
+                                }
+                            }
+                            continue;
+                        }
+
+                        // string field
+                        if (val is string s)
+                        {
+                            if ((normal != null && s.IndexOf(normal.name, StringComparison.OrdinalIgnoreCase) >= 0) || (destroyed != null && s.IndexOf(destroyed.name, StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                Debug.Log("[VariantRefProbe] STR Field: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Field='" + f.Name + "' -> '" + s + "'");
+                                stringMatches++;
+                            }
+                        }
+                    }
+
+                    // properties (read-only)
+                    foreach (var p in t.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                    {
+                        if (p.GetIndexParameters().Length != 0 || !p.CanRead) continue;
+                        object pval = null;
+                        try { pval = p.GetValue(comp); } catch { pval = null; }
+                        if (pval == null) continue;
+
+                        if (pval is GameObject pg)
+                        {
+                            if (pg == normal || pg == destroyed)
+                            {
+                                Debug.Log("[VariantRefProbe] REF Prop: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Prop='" + p.Name + "' -> references " + (pg == normal ? "NormalCierzo" : "DestroyedCierzo"));
+                                refMatches++;
+                            }
+                            continue;
+                        }
+                        if (pval is Transform ptf)
+                        {
+                            if (ptf == normal?.transform || ptf == destroyed?.transform)
+                            {
+                                Debug.Log("[VariantRefProbe] REF Prop: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Prop='" + p.Name + "' -> references Transform " + (ptf == normal?.transform ? "NormalCierzo" : "DestroyedCierzo"));
+                                refMatches++;
+                            }
+                            continue;
+                        }
+                        if (pval is string ps)
+                        {
+                            if ((normal != null && ps.IndexOf(normal.name, StringComparison.OrdinalIgnoreCase) >= 0) || (destroyed != null && ps.IndexOf(destroyed.name, StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                Debug.Log("[VariantRefProbe] STR Prop: GO='" + GetFullPath(tr) + "' Component='" + t.FullName + "' Prop='" + p.Name + "' -> '" + ps + "'");
+                                stringMatches++;
+                            }
+                        }
+                    }
+                }
+            }
+
+            Debug.Log("[VariantRefProbe] scan complete. refMatches=" + refMatches + " stringMatches=" + stringMatches);
+            Debug.Log("[VariantRefProbe] done");
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogError("[VariantRefProbe] error: " + ex);
+        }
+    }
 }
+

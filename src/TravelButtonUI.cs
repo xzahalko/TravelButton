@@ -2021,6 +2021,7 @@ public partial class TravelButtonUI : MonoBehaviour
 
         //        VerifyJsonAndRuntimeCitiesOnDialogOpen();
         DebugDumpAllCitiesSummary();
+
         try
         {
             try { ClearSaveRootCache(); } catch { }
@@ -7272,5 +7273,10 @@ public partial class TravelButtonUI : MonoBehaviour
             Debug.LogWarning("[VariantDetectDiag] exception: " + ex);
             return (null, null, ExtraSceneVariantDetection.VariantConfidence.Unknown);
         }
+    }
+
+    private static void testc()
+    {
+
     }
 }
