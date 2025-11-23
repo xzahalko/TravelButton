@@ -3409,7 +3409,7 @@ public static class TravelButton
             bool visited = false; 
             this.sceneName = null;
             // Initialize variants and lastKnownVariant with safe defaults
-            this.variants = new string[0];  // Empty array, not null
+            this.variants = Array.Empty<string>();  // Use Array.Empty for better performance
             this.lastKnownVariant = "";  // Empty string, not null
         }
 

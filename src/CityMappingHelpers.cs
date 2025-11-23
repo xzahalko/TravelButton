@@ -987,7 +987,7 @@ public static class CityMappingHelpers
             var variants = GetStringArrayFromSource(src, "variants") ?? GetStringArrayFromSource(src, "Variants");
             if (variants == null || variants.Length == 0)
             {
-                variants = new string[0];  // Empty array, not null
+                variants = Array.Empty<string>();  // Use Array.Empty for better performance
             }
             SetStringArrayOnTarget(dst, variants, "variants", "Variants");
 
@@ -1018,7 +1018,7 @@ public static class CityMappingHelpers
             var variants = GetStringArrayFromSource(src, "variants");
             if (variants == null || variants.Length == 0)
             {
-                variants = new string[0];  // Empty array, not null
+                variants = Array.Empty<string>();  // Use Array.Empty for better performance
             }
             SetStringArrayOnTarget(dst, variants, "variants", "Variants");
             
