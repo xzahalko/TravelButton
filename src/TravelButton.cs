@@ -1076,6 +1076,23 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private static readonly object _variantDetectionLock = new object();
 
     /// <summary>
+    /// Number of top-scored candidates to run expensive reflection/component-string-field inspection on.
+    /// Reducing this value improves performance in DetectAndPersistVariantsForCityCoroutine.
+    /// </summary>
+    private const int TOP_K_REFLECTION = 3;
+
+    /// <summary>
+    /// Lightweight struct to cache transform data once per detection run, avoiding repeated property access and string normalization.
+    /// </summary>
+    private struct TransformInfo
+    {
+        public UnityEngine.Transform Transform;
+        public string NormalizedName;
+        public bool IsActive;
+        public UnityEngine.Vector3 WorldPosition;
+    }
+
+    /// <summary>
     /// MarkCityVisitedByScene: simplified and instrumented with TBPerf.
     /// - Marks matching cities as visited (via property or field).
     /// - Starts DetectAndPersistVariantsForCityCoroutine only once per city (tracked).
@@ -2857,6 +2874,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Inline variant detection (no hardcoded "Normal"/"Destroyed").
             string finalLast = null;
             var swBuildScore = TBPerf.StartTimer();
+            // Store top-K candidate names for limited reflection check
+            var topKCandidates = new System.Collections.Generic.List<string>();
 
             try
             {
@@ -2896,7 +2915,28 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
                     var roots = scene.GetRootGameObjects();
-                    var allTransforms = roots.SelectMany(r => r.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
+                    
+                    // Build lightweight TransformInfo[] once to avoid repeated property access and string normalization
+                    var rawTransforms = roots.SelectMany(r => r.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
+                    var allTransformInfos = new TransformInfo[rawTransforms.Length];
+                    for (int i = 0; i < rawTransforms.Length; i++)
+                    {
+                        var t = rawTransforms[i];
+                        if (t == null)
+                        {
+                            allTransformInfos[i] = new TransformInfo { Transform = null, NormalizedName = "", IsActive = false, WorldPosition = UnityEngine.Vector3.zero };
+                        }
+                        else
+                        {
+                            allTransformInfos[i] = new TransformInfo
+                            {
+                                Transform = t,
+                                NormalizedName = (t.name ?? "").ToLowerInvariant(),
+                                IsActive = t.gameObject.activeInHierarchy,
+                                WorldPosition = t.position
+                            };
+                        }
+                    }
 
                     // reference pos for proximity scoring
                     UnityEngine.Vector3 refPos = UnityEngine.Vector3.zero;
@@ -2926,23 +2966,28 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         if (string.IsNullOrWhiteSpace(candidate)) continue;
                         if (blacklistPrefixes.Any(b => candidate.StartsWith(b, System.StringComparison.OrdinalIgnoreCase))) continue;
 
-                        var matches = allTransforms.Where(t =>
-                        {
-                            if (t == null) return false;
-                            var n = t.name ?? "";
-                            return (n.IndexOf(candidate, System.StringComparison.OrdinalIgnoreCase) >= 0)
-                                   || (candidate.IndexOf(n, System.StringComparison.OrdinalIgnoreCase) >= 0);
-                        }).ToArray();
-
-                        int total = matches.Length;
-                        int active = matches.Count(m => m.gameObject.activeInHierarchy);
-
+                        // Use precomputed TransformInfo array for matching (avoid repeated property access)
+                        string candidateLower = candidate.ToLowerInvariant();
+                        int total = 0;
+                        int active = 0;
                         float nearest = float.MaxValue;
-                        if (haveRef && matches.Length > 0)
+
+                        for (int i = 0; i < allTransformInfos.Length; i++)
                         {
-                            foreach (var m in matches)
+                            ref var info = ref allTransformInfos[i];
+                            if (info.Transform == null) continue;
+                            
+                            // Match using precomputed normalized name
+                            bool isMatch = info.NormalizedName.Contains(candidateLower) || candidateLower.Contains(info.NormalizedName);
+                            if (!isMatch) continue;
+
+                            total++;
+                            if (info.IsActive) active++;
+                            
+                            if (haveRef)
                             {
-                                try { var d = UnityEngine.Vector3.Distance(refPos, m.position); if (d < nearest) nearest = d; } catch { }
+                                float d = UnityEngine.Vector3.Distance(refPos, info.WorldPosition);
+                                if (d < nearest) nearest = d;
                             }
                         }
 
@@ -3039,11 +3084,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                     if (scored.Count > 0)
                     {
-                        var best = scored.OrderByDescending(s => s.score)
+                        // Get top-K candidates for limited reflection check
+                        var orderedScored = scored.OrderByDescending(s => s.score)
                                          .ThenByDescending(s => s.active)
                                          .ThenByDescending(s => s.total)
                                          .ThenBy(s => s.name)
-                                         .First();
+                                         .ToList();
+                        topKCandidates = orderedScored.Take(TOP_K_REFLECTION).Select(s => s.name).ToList();
+                        
+                        var best = orderedScored.First();
                         finalLast = best.name;
                         TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: selected variant='{finalLast}' score={best.score} for city='{cityNameForLog}'");
                     }
@@ -3110,7 +3159,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 confidentToPersist = true;
                             }
 
-                            if (!confidentToPersist)
+                            // Limit expensive reflection/component inspection to only objects matching top-K candidates
+                            if (!confidentToPersist && topKCandidates.Count > 0)
                             {
                                 var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
                                 var roots = scene.GetRootGameObjects();
@@ -3120,6 +3170,21 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                     foreach (var tr in r.GetComponentsInChildren<UnityEngine.Transform>(true))
                                     {
                                         if (tr == null) continue;
+                                        
+                                        // Only inspect objects whose names match one of the top-K candidates
+                                        var trName = tr.name ?? "";
+                                        bool matchesTopK = false;
+                                        foreach (var topCandidate in topKCandidates)
+                                        {
+                                            if (trName.IndexOf(topCandidate, System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                topCandidate.IndexOf(trName, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                            {
+                                                matchesTopK = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!matchesTopK) continue;
+
                                         var go = tr.gameObject;
                                         foreach (var comp in go.GetComponents<UnityEngine.Component>())
                                         {
