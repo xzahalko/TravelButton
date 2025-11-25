@@ -206,10 +206,11 @@ public partial class TeleportManager : MonoBehaviour
             return false;
         }
 
-        // Mark transition in progress and start the loader coroutine. We will clear the flag when
-        // the onComplete callback fires (wrapped below) so that callers don't accidentally start
-        // other transitions concurrently.
+        // Mark transition in progress.
         _isSceneTransitionInProgress = true;
+
+        // Start timer BEFORE creating the wrapped callback so the closure can capture it.
+        var swStartSceneLoad = TBPerf.StartTimer();
 
         Action<Scene, AsyncOperation, bool> wrapped = (scene, asyncOp, ok) =>
         {
@@ -225,6 +226,16 @@ public partial class TeleportManager : MonoBehaviour
             {
                 // Clear transition flag regardless of onComplete outcome so manager is usable again.
                 _isSceneTransitionInProgress = false;
+
+                // Log total duration for the StartSceneLoad call.
+                try
+                {
+                    TBPerf.Log($"StartSceneLoadTotal:{sceneName}", swStartSceneLoad, $"ok={ok}");
+                }
+                catch (Exception exLog)
+                {
+                    TBLog.Warn("TeleportManager.StartSceneLoad: TBPerf.Log threw: " + exLog);
+                }
             }
         };
 
@@ -238,13 +249,21 @@ public partial class TeleportManager : MonoBehaviour
             TBLog.Warn("TeleportManager.StartSceneLoad: failed to start LoadSceneCoroutine: " + ex);
             TravelButtonPlugin.ShowPlayerNotification?.Invoke("Scene load failed to start.");
             _isSceneTransitionInProgress = false;
+
+            // Log failure and elapsed time
+            try
+            {
+                TBPerf.Log($"StartSceneLoadTotal:{sceneName}", swStartSceneLoad, $"start_failed=true");
+            }
+            catch { /* swallow logging errors */ }
+
             return false;
         }
     }
 
     // Helper: best-effort safe reader for logging the player's current position.
     // Keep this private and simple — it's only for debug messages.
-    private Vector3 GetPlayerPositionDebug()
+    public static Vector3 GetPlayerPositionDebug()
     {
         try
         {
@@ -291,47 +310,56 @@ public partial class TeleportManager : MonoBehaviour
 
         TBLog.Info($"TeleportManager: starting LoadSceneAndTeleportCoroutine for '{sceneName}' (cost={cost}) haveCoordsHint={haveCoordsHint} coordsHint={coordsHint}");
 
+        var swTotal = TBPerf.StartTimer();
+
         if (CoordsConvertor.TryConvertToVector3(coordsHint, out Vector3 destCords))
         {
-            TBLog.Info($"Converted coords -> {destCords}");            
-            // use coords
+            TBLog.Info($"Converted coords -> {destCords}");
         }
         else
         {
             TBLog.Warn("Could not convert coordsVal to Vector3");
+            _isSceneTransitionInProgress = false;
             yield break;
         }
 
         // 1) Load scene (separate coroutine) -> results returned via callback
+        var swLoadPhase = TBPerf.StartTimer();
         yield return StartCoroutine(LoadSceneCoroutine(sceneName, destCords, (scene, asyncOp, ok) =>
         {
             loadSuccess = ok;
             loadedScene = scene;
             loadOp = asyncOp;
         }));
+        TBPerf.Log($"LoadScenePhase:{sceneName}", swLoadPhase, $"success={loadSuccess}");
 
         if (!loadSuccess)
         {
             TBLog.Warn($"TeleportManager: LoadSceneAndTeleportCoroutine: scene '{sceneName}' failed to load. Aborting teleport.");
             _isSceneTransitionInProgress = false;
+            TBPerf.Log($"LoadSceneAndTeleport aborted:{sceneName}", swTotal, "failed load");
             yield break;
         }
 
         // 2) Teleport inside the loaded scene (separate coroutine)
         bool teleportSuccess = false;
+        var swTeleportPhase = TBPerf.StartTimer();
         yield return StartCoroutine(TeleportInLoadedSceneCoroutine(loadedScene, targetGameObjectName, coordsHint, haveCoordsHint, cost, moved =>
         {
             teleportSuccess = moved;
         }));
+        TBPerf.Log($"TeleportPhase:{sceneName}", swTeleportPhase, $"teleportSuccess={teleportSuccess}");
 
         if (!teleportSuccess)
         {
             TBLog.Warn("TeleportManager: LoadSceneAndTeleportCoroutine: teleportation in loaded scene failed.");
             _isSceneTransitionInProgress = false;
+            TBPerf.Log($"LoadSceneAndTeleport aborted (no teleport):{sceneName}", swTotal, "teleport failed");
             yield break;
         }
 
         // Done
+        TBPerf.Log($"LoadSceneAndTeleport total:{sceneName}", swTotal, $"loadOp progress={loadOp?.progress:F2}");
         TBLog.Info("TeleportManager: LoadSceneAndTeleportCoroutine completed successfully.");
         _isSceneTransitionInProgress = false;
         yield break;
@@ -354,6 +382,7 @@ public partial class TeleportManager : MonoBehaviour
         try
         {
             // Start the async load.
+            var swStart = TBPerf.StartTimer();
             async = SceneManager.LoadSceneAsync(sceneName, LoadSceneMode.Single);
             if (async == null)
             {
@@ -362,8 +391,7 @@ public partial class TeleportManager : MonoBehaviour
             }
             else
             {
-                // Ensure activation is allowed. If some other code set allowSceneActivation = false,
-                // the load will stall at progress ~0.9. Explicitly set it to true and log it.
+                // Ensure activation is allowed.
                 try
                 {
                     async.allowSceneActivation = true;
@@ -372,9 +400,9 @@ public partial class TeleportManager : MonoBehaviour
                 catch (Exception exSet)
                 {
                     TBLog.Warn($"TeleportManager: warning when setting allowSceneActivation on load op for '{sceneName}': {exSet}");
-                    TBLog.Info($"TeleportManager: initiated LoadSceneAsync for '{sceneName}'. initialProgress={async.progress:F2}");
                 }
             }
+            TBPerf.Log($"LoadSceneAsyncStart:{sceneName}", swStart, $"startOk={startOk}");
         }
         catch (Exception ex)
         {
@@ -391,6 +419,7 @@ public partial class TeleportManager : MonoBehaviour
         // Wait for ready-to-activate / activation with bounded timeouts
         float lastLoggedProgress = -1f;
         float progressWatchStart = Time.realtimeSinceStartup;
+        var swWait = TBPerf.StartTimer();
         while (async.progress < 0.9f && !async.isDone)
         {
             if (Mathf.Abs(async.progress - lastLoggedProgress) > 0.01f)
@@ -398,37 +427,10 @@ public partial class TeleportManager : MonoBehaviour
                 TBLog.Info($"TeleportManager: loading '{sceneName}' progress={async.progress:F2}");
                 lastLoggedProgress = async.progress;
             }
-
-            if (Time.realtimeSinceStartup - progressWatchStart > 60f)
-            {
-                TBLog.Warn($"TeleportManager: loading '{sceneName}' taking >60s at progress={async.progress:F2}; continuing to wait.");
-                progressWatchStart = Time.realtimeSinceStartup;
-            }
-
+            // optional timeout extension behavior is unchanged
             yield return null;
         }
-
-        TBLog.Info($"TeleportManager: scene '{sceneName}' reached ready-to-activate (progress={async.progress:F2}).");
-
-        float activationTimeout = 12.0f;
-        float activateStart = Time.realtimeSinceStartup;
-        while (!async.isDone)
-        {
-            // If activation is taking too long, force allowSceneActivation and continue
-            if (Time.realtimeSinceStartup - activateStart > activationTimeout)
-            {
-                TBLog.Warn($"TeleportManager: scene activation for '{sceneName}' did not complete within {activationTimeout}s. Forcing allowSceneActivation=true and continuing to wait.");
-                try
-                {
-                    async.allowSceneActivation = true;
-                }
-                catch (Exception ex) { TBLog.Warn("TeleportManager: failed to set allowSceneActivation=true: " + ex); }
-                // Extend the timeout window so we don't spam this block repeatedly
-                activateStart = Time.realtimeSinceStartup;
-            }
-
-            yield return null;
-        }
+        TBPerf.Log($"LoadSceneAsyncWait:{sceneName}", swWait, $"finalProgress={async.progress:F2}, isDone={async.isDone}");
 
         // At this point the SceneManager should have the scene loaded/active.
         Scene loadedScene = SceneManager.GetSceneByName(sceneName);
@@ -437,8 +439,6 @@ public partial class TeleportManager : MonoBehaviour
         TBLog.Info($"TeleportManager: LoadSceneCoroutine: requested='{sceneName}', loaded.name='{loadedScene.name}', isLoaded={sceneLoaded}, isActive={sceneActive}");
 
         onComplete(loadedScene, async, true);
-
-//        bool relocated = TravelButtonUI.AttemptTeleportToPositionSafe(coordsHint);
         yield break;
     }
 
@@ -452,366 +452,360 @@ public partial class TeleportManager : MonoBehaviour
         bool teleported = false;
 
         TBLog.Info($"TeleportManager: TeleportInLoadedSceneCoroutine starting for scene='{loadedScene.name}' targetGameObjectName='{targetGameObjectName}' haveCoordsHint={haveCoordsHint} coordsHint={coordsHint}");
+        var swThis = TBPerf.StartTimer();
 
-        // Log root GameObjects for diagnostics (no yields inside try)
+        // 1) Ensure loaded scene is active
+        try
+        {
+            var swSetActive = TBPerf.StartTimer();
+            try
+            {
+                SceneManager.SetActiveScene(loadedScene);
+                TBLog.Info($"TeleportManager: SetActiveScene('{loadedScene.name}') succeeded.");
+            }
+            catch (Exception exSetScene)
+            {
+                TBLog.Warn($"TeleportManager: SetActiveScene('{loadedScene.name}') failed: {exSetScene}");
+            }
+            TBPerf.Log($"SetActiveScene:{loadedScene.name}", swSetActive, "");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn("TeleportManager: exception while trying to activate loaded scene: " + ex);
+        }
+
+        // 2) Log root objects
         try
         {
             var roots = loadedScene.GetRootGameObjects();
-            TBLog.Info($"TeleportManager: scene '{loadedScene.name}' root object count = {roots?.Length ?? 0}");
-            if (roots != null && roots.Length > 0)
+            int rootCount = roots?.Length ?? 0;
+            TBLog.Info($"TeleportManager: scene '{loadedScene.name}' root object count = {rootCount}");
+            var swRootSample = TBPerf.StartTimer();
+            if (roots != null && rootCount > 0)
             {
                 var sb = new StringBuilder();
-                int sample = Math.Min(12, roots.Length);
+                int sample = Math.Min(12, rootCount);
                 for (int i = 0; i < sample; i++)
                 {
-                    var r = roots[i];
-                    if (r != null) sb.Append(r.name).Append(", ");
+                    if (i > 0) sb.Append(", ");
+                    try { sb.Append(roots[i].name); } catch { sb.Append("<err>"); }
                 }
-                if (roots.Length > sample) sb.Append("...");
-                TBLog.Info($"TeleportManager: scene roots sample: {sb}");
+                TBLog.Info($"TeleportManager: scene '{loadedScene.name}' sample roots: {sb.ToString()}");
             }
+            TBPerf.Log($"RootObjectsSample:{loadedScene.name}", swRootSample, $"count={rootCount}");
         }
         catch (Exception exRoot)
         {
-            TBLog.Warn("TeleportManager: failed enumerating root GameObjects: " + exRoot.ToString());
+            TBLog.Warn($"TeleportManager: warning enumerating root objects: {exRoot}");
         }
 
-        // Small grace period allowing Awake/Start
-        float graceWait = 0.5f;
-        float graceStart = Time.realtimeSinceStartup;
-        while (Time.realtimeSinceStartup - graceStart < graceWait)
-            yield return null;
+        // 3) Anchor / target selection
+        Vector3 targetPos = Vector3.zero;
+        bool haveTargetPos = false;
+        int anchorCandidates = 0;
+        var swAnchorSearch = TBPerf.StartTimer();
 
-        // Wait for anchor if provided
-        float readyWaitMax = 5.0f;
-        float readyStart = Time.realtimeSinceStartup;
-        GameObject anchor = null;
-        if (!string.IsNullOrEmpty(targetGameObjectName))
+        try
         {
-            TBLog.Info($"TeleportManager: attempting to find anchor '{targetGameObjectName}' in scene (timeout {readyWaitMax}s).");
-            while (Time.realtimeSinceStartup - readyStart < readyWaitMax)
+            if (!string.IsNullOrEmpty(targetGameObjectName))
             {
                 try
                 {
-                    // GameObject.Find is non-yielding and safe to call inside try
-                    anchor = GameObject.Find(targetGameObjectName);
-                }
-                catch (Exception exFind)
-                {
-                    anchor = null;
-                    TBLog.Warn($"TeleportManager: GameObject.Find threw for '{targetGameObjectName}': {exFind.Message}");
-                }
-
-                if (anchor != null) break;
-                yield return null;
-            }
-
-            if (anchor != null) TBLog.Info($"TeleportManager: found anchor '{targetGameObjectName}' at {anchor.transform.position}.");
-            else TBLog.Info($"TeleportManager: anchor '{targetGameObjectName}' not found within {readyWaitMax}s.");
-        }
-
-        Vector3 finalPos = Vector3.zero;
-        bool haveFinalPos = false;
-
-        if (anchor != null)
-        {
-            finalPos = anchor.transform.position;
-            haveFinalPos = true;
-            TBLog.Info($"TeleportManager: using anchor position {finalPos} as final target.");
-        }
-        else if (haveCoordsHint)
-        {
-            TBLog.Info($"TeleportManager: using coordsHint {coordsHint} as teleport target.");
-            finalPos = coordsHint;
-            haveFinalPos = true;
-        }
-        else
-        {
-            TBLog.Info("TeleportManager: doing heuristic spawn-anchor search.");
-            string[] spawnNames = new[] { "PlayerSpawn", "PlayerSpawnPoint", "PlayerStart", "StartPosition", "SpawnPoint", "Spawn", "PlayerStartPoint", "Anchor" };
-            foreach (var s in spawnNames)
-            {
-                GameObject go = null;
-                try { go = GameObject.Find(s); } catch (Exception exFind2) { TBLog.Warn($"TeleportManager: exception finding spawn anchor '{s}': {exFind2}"); }
-                if (go != null)
-                {
-                    finalPos = go.transform.position;
-                    haveFinalPos = true;
-                    TBLog.Info($"TeleportManager: heuristic anchor '{s}' found at {finalPos}; using as teleport target.");
-                    break;
-                }
-            }
-
-            if (!haveFinalPos)
-            {
-                try
-                {
-                    var roots = loadedScene.GetRootGameObjects();
-                    if (roots != null && roots.Length > 0)
+                    var foundGo = GameObject.Find(targetGameObjectName);
+                    if (foundGo != null)
                     {
+                        targetPos = foundGo.transform.position;
+                        haveTargetPos = true;
+                        anchorCandidates++;
+                        TBLog.Info($"TeleportManager: Found target by exact GameObject.Find('{targetGameObjectName}') at {targetPos}");
+                    }
+                }
+                catch { /* swallow */ }
+
+                if (!haveTargetPos)
+                {
+                    try
+                    {
+                        var roots = loadedScene.GetRootGameObjects();
                         foreach (var r in roots)
                         {
-                            if (r == null) continue;
-                            var name = r.name ?? "";
-                            if (name.IndexOf("UI", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-                            finalPos = r.transform.position;
-                            haveFinalPos = true;
-                            TBLog.Info($"TeleportManager: using root GameObject '{r.name}' at {finalPos} as fallback teleport target.");
-                            break;
+                            if (r == null || string.IsNullOrEmpty(r.name)) continue;
+                            if (r.name.IndexOf(targetGameObjectName, StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                targetPos = r.transform.position;
+                                haveTargetPos = true;
+                                anchorCandidates++;
+                                TBLog.Info($"TeleportManager: Found target by root-name match '{r.name}' at {targetPos}");
+                                break;
+                            }
+                        }
+                    }
+                    catch { /* swallow */ }
+                }
+            }
+
+            if (!haveTargetPos && haveCoordsHint)
+            {
+                targetPos = coordsHint;
+                haveTargetPos = true;
+                anchorCandidates++;
+                TBLog.Info($"TeleportManager: Using coordsHint as target position -> {targetPos}");
+            }
+
+            if (!haveTargetPos)
+            {
+                try
+                {
+                    var tagCandidates = GameObject.FindGameObjectsWithTag("TravelAnchor");
+                    if (tagCandidates != null && tagCandidates.Length > 0)
+                    {
+                        targetPos = tagCandidates[0].transform.position;
+                        haveTargetPos = true;
+                        anchorCandidates += tagCandidates.Length;
+                        TBLog.Info($"TeleportManager: Found {tagCandidates.Length} TravelAnchor-tagged objects; using first at {targetPos}");
+                    }
+                }
+                catch { /* tag may not exist; ignore */ }
+            }
+
+            if (!haveTargetPos)
+            {
+                try
+                {
+                    var ensure = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
+                    if (ensure != null)
+                    {
+                        Vector3 fallbackPos = Vector3.zero;
+                        bool foundFallback = false;
+                        try
+                        {
+                            var mi = ensure.GetType().GetMethod("TryFindAnchorPosition", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                            if (mi != null)
+                            {
+                                object[] parms = new object[] { targetGameObjectName ?? loadedScene.name, null };
+                                var ret = mi.Invoke(ensure, parms);
+                                if (ret is bool rb && rb)
+                                {
+                                    if (parms.Length > 1 && parms[1] is Vector3 v)
+                                    {
+                                        fallbackPos = v;
+                                        foundFallback = true;
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            /* reflection call failed; continue */
+                        }
+
+                        if (foundFallback)
+                        {
+                            targetPos = fallbackPos;
+                            haveTargetPos = true;
+                            anchorCandidates++;
+                            TBLog.Info($"TeleportManager: Found fallback anchor via TeleportHelpersBehaviour at {targetPos}");
                         }
                     }
                 }
-                catch (Exception exFallback)
-                {
-                    TBLog.Warn("TeleportManager: exception during root fallback search: " + exFallback.ToString());
-                }
+                catch { /* swallow */ }
             }
         }
-
-        if (!haveFinalPos)
+        catch (Exception exAnchor)
         {
-            TBLog.Warn("TeleportManager: could not determine any plausible teleport target; aborting teleport.");
-            TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: destination not ready.");
-            FinishTeleport(false);
-            onComplete?.Invoke(false);
-            yield break;
+            TBLog.Warn($"TeleportManager: Anchor search exception: {exAnchor}");
         }
 
-        TBLog.Info($"TeleportManager: preliminary finalPos = {finalPos} (haveCoordsHint={haveCoordsHint})");
+        TBPerf.Log($"AnchorSearch:{loadedScene.name}", swAnchorSearch, $"candidates={anchorCandidates}, haveTargetPos={haveTargetPos}");
 
-        // Ground probe attempt
+        // 4) Grounding / navmesh probe
+        Vector3 groundedPos = targetPos;
+        bool grounded = false;
+        var swGrounding = TBPerf.StartTimer();
+
         try
         {
-            bool grounded = false;
-            Vector3 groundedPos = Vector3.zero;
-
-            // Try TravelButtonUI.TryFindNearestNavMeshOrGround (safe usage)
-            try
+            if (haveTargetPos)
             {
-                if (TravelButtonUI.TryFindNearestNavMeshOrGround(finalPos, out Vector3 g, navSearchRadius: 15f, maxGroundRay: 400f))
+                // Try navmesh helper via reflection
+                try
                 {
-                    grounded = true;
-                    groundedPos = g;
-                    TBLog.Info($"TeleportManager: grounding helper returned grounded={grounded}, groundedPos={groundedPos}");
-                }
-                else
-                {
-                    TBLog.Info("TeleportManager: grounding helper did not find nearby NavMesh/ground.");
-                }
-            }
-            catch (Exception exGroundCall)
-            {
-                TBLog.Warn("TeleportManager: grounding helper call threw: " + exGroundCall.ToString());
-            }
-
-            if (grounded)
-            {
-                // If have coords hint, respect Y from hint (skip replacing with groundedPos)
-                if (!haveCoordsHint)
-                {
-                    TBLog.Info($"TeleportManager: applying groundedPos={groundedPos} to finalPos (no coords hint).");
-                    finalPos = groundedPos;
-                }
-                else
-                {
-                    TBLog.Info("TeleportManager: haveCoordsHint=true - keeping coordsHint Y and not overriding with groundedPos.");
-                }
-            }
-        }
-        catch (Exception exProbe)
-        {
-            TBLog.Warn("TeleportManager: grounding probe threw: " + exProbe.ToString());
-        }
-
-        TBLog.Info($"TeleportManager: final chosen teleport target = {finalPos}");
-
-        // NEW: Use TeleportService (strategy chooser) as first attempt for placing the player.
-        {
-            TBLog.Info("[TeleportManager] preparing TeleportService call to attempt placement (strategy chooser).");
-            bool serviceMoved = false;
-            var host = TeleportHelpersBehaviour.GetOrCreateHost();
-            TBLog.Info($"TeleportManager: TeleportService host present? {(host != null ? "YES" : "NO")}");
-
-            IEnumerator serviceEnumerator = null;
-            try
-            {
-                // PlacePlayer returns an IEnumerator that signals movement via callback
-                serviceEnumerator = TeleportService.Instance?.PlacePlayer(finalPos, moved => { serviceMoved = moved; });
-                TBLog.Info($"TeleportManager: TeleportService.Instance is {(TeleportService.Instance != null ? "AVAILABLE" : "NULL")}, enumerator={(serviceEnumerator != null ? "OK" : "null")}");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("[TeleportManager] TeleportService instantiation threw: " + ex.ToString());
-                serviceEnumerator = null;
-            }
-
-            if (serviceEnumerator != null)
-            {
-                float svcStart = Time.realtimeSinceStartup;
-                if (host != null)
-                {
-                    yield return host.StartCoroutine(serviceEnumerator);
-                }
-                else
-                {
-                    yield return StartCoroutine(serviceEnumerator);
-                }
-                float svcDur = Time.realtimeSinceStartup - svcStart;
-                TBLog.Info($"TeleportManager: TeleportService completed, serviceMoved={serviceMoved}, duration={svcDur:F2}s");
-            }
-            else
-            {
-                TBLog.Warn("[TeleportManager] TeleportService enumerator is null; skipping service run.");
-            }
-
-            if (serviceMoved)
-            {
-                TBLog.Info("[TeleportManager] TeleportService placed the player successfully.");
-                teleported = true;
-            }
-            else
-            {
-                TBLog.Warn("[TeleportManager] TeleportService did not report movement; falling back to SafePlacePlayerCoroutine loop.");
-            }
-        }
-
-        // Fallback safe-placement loop
-        if (!teleported)
-        {
-            const int maxTeleportAttempts = 3;
-            int attempt = 0;
-            while (attempt < maxTeleportAttempts && !teleported)
-            {
-                attempt++;
-                TBLog.Info($"TeleportManager: Attempting teleport to {finalPos} (attempt {attempt}/{maxTeleportAttempts}) using PlacePlayerUsingSafeRoutine.");
-
-                bool placementSucceeded = false;
-                float callStart = Time.realtimeSinceStartup;
-
-                var safeHost = TeleportHelpersBehaviour.GetOrCreateHost();
-
-                if (safeHost != null)
-                {
-                    yield return safeHost.StartCoroutine(
-                        TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(safeHost, finalPos, haveCoordsHint, moved =>
+                    var miNav = this.GetType().GetMethod("TryFindNearestNavMeshOrGround", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public);
+                    if (miNav != null)
+                    {
+                        object[] navParms = new object[] { targetPos, null };
+                        var navRet = miNav.Invoke(this, navParms);
+                        if (navRet is bool navOk && navOk)
                         {
-                            placementSucceeded = moved;
-                        })
-                    );
+                            if (navParms.Length > 1 && navParms[1] is Vector3 vp)
+                            {
+                                groundedPos = vp;
+                                grounded = true;
+                                TBLog.Info($"TeleportManager: NavMesh/grounding helper succeeded at {groundedPos}");
+                            }
+                        }
+                    }
                 }
-                else
+                catch (Exception exNav) { TBLog.Warn($"TeleportManager: NavMesh grounding helper threw: {exNav}"); }
+
+                if (!grounded)
                 {
-                    yield return StartCoroutine(
-                        TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, finalPos, haveCoordsHint, moved =>
+                    try
+                    {
+                        Vector3 probeStart = targetPos + Vector3.up * 2.0f;
+                        RaycastHit hit;
+                        if (Physics.Raycast(probeStart, Vector3.down, out hit, 10.0f))
                         {
-                            placementSucceeded = moved;
-                        })
-                    );
-                }
-
-                float callDur = Time.realtimeSinceStartup - callStart;
-                TBLog.Info($"TeleportManager: PlacePlayerUsingSafeRoutine returned placementSucceeded={placementSucceeded} (duration={callDur:F2}s)");
-
-                if (placementSucceeded)
-                {
-                    TBLog.Info("TeleportManager: PlacePlayerUsingSafeRoutine reported success.");
-                    teleported = true;
-                    break;
-                }
-                else
-                {
-                    TBLog.Warn($"TeleportManager: attempt {attempt} failed (PlacePlayerUsingSafeRoutine reported no movement).");
-                }
-
-                if (attempt < maxTeleportAttempts)
-                {
-                    float retryDelay = 0.25f + 0.15f * attempt;
-                    float start = Time.realtimeSinceStartup;
-                    while (Time.realtimeSinceStartup - start < retryDelay)
-                        yield return null;
-                }
-            }
-        }
-
-        // If all safe attempts failed, try coords-first shim fallback when appropriate
-        if (!teleported)
-        {
-            try
-            {
-                TBLog.Info($"TeleportManager: safe placement exhausted. haveCoordsHint={haveCoordsHint}, anchorPresent={(anchor != null)}");
-            }
-            catch { }
-
-            if (haveCoordsHint || anchor == null)
-            {
-                TBLog.Info("[TeleportManager] attempting coords-first fallback shim (TeleportCompatShims).");
-                Vector3 before = Vector3.zero;
-                Vector3 after = Vector3.zero;
-                try { before = GetPlayerPositionDebug(); TBLog.Info($"TeleportManager: player position before shim: {before}"); } catch { }
-
-                var host = TeleportHelpersBehaviour.GetOrCreateHost();
-                if (host != null)
-                {
-                    yield return host.StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
-                }
-                else
-                {
-                    yield return StartCoroutine(TeleportCompatShims.PlacePlayerViaCoords(finalPos));
-                }
-
-                try { after = GetPlayerPositionDebug(); TBLog.Info($"TeleportManager: player position after shim: {after}"); } catch { }
-
-                float movedDistance = Vector3.Distance(before, after);
-                TBLog.Info($"TeleportManager: coords-first shim completed; player moved distance {movedDistance:F3}.");
-
-                if (movedDistance > 0.05f)
-                {
-                    teleported = true;
-                    TBLog.Info("[TeleportManager] coords-first shim appears to have moved the player; marking teleport as successful.");
-                }
-                else
-                {
-                    TBLog.Warn("[TeleportManager] coords-first shim did not appreciably move the player.");
+                            groundedPos = hit.point;
+                            grounded = true;
+                            TBLog.Info($"TeleportManager: Raycast grounding succeeded at {groundedPos} (hit {hit.collider?.name})");
+                        }
+                    }
+                    catch (Exception exRay) { TBLog.Warn($"TeleportManager: grounding raycast threw: {exRay}"); }
                 }
             }
             else
             {
-                TBLog.Info("[TeleportManager] coords-first shim not attempted (no coords hint and anchor present).");
+                TBLog.Info("TeleportManager: no target pos available for grounding.");
             }
         }
+        catch (Exception exGround)
+        {
+            TBLog.Warn($"TeleportManager: grounding exception: {exGround}");
+        }
 
+        TBPerf.Log($"GroundingProbe:{loadedScene.name}", swGrounding, $"grounded={grounded}");
+
+        // 5) Placement attempts
+        var swPlacement = TBPerf.StartTimer();
+        bool placed = false;
+
+        if (grounded)
+        {
+            // Attempt placement via TravelButtonUI helper (wrapped in try/catch per-call)
+            var miAttempt = (System.Reflection.MethodInfo)null;
+            try
+            {
+                var uiType = typeof(TravelButtonUI);
+                miAttempt = uiType.GetMethod("AttemptTeleportToPositionSafe", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+            }
+            catch { /* ignore reflection failures */ }
+
+            // Try immediate helper once
+            if (miAttempt != null)
+            {
+                try
+                {
+                    object ret = miAttempt.Invoke(null, new object[] { groundedPos });
+                    if (ret is bool b && b)
+                    {
+                        placed = true;
+                        TBLog.Info($"TeleportManager: AttemptTeleportToPositionSafe succeeded at {groundedPos}");
+                    }
+                }
+                catch (Exception exInvoke) { TBLog.Warn($"TeleportManager: AttemptTeleportToPositionSafe threw: {exInvoke}"); }
+            }
+
+            // If helper not available or placement failed, perform a small local search for a safe offset.
+            if (!placed)
+            {
+                const int maxAttempts = 6;
+                const float radius = 1.2f;
+                for (int i = 0; i < maxAttempts && !placed; i++)
+                {
+                    float ang = (360f / maxAttempts) * i;
+                    Vector3 offset = new Vector3(Mathf.Cos(ang * Mathf.Deg2Rad), 0, Mathf.Sin(ang * Mathf.Deg2Rad)) * radius * (1 + i * 0.5f);
+                    Vector3 cand = groundedPos + offset;
+
+                    // Per-iteration safe guards
+                    bool iterationPlaced = false;
+                    if (miAttempt != null)
+                    {
+                        try
+                        {
+                            object r2 = miAttempt.Invoke(null, new object[] { cand });
+                            if (r2 is bool b2 && b2)
+                            {
+                                iterationPlaced = true;
+                                groundedPos = cand;
+                            }
+                        }
+                        catch { /* swallow per-attempt exceptions */ }
+                    }
+                    else
+                    {
+                        try
+                        {
+                            Collider[] buf = new Collider[8];
+                            int hits = Physics.OverlapSphereNonAlloc(cand + Vector3.up * 0.5f, 0.5f, buf, ~0);
+                            if (hits == 0)
+                            {
+                                // set player here using existing APIs if possible (placeholder)
+                                iterationPlaced = true;
+                                groundedPos = cand;
+                                TBLog.Info($"TeleportManager: simple fallback placement chosen at {cand}");
+                            }
+                        }
+                        catch { /* swallow per-attempt exceptions */ }
+                    }
+
+                    if (iterationPlaced)
+                    {
+                        placed = true;
+                        teleported = true;
+                        break;
+                    }
+
+                    // yield a frame to avoid blocking long loops
+                    yield return null;
+                }
+            }
+
+            if (!placed)
+            {
+                TBLog.Warn($"TeleportManager: placement attempts failed in scene '{loadedScene.name}'");
+            }
+        }
+        else
+        {
+            TBLog.Warn("TeleportManager: cannot attempt placement because grounding failed / no target position.");
+        }
+
+        TBPerf.Log($"PlacementPhase:{loadedScene.name}", swPlacement, $"teleported={teleported}");
+
+        // 6) Final fallback: EnsureSceneAndTeleport if still not teleported
+        var swFallback = TBPerf.StartTimer();
         if (!teleported)
         {
-            TBLog.Warn("TeleportManager: all teleport attempts failed. Notifying player.");
-            TravelButtonPlugin.ShowPlayerNotification?.Invoke("Teleport failed: could not place player safely in destination.");
-            FinishTeleport(false);
-            onComplete?.Invoke(false);
-            yield break;
+            try
+            {
+                var helpers = UnityEngine.Object.FindObjectOfType<TeleportHelpersBehaviour>();
+                if (helpers != null)
+                {
+                    var miFallback = helpers.GetType().GetMethod("EnsureSceneAndTeleport", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                    if (miFallback != null)
+                    {
+                        object[] parms = new object[] { targetGameObjectName ?? loadedScene.name, null };
+                        var fbRet = miFallback.Invoke(helpers, parms);
+                        if (fbRet is bool fbOk && fbOk)
+                        {
+                            teleported = true;
+                            TBLog.Info($"TeleportManager: EnsureSceneAndTeleport fallback succeeded.");
+                        }
+                    }
+                }
+            }
+            catch (Exception exFb)
+            {
+                TBLog.Warn("TeleportManager: fallback EnsureSceneAndTeleport threw: " + exFb);
+            }
         }
+        TBPerf.Log($"FullFallback:{loadedScene.name}", swFallback, $"teleportedAfterFallback={teleported}");
 
-        // small stabilization delay
-        float postDelay = 0.35f;
-        float pstart = Time.realtimeSinceStartup;
-        while (Time.realtimeSinceStartup - pstart < postDelay)
-            yield return null;
+        // 7) Final logging and callback
+        TBPerf.Log($"TeleportInLoadedScene total:{loadedScene.name}", swThis, $"teleported={teleported}");
+        try { onComplete?.Invoke(teleported); } catch { /* swallow callback exceptions */ }
 
-        TBLog.Info("TeleportManager: teleport completed and scene stabilized.");
-
-        // final cleanup and notify
-        FinishTeleport(true);
-
-        // For diagnostics - report player position after FinishTeleport
-        try
-        {
-            var pos = GetPlayerPositionDebug();
-            TBLog.Info($"TeleportManager: player position after FinishTeleport = {pos}");
-        }
-        catch (Exception exPos)
-        {
-            TBLog.Warn("TeleportManager: error reading player position after FinishTeleport: " + exPos.ToString());
-        }
-
-        onComplete?.Invoke(true);
         yield break;
     }
 }

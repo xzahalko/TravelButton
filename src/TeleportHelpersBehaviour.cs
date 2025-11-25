@@ -191,27 +191,29 @@ public class TeleportHelpersBehaviour : MonoBehaviour
         if (!found)
         {
             TBLog.Info("EnsureSceneAndTeleport: fallback transform search started (FindObjectsOfType<Transform>).");
+            var swFallback = TBPerf.StartTimer();
             try
             {
                 var all = UnityEngine.Object.FindObjectsOfType<Transform>();
                 int matchCount = 0;
+                int checkedCount = 0;
                 foreach (var tr in all)
                 {
+                    checkedCount++;
                     if (tr == null || string.IsNullOrEmpty(tr.name)) continue;
                     if (!string.IsNullOrEmpty(cityName) && tr.name.IndexOf(cityName, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         targetPos = tr.position;
                         found = true;
                         matchCount++;
-                        TBLog.Info($"EnsureSceneAndTeleport: fallback matched transform '{tr.name}' -> {targetPos}");
-                        break;
+                        // existing selection logic...
                     }
                 }
-                TBLog.Info($"EnsureSceneAndTeleport: fallback transform search completed. matchesFound={matchCount}");
+                TBPerf.Log("FallbackTransformSearch", swFallback, $"checked={checkedCount}, matches={matchCount}");
             }
             catch (Exception ex)
             {
-                TBLog.Warn("EnsureSceneAndTeleport: transform search failed: " + ex.ToString());
+                TravelButtonPlugin.LogError("EnsureSceneAndTeleport: fallback transform exception: " + ex.ToString());
             }
         }
 

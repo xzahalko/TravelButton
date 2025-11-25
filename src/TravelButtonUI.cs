@@ -7277,6 +7277,247 @@ public partial class TravelButtonUI : MonoBehaviour
 
     private static void testc()
     {
+        
+    }
+}
 
+public class TeleportSnippet : MonoBehaviour
+{
+    // Example 1: Use TeleportManager high-level safe routine (recommended)
+    public void TeleportUsingManager(Vector3 target)
+    {
+        // Ensure TeleportManager instance exists then start its safe coroutine
+        var manager = TeleportManager.EnsureInstance(); // uses EnsureInstance() to get the singleton
+        // PlacePlayerUsingSafeRoutine returns IEnumerator and accepts a callback Action<bool>
+        StartCoroutine(manager.PlacePlayerUsingSafeRoutine(target, (success) =>
+        {
+            Debug.Log("TeleportManager finished. success=" + success);
+        }));
+    }
+
+    // Example 2: Use TeleportService facade (also recommended)
+    public void TeleportUsingService(Vector3 target)
+    {
+        var svc = TeleportService.Instance;
+        if (svc == null)
+        {
+            Debug.LogWarning("TeleportService.Instance is null - ensure TeleportService exists.");
+            return;
+        }
+        StartCoroutine(svc.PlacePlayer(target, (result) =>
+        {
+            Debug.Log("TeleportService.PlacePlayer finished. result=" + result);
+        }));
+    }
+
+    // Example 3: If you need the absolute-low-level safe path and have a host MonoBehaviour
+    public void TeleportUsingSafePlaceInternal(Vector3 target, bool preserveY = false)
+    {
+        // TeleportManagerSafePlace uses a host MonoBehaviour for its internal coroutine
+        StartCoroutine(TeleportManagerSafePlace.PlacePlayerUsingSafeRoutine_Internal(this, target, preserveY, (success) =>
+        {
+            Debug.Log("TeleportManagerSafePlace finished. success=" + success);
+        }));
+    }
+}
+
+public class TeleportToAnchorTester : MonoBehaviour
+{
+    [Tooltip("The AutoFindName value used by TeleportRandPoint (e.g. 'LichTeleportPoints')")]
+    public string autoFindName = "LichTeleportPoints";
+
+    [Tooltip("Pick a random point from the TeleportRandPoint's Points array")]
+    public bool pickRandom = true;
+
+    [Tooltip("Key to press to trigger the test teleport at runtime")]
+    public KeyCode triggerKey = KeyCode.T;
+
+    // Public entry you can call from UI
+    public void TeleportToNamedAnchor()
+    {
+        StartCoroutine(TeleportToNamedAnchorCoroutine());
+    }
+
+    private IEnumerator TeleportToNamedAnchorCoroutine()
+    {
+        // 1) Find TeleportRandPoint component instances (reflection-based to avoid namespace mismatches)
+        var allMonoBehaviours = UnityEngine.Resources.FindObjectsOfTypeAll(typeof(MonoBehaviour)) as MonoBehaviour[];
+        if (allMonoBehaviours == null || allMonoBehaviours.Length == 0)
+        {
+            Debug.LogWarning("[TeleportTester] No MonoBehaviour instances found via Resources.FindObjectsOfTypeAll.");
+            yield break;
+        }
+
+        MonoBehaviour matchingComponent = null;
+        foreach (var mb in allMonoBehaviours)
+        {
+            if (mb == null) continue;
+            var t = mb.GetType();
+            if (string.Equals(t.Name, "TeleportRandPoint", StringComparison.Ordinal))
+            {
+                var afField = t.GetField("AutoFindName", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (afField != null)
+                {
+                    var afVal = afField.GetValue(mb) as string;
+                    if (string.Equals(afVal, autoFindName, StringComparison.Ordinal))
+                    {
+                        matchingComponent = mb;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (matchingComponent == null)
+        {
+            Debug.LogWarning($"[TeleportTester] No TeleportRandPoint with AutoFindName='{autoFindName}' found.");
+            yield break;
+        }
+
+        // 2) Extract the Points transform array from the TeleportRandPoint component
+        var compType = matchingComponent.GetType();
+        var pointsField = compType.GetField("Points", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Transform chosenPoint = null;
+        if (pointsField != null)
+        {
+            var pointsObj = pointsField.GetValue(matchingComponent);
+            if (pointsObj is Transform[] tArr && tArr.Length > 0)
+            {
+                chosenPoint = pickRandom ? tArr[UnityEngine.Random.Range(0, tArr.Length)] : tArr[0];
+            }
+            else
+            {
+                Debug.LogWarning("[TeleportTester] Points array empty on the TeleportRandPoint.");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[TeleportTester] TeleportRandPoint has no Points field (unexpected).");
+        }
+
+        if (chosenPoint == null)
+        {
+            Debug.LogWarning("[TeleportTester] No valid teleport anchor transform found to teleport to.");
+            yield break;
+        }
+
+        Vector3 targetPos = chosenPoint.position;
+        Vector3 targetFwd = chosenPoint.forward;
+
+        Debug.Log($"[TeleportTester] Found anchor '{chosenPoint.name}' at {targetPos}. Attempting teleport via TeleportManager.");
+
+        // 3) Try TeleportManager.EnsureInstance().PlacePlayerUsingSafeRoutine(target, null)
+        Type managerType = FindTypeByName("TeleportManager");
+        IEnumerator routineToRun = null; // capture the IEnumerator (if any) and yield outside try/catch
+        bool managerAttempted = false;
+
+        if (managerType != null)
+        {
+            managerAttempted = true;
+            object managerInstance = null;
+            try
+            {
+                var ensureMethod = managerType.GetMethod("EnsureInstance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                if (ensureMethod != null)
+                {
+                    managerInstance = ensureMethod.Invoke(null, null);
+                }
+                else
+                {
+                    var instProp = managerType.GetProperty("Instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (instProp != null) managerInstance = instProp.GetValue(null);
+                }
+
+                if (managerInstance != null)
+                {
+                    // find a suitable PlacePlayerUsingSafeRoutine method (instance method with 2 parameters)
+                    MethodInfo placeMethod = managerType.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        .FirstOrDefault(m => m.Name == "PlacePlayerUsingSafeRoutine" && m.GetParameters().Length == 2);
+
+                    if (placeMethod != null)
+                    {
+                        // Invoke to obtain the coroutine object (do not yield here)
+                        var routineObj = placeMethod.Invoke(managerInstance, new object[] { targetPos, null });
+                        if (routineObj is IEnumerator r) routineToRun = r;
+                        else if (routineObj != null && routineObj is IEnumerable) // defensive: try to cast
+                        {
+                            routineToRun = ((IEnumerable)routineObj).GetEnumerator() as IEnumerator;
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[TeleportTester] Could not find PlacePlayerUsingSafeRoutine method on TeleportManager.");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning("[TeleportTester] TeleportManager.EnsureInstance returned null (or Instance property missing).");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[TeleportTester] Exception while preparing TeleportManager coroutine: " + ex);
+                // continue to fallback - do not yield here
+            }
+        }
+
+        // 4) If we obtained an IEnumerator, run it (outside of try/catch)
+        if (routineToRun != null)
+        {
+            yield return StartCoroutine(routineToRun);
+            Debug.Log("[TeleportTester] TeleportManager coroutine finished.");
+            yield break;
+        }
+
+        if (managerAttempted)
+        {
+            Debug.Log("[TeleportTester] TeleportManager attempt did not provide a runnable coroutine; falling back.");
+        }
+
+        // 5) Fallback: call TeleportTo on the TeleportRandPoint instance if available
+        try
+        {
+            var teleportMethod = compType.GetMethod("TeleportTo", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (teleportMethod != null)
+            {
+                // TeleportTo(Vector3 pos, Vector3 fwd)
+                teleportMethod.Invoke(matchingComponent, new object[] { targetPos, targetFwd });
+                Debug.Log("[TeleportTester] Called TeleportTo on TeleportRandPoint component (fallback).");
+            }
+            else
+            {
+                Debug.LogWarning("[TeleportTester] No TeleportTo method found on TeleportRandPoint; cannot fallback.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning("[TeleportTester] Exception during fallback TeleportTo invocation: " + ex);
+        }
+
+        yield break;
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(triggerKey))
+        {
+            TeleportToNamedAnchor();
+        }
+    }
+
+    // Helper: search loaded assemblies for a type by simple name
+    private Type FindTypeByName(string simpleName)
+    {
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            Type[] types = null;
+            try { types = asm.GetTypes(); }
+            catch { continue; }
+            foreach (var t in types)
+            {
+                if (t.Name == simpleName) return t;
+            }
+        }
+        return null;
     }
 }

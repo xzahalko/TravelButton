@@ -477,15 +477,22 @@ public class TravelButtonPlugin : BaseUnityPlugin
     // handler
     private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
     {
+        var swTotal = TBPerf.StartTimer();
         try
         {
             string sceneName = scene.name ?? "";
-            if (string.IsNullOrEmpty(sceneName)) return;
+            if (string.IsNullOrEmpty(sceneName))
+            {
+                TBPerf.Log($"OnSceneLoaded:Total:<empty>", swTotal, "");
+                return;
+            }
 
             // Log active scene info (diagnostic)
             try
             {
+                var sw = TBPerf.StartTimer();
                 LogActiveSceneInfo();
+                TBPerf.Log($"OnSceneLoaded:LogActiveSceneInfo:{sceneName}", sw, "");
             }
             catch (Exception exLog)
             {
@@ -496,7 +503,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
             UnityEngine.Vector3? playerPos = null;
             try
             {
+                var sw = TBPerf.StartTimer();
                 playerPos = TravelButton.GetPlayerPositionInScene();
+                TBPerf.Log($"OnSceneLoaded:GetPlayerPositionInScene:{sceneName}", sw, $"pos={(playerPos.HasValue ? playerPos.Value.ToString("F3") : "<null>")}");
             }
             catch (Exception exPos)
             {
@@ -507,7 +516,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
             string detectedTarget = null;
             try
             {
+                var sw = TBPerf.StartTimer();
                 detectedTarget = TravelButton.DetectTargetGameObjectName(sceneName);
+                TBPerf.Log($"OnSceneLoaded:DetectTargetGameObjectName:{sceneName}", sw, $"detected={(string.IsNullOrEmpty(detectedTarget) ? "<none>" : detectedTarget)}");
             }
             catch (Exception exDetect)
             {
@@ -520,7 +531,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Record discovered scene into canonical JSON (safe, idempotent)
             try
             {
+                var sw = TBPerf.StartTimer();
                 StoreVisitedSceneToJson(sceneName, playerPos, detectedTarget, sceneDesc);
+                TBPerf.Log($"OnSceneLoaded:StoreVisitedSceneToJson:{sceneName}", sw, "");
             }
             catch (Exception exStore)
             {
@@ -530,7 +543,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // Existing visit marking logic
             try
             {
+                var sw = TBPerf.StartTimer();
                 MarkCityVisitedByScene(sceneName);
+                TBPerf.Log($"OnSceneLoaded:MarkCityVisitedByScene:{sceneName}", sw, "");
             }
             catch (Exception exMark)
             {
@@ -540,6 +555,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
         catch (Exception ex)
         {
             TBLog.Warn("OnSceneLoaded: " + ex.Message);
+        }
+        finally
+        {
+            try
+            {
+                TBPerf.Log($"OnSceneLoaded:Total:{scene.name}", swTotal, "");
+            }
+            catch { /* swallow any logging errors */ }
         }
     }
 
@@ -1048,59 +1071,66 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     // mark and persist
     // --- Updated MarkCityVisitedByScene: identical to your version but calls NotifyVisitedFlagsChanged() after Persist.
+    // Add these fields to the TeleportManager class (near other private/static state fields)
+    private static readonly System.Collections.Generic.HashSet<string> _variantDetectionInProgress = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+    private static readonly object _variantDetectionLock = new object();
+
+    /// <summary>
+    /// MarkCityVisitedByScene: simplified and instrumented with TBPerf.
+    /// - Marks matching cities as visited (via property or field).
+    /// - Starts DetectAndPersistVariantsForCityCoroutine only once per city (tracked).
+    /// - Adds TBPerf timing around main phases for diagnostics.
+    /// </summary>
     private static void MarkCityVisitedByScene(string sceneName)
     {
+        var swTotal = TBPerf.StartTimer();
         try
         {
             TBLog.Info($"MarkCityVisitedByScene: enter sceneName='{sceneName}'");
 
+            if (string.IsNullOrEmpty(sceneName))
+            {
+                TBLog.Info("MarkCityVisitedByScene: sceneName empty -> nothing to do");
+                TBPerf.Log($"MarkCityVisitedByScene:Total:<empty>", swTotal, "");
+                return;
+            }
+
             // --- Debug: log player position at method entry (best-effort) ---
             try
             {
-                Vector3 beforePos = Vector3.zero;
-                bool foundBefore = false;
-                var pgo = GameObject.FindWithTag("Player");
-                if (pgo != null)
+                var swPlayerBefore = TBPerf.StartTimer();
+                try
                 {
-                    beforePos = pgo.transform.position;
-                    foundBefore = true;
-                    TBLog.Info($"MarkCityVisitedByScene: player position (before) found by tag 'Player' = {beforePos}");
+                    var beforePos = TeleportManager.GetPlayerPositionDebug();
+                    TBLog.Info($"MarkCityVisitedByScene: player position (before) = {beforePos}");
                 }
-                else
+                catch (Exception exPlayerBeforeInner)
                 {
-                    int scanned = 0;
-                    foreach (var g in GameObject.FindObjectsOfType<GameObject>())
-                    {
-                        scanned++;
-                        if (!string.IsNullOrEmpty(g.name) && g.name.StartsWith("PlayerChar"))
-                        {
-                            beforePos = g.transform.position;
-                            foundBefore = true;
-                            TBLog.Info($"MarkCityVisitedByScene: player position (before) found by name '{g.name}' after scanning {scanned} objects = {beforePos}");
-                            break;
-                        }
-                    }
-                    if (!foundBefore)
-                        TBLog.Info($"MarkCityVisitedByScene: player position (before) not found after scanning {scanned} objects.");
+                    TBLog.Warn("MarkCityVisitedByScene: failed to read player position at entry (inner): " + exPlayerBeforeInner.Message);
                 }
+                TBPerf.Log($"MarkCityVisitedByScene:PlayerPosBefore", swPlayerBefore, "");
             }
             catch (Exception exPlayerBefore)
             {
-                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at entry: " + exPlayerBefore);
+                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at entry: " + exPlayerBefore.Message);
             }
             // --- end debug player-before ---
 
             if (TravelButton.Cities == null)
             {
                 TBLog.Info("MarkCityVisitedByScene: TravelButton.Cities == null; nothing to do.");
+                TBPerf.Log($"MarkCityVisitedByScene:Total:{sceneName}", swTotal, "no_cities");
                 return;
             }
 
             TBLog.Info($"MarkCityVisitedByScene: Cities.Count = {TravelButton.Cities.Count}");
             bool anyChange = false;
 
+            // timer for per-city handling (helps find slow city reflections)
+            var swPerCityLoop = TBPerf.StartTimer();
             foreach (var city in TravelButton.Cities)
             {
+                var swCity = TBPerf.StartTimer();
                 try
                 {
                     if (city == null)
@@ -1111,11 +1141,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                     TBLog.Info($"MarkCityVisitedByScene: checking city='{city.name}' sceneName='{city.sceneName}' targetGameObjectName='{city.targetGameObjectName}'");
 
-                    // compare against city.sceneName and targetGameObjectName (case-insensitive)
-                    if (!string.Equals(city.sceneName, sceneName, StringComparison.OrdinalIgnoreCase)
-                     && !string.Equals(city.targetGameObjectName, sceneName, StringComparison.OrdinalIgnoreCase))
+                    // quick-match test
+                    if (!string.Equals(city.sceneName, sceneName, System.StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(city.targetGameObjectName, sceneName, System.StringComparison.OrdinalIgnoreCase))
                     {
-                        // not a match -> continue
+                        TBPerf.Log($"MarkCityVisitedByScene:CitySkip:{city.name}", swCity, $"no_scene_match");
                         continue;
                     }
 
@@ -1126,6 +1156,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     // Try property first (Visited / visited)
                     var prop = type.GetProperty("Visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
                             ?? type.GetProperty("visited", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+
+                    bool startedVariantDetection = false;
 
                     if (prop != null && prop.CanWrite && prop.PropertyType == typeof(bool))
                     {
@@ -1139,15 +1171,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 TBLog.Info($"MarkCityVisitedByScene: set property '{prop.Name}' = true on city '{city.name}'");
                                 anyChange = true;
 
-                                // Mirror MarkCityVisited behavior: persist per-city visited in cfg (best-effort)
-                                try
-                                {
-                                    WriteVisitedFlagToCfg(city.name, true);
-                                }
-                                catch (Exception exCfg)
-                                {
-                                    TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
-                                }
+                                try { WriteVisitedFlagToCfg(city.name, true); } catch (Exception exCfg) { TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}"); }
                             }
                             else
                             {
@@ -1159,7 +1183,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             TBLog.Warn($"MarkCityVisitedByScene: failed to get/set property '{prop.Name}' on city '{city.name}': {exProp.Message}");
                         }
 
-                        // Start variant detection coroutine if needed (city has no variants / lastKnownVariant)
+                        // Start variant detection coroutine if needed (guarded)
                         try
                         {
                             if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
@@ -1167,14 +1191,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 var plugin = TravelButtonPlugin.Instance;
                                 if (plugin != null)
                                 {
-                                    try
+                                    if (TryStartVariantDetection(plugin, city))
                                     {
-                                        plugin.StartCoroutine(plugin.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f));
-                                        TBLog.Info($"MarkCityVisitedByScene: started variant detection coroutine for '{city.name}'.");
+                                        startedVariantDetection = true;
+                                        TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
                                     }
-                                    catch (Exception exStart)
+                                    else
                                     {
-                                        TBLog.Warn($"MarkCityVisitedByScene: failed to start variant detection coroutine for '{city.name}': {exStart.Message}");
+                                        TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                                     }
                                 }
                                 else
@@ -1188,6 +1212,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             TBLog.Warn($"MarkCityVisitedByScene: error checking/starting variant detection for '{city.name}': {exDetectStart.Message}");
                         }
 
+                        TBPerf.Log($"MarkCityVisitedByScene:CityHandled:{city.name}", swCity, $"propVisited=true, startedDetect={startedVariantDetection}");
                         continue; // done with this city
                     }
 
@@ -1207,15 +1232,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 TBLog.Info($"MarkCityVisitedByScene: set field '{field.Name}' = true on city '{city.name}'");
                                 anyChange = true;
 
-                                // Mirror MarkCityVisited behavior: persist per-city visited in cfg (best-effort)
-                                try
-                                {
-                                    WriteVisitedFlagToCfg(city.name, true);
-                                }
-                                catch (Exception exCfg)
-                                {
-                                    TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}");
-                                }
+                                try { WriteVisitedFlagToCfg(city.name, true); } catch (Exception exCfg) { TBLog.Warn($"MarkCityVisitedByScene: WriteVisitedFlagToCfg failed for '{city.name}': {exCfg.Message}"); }
                             }
                             else
                             {
@@ -1227,7 +1244,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             TBLog.Warn($"MarkCityVisitedByScene: failed to get/set field '{field.Name}' on city '{city.name}': {exField.Message}");
                         }
 
-                        // Start variant detection coroutine if needed (city has no variants / lastKnownVariant)
+                        // Start variant detection coroutine if needed (guarded)
                         try
                         {
                             if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
@@ -1235,14 +1252,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 var plugin = TravelButtonPlugin.Instance;
                                 if (plugin != null)
                                 {
-                                    try
+                                    if (TryStartVariantDetection(plugin, city))
                                     {
-                                        plugin.StartCoroutine(plugin.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f));
-                                        TBLog.Info($"MarkCityVisitedByScene: started variant detection coroutine for '{city.name}'.");
+                                        startedVariantDetection = true;
+                                        TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
                                     }
-                                    catch (Exception exStart)
+                                    else
                                     {
-                                        TBLog.Warn($"MarkCityVisitedByScene: failed to start variant detection coroutine for '{city.name}': {exStart.Message}");
+                                        TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                                     }
                                 }
                                 else
@@ -1256,13 +1273,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             TBLog.Warn($"MarkCityVisitedByScene: error checking/starting variant detection for '{city.name}': {exDetectStart.Message}");
                         }
 
+                        TBPerf.Log($"MarkCityVisitedByScene:CityHandled:{city.name}", swCity, $"fieldVisited=true, startedDetect={startedVariantDetection}");
                         continue;
                     }
 
-                    // If neither property nor field found, log for diagnostics and still attempt variant detection
+                    // If neither property nor field found, still attempt variant detection (guarded)
                     TBLog.Info($"MarkCityVisitedByScene: no 'visited' property/field found on city type '{type.FullName}' for city '{city.name}'");
 
-                    // Try to start variant detection even if we couldn't mark visited via reflection
                     try
                     {
                         if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
@@ -1270,14 +1287,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             var plugin = TravelButtonPlugin.Instance;
                             if (plugin != null)
                             {
-                                try
+                                if (TryStartVariantDetection(plugin, city))
                                 {
-                                    plugin.StartCoroutine(plugin.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f));
-                                    TBLog.Info($"MarkCityVisitedByScene: started variant detection coroutine for '{city.name}' (no visited field/property).");
+                                    startedVariantDetection = true;
+                                    TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}' (no visited field/property).");
                                 }
-                                catch (Exception exStart)
+                                else
                                 {
-                                    TBLog.Warn($"MarkCityVisitedByScene: failed to start variant detection coroutine for '{city.name}': {exStart.Message}");
+                                    TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                                 }
                             }
                             else
@@ -1290,31 +1307,23 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         TBLog.Warn($"MarkCityVisitedByScene: error checking/starting variant detection for '{city.name}': {exDetectStart.Message}");
                     }
+
+                    TBPerf.Log($"MarkCityVisitedByScene:CityHandled:{city.name}", swCity, $"noVisitedMember, startedDetect={startedVariantDetection}");
                 }
                 catch (Exception exCity)
                 {
                     TBLog.Warn($"MarkCityVisitedByScene: per-city handler threw for city '{city?.name ?? "(null)"}': {exCity.Message}");
-                    // continue to next city
                 }
-            }
+            } // foreach city
+            TBPerf.Log($"MarkCityVisitedByScene:PerCityLoop:{sceneName}", swPerCityLoop, $"citiesChecked={TravelButton.Cities.Count}");
 
             if (anyChange)
             {
                 try
                 {
-                    // Persist canonical JSON next to plugin DLL using the centralized method
                     TravelButton.PersistCitiesToPluginFolder();
                     TBLog.Info($"MarkCityVisitedByScene: marked and persisted visited for scene '{sceneName}'");
-
-                    // Ensure UI and lookup are refreshed now that visited flags changed
-                    try
-                    {
-                        NotifyVisitedFlagsChanged();
-                    }
-                    catch (Exception exNotify)
-                    {
-                        TBLog.Warn("MarkCityVisitedByScene: NotifyVisitedFlagsChanged threw: " + exNotify.Message);
-                    }
+                    try { NotifyVisitedFlagsChanged(); } catch (Exception exNotify) { TBLog.Warn("MarkCityVisitedByScene: NotifyVisitedFlagsChanged threw: " + exNotify.Message); }
                 }
                 catch (Exception ex)
                 {
@@ -1329,42 +1338,88 @@ public class TravelButtonPlugin : BaseUnityPlugin
             // --- Debug: log player position at method exit (best-effort) ---
             try
             {
-                Vector3 afterPos = Vector3.zero;
-                bool foundAfter = false;
-                var pgo2 = GameObject.FindWithTag("Player");
-                if (pgo2 != null)
+                var swPlayerAfter = TBPerf.StartTimer();
+                try
                 {
-                    afterPos = pgo2.transform.position;
-                    foundAfter = true;
-                    TBLog.Info($"MarkCityVisitedByScene: player position (after) found by tag 'Player' = {afterPos}");
+                    var afterPos = TeleportManager.GetPlayerPositionDebug();
+                    TBLog.Info($"MarkCityVisitedByScene: player position (after) = {afterPos}");
                 }
-                else
+                catch (Exception exPlayerAfterInner)
                 {
-                    int scanned2 = 0;
-                    foreach (var g2 in GameObject.FindObjectsOfType<GameObject>())
-                    {
-                        scanned2++;
-                        if (!string.IsNullOrEmpty(g2.name) && g2.name.StartsWith("PlayerChar"))
-                        {
-                            afterPos = g2.transform.position;
-                            foundAfter = true;
-                            TBLog.Info($"MarkCityVisitedByScene: player position (after) found by name '{g2.name}' after scanning {scanned2} objects = {afterPos}");
-                            break;
-                        }
-                    }
-                    if (!foundAfter)
-                        TBLog.Info($"MarkCityVisitedByScene: player position (after) not found after scanning {scanned2} objects.");
+                    TBLog.Warn("MarkCityVisitedByScene: failed to read player position at exit (inner): " + exPlayerAfterInner.Message);
                 }
+                TBPerf.Log($"MarkCityVisitedByScene:PlayerPosAfter", swPlayerAfter, "");
             }
             catch (Exception exPlayerAfter)
             {
-                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at exit: " + exPlayerAfter);
+                TBLog.Warn("MarkCityVisitedByScene: failed to read player position at exit: " + exPlayerAfter.Message);
             }
-            // --- end debug player-after ---
+
+            TBPerf.Log($"MarkCityVisitedByScene:Total:{sceneName}", swTotal, $"anyChange={anyChange}");
         }
         catch (Exception ex)
         {
             TBLog.Warn("MarkCityVisitedByScene: unexpected error: " + ex.Message);
+            TBPerf.Log($"MarkCityVisitedByScene:Total:{sceneName}", swTotal, $"exception={ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Try to start variant detection for a city only once concurrently.
+    /// Returns true if a new detection coroutine was started; false if one was already running.
+    /// </summary>
+    private static bool TryStartVariantDetection(TravelButtonPlugin plugin, TravelButton.City city)
+    {
+        if (plugin == null || city == null) return false;
+        var cityKey = (city.name ?? "").Trim();
+        if (string.IsNullOrEmpty(cityKey)) return false;
+
+        lock (_variantDetectionLock)
+        {
+            if (_variantDetectionInProgress.Contains(cityKey)) return false;
+            _variantDetectionInProgress.Add(cityKey);
+        }
+
+        // Start a wrapper coroutine that ensures the tracking set is cleared when done.
+        try
+        {
+            plugin.StartCoroutine(VariantDetectWrapper(plugin, city));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"TryStartVariantDetection: failed to start wrapper coroutine for '{cityKey}': {ex.Message}");
+            lock (_variantDetectionLock) { _variantDetectionInProgress.Remove(cityKey); }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Wrapper coroutine: runs the actual DetectAndPersistVariantsForCityCoroutine and clears in-progress marker afterwards.
+    /// </summary>
+    private static IEnumerator VariantDetectWrapper(TravelButtonPlugin plugin, TravelButton.City city)
+    {
+        var cityKey = (city?.name ?? "").Trim();
+        var sw = TBPerf.StartTimer();
+
+        // Yield to the actual detection coroutine first (no try/catch around yield)
+        yield return plugin.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f);
+
+        // After the inner coroutine completes (or Unity's coroutine runner finished it), do logging and cleanup.
+        try
+        {
+            TBPerf.Log($"VariantDetectWrapper:Run:{cityKey}", sw, "completed");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"VariantDetectWrapper: TBPerf.Log threw for '{cityKey}': {ex.Message}");
+        }
+        finally
+        {
+            lock (_variantDetectionLock)
+            {
+                _variantDetectionInProgress.Remove(cityKey);
+            }
         }
     }
 
@@ -2586,10 +2641,20 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
     private IEnumerator DetectAndPersistVariantsForCityCoroutine(TravelButton.City city, float initialDelay = 1.0f, float scanDurationSeconds = 3.0f)
     {
-        if (city == null || string.IsNullOrEmpty(city.name))
-            yield break;
+        var swTotal = TBPerf.StartTimer();
 
-        if (initialDelay > 0f) yield return new WaitForSeconds(initialDelay);
+        if (city == null || string.IsNullOrEmpty(city.name))
+        {
+            TBPerf.Log("DetectVariants:Total:<invalid_city>", swTotal, "");
+            yield break;
+        }
+
+        if (initialDelay > 0f)
+        {
+            var swDelay = TBPerf.StartTimer();
+            yield return new WaitForSeconds(initialDelay);
+            TBPerf.Log($"DetectVariants:InitialDelay:{city.name}", swDelay, $"delay={initialDelay:F2}s");
+        }
 
         float deadline = Time.time + scanDurationSeconds;
 
@@ -2613,6 +2678,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
         var nameTokens = makeTokens(nameKey).ToArray();
         var targetTokens = makeTokens(targetKey).ToArray();
 
+        // 1) Main timed scanning loop
+        var swScanLoop = TBPerf.StartTimer();
         while (Time.time <= deadline)
         {
             foundVariants.Clear();
@@ -2635,6 +2702,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 continue;
             }
 
+            var swScanOnce = TBPerf.StartTimer();
             try
             {
                 foreach (var go in all)
@@ -2683,15 +2751,21 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: scan exception for '{city.name}': {ex.Message}");
                 // continue to next iteration until deadline
             }
+            finally
+            {
+                TBPerf.Log($"DetectVariants:ScanOnce:{city.name}", swScanOnce, $"found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
+            }
 
             if (foundVariants.Count > 0) break;
 
             yield return null;
         }
+        TBPerf.Log($"DetectVariants:ScanLoop:{city.name}", swScanLoop, $"durationRequested={scanDurationSeconds:F2}s");
 
-        // Fallback: search children of candidate roots (no yields inside try/catch)
+        // 2) Fallback: search children of candidate roots (no yields inside try/catch)
         if (foundVariants.Count == 0)
         {
+            var swFallbackRoots = TBPerf.StartTimer();
             GameObject[] roots = null;
             try
             {
@@ -2715,6 +2789,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
             if (roots != null && roots.Length > 0)
             {
+                var swFallbackChildren = TBPerf.StartTimer();
                 try
                 {
                     foreach (var r in roots)
@@ -2732,13 +2807,23 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: fallback children scan failed for '{city.name}': {ex.Message}");
                 }
+                finally
+                {
+                    TBPerf.Log($"DetectVariants:FallbackChildren:{city.name}", swFallbackChildren, $"roots={roots.Length}, found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
+                }
+            }
+            else
+            {
+                TBPerf.Log($"DetectVariants:FallbackRootsNone:{city.name}", swFallbackRoots, "no candidate roots");
             }
         }
 
+        // 3) If still nothing, log a sample of top names
         if (foundVariants.Count == 0)
         {
             try
             {
+                var swSampleNames = TBPerf.StartTimer();
                 var allNames = UnityEngine.Object.FindObjectsOfType<GameObject>()
                     .Where(g => g != null)
                     .Select(g => NormalizeGameObjectName(g.name))
@@ -2748,13 +2833,16 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     .ToArray();
 
                 TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant candidates found for '{city.name}'. Top scene object names (sample up to 80): [{string.Join(", ", allNames)}]");
+                TBPerf.Log($"DetectVariants:SampleNames:{city.name}", swSampleNames, $"sampleCount={allNames.Length}");
             }
             catch { }
         }
 
-        // Finalize and persist if changed
+        // 4) Finalize and persist if changed (scoring and persistence)
         try
         {
+            var swFinalize = TBPerf.StartTimer();
+
             var finalVariants = (foundVariants ?? new List<string>()).Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
             finalVariants = finalVariants.Where(v =>
@@ -2767,11 +2855,11 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 finalVariants = foundVariants.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
             // Inline variant detection (no hardcoded "Normal"/"Destroyed").
-            // Prefer exact known variant token matches against root/child names (active preferred), then fall back.
             string finalLast = null;
+            var swBuildScore = TBPerf.StartTimer();
+
             try
             {
-                // collect candidate tokens: finalVariants (computed earlier) or city.variants if empty
                 var candidates = new System.Collections.Generic.List<string>();
                 if (finalVariants != null && finalVariants.Count > 0)
                 {
@@ -2789,20 +2877,19 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     catch { }
                 }
 
-                // also include city.name token (if present) as a weak candidate (no hardcoded Normal/Destroyed)
+                // include city.name token (if present)
                 string cityNameForLog = "";
                 try
                 {
                     var ctype = city.GetType();
                     var cityName = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
+                                 ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
                     if (!string.IsNullOrWhiteSpace(cityName) && !candidates.Contains(cityName, StringComparer.OrdinalIgnoreCase))
                         candidates.Add(cityName);
                     cityNameForLog = cityName ?? "";
                 }
                 catch { }
 
-                // dedupe (case-insensitive)
                 candidates = candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
                 if (candidates.Count > 0)
@@ -2811,7 +2898,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     var roots = scene.GetRootGameObjects();
                     var allTransforms = roots.SelectMany(r => r.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
 
-                    // reference pos for proximity scoring: city.coords if available, else player/camera
+                    // reference pos for proximity scoring
                     UnityEngine.Vector3 refPos = UnityEngine.Vector3.zero;
                     bool haveRef = false;
                     try
@@ -2837,14 +2924,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     foreach (var candidate in candidates)
                     {
                         if (string.IsNullOrWhiteSpace(candidate)) continue;
-                        // skip obvious manager-like tokens
                         if (blacklistPrefixes.Any(b => candidate.StartsWith(b, System.StringComparison.OrdinalIgnoreCase))) continue;
 
                         var matches = allTransforms.Where(t =>
                         {
                             if (t == null) return false;
                             var n = t.name ?? "";
-                            // match if transform name contains candidate token or vice-versa
                             return (n.IndexOf(candidate, System.StringComparison.OrdinalIgnoreCase) >= 0)
                                    || (candidate.IndexOf(n, System.StringComparison.OrdinalIgnoreCase) >= 0);
                         }).ToArray();
@@ -2862,7 +2947,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         }
 
                         long score = 0;
-                        // strong boost for exact known-variant token (very authoritative)
                         bool isKnownVariant = false;
                         try
                         {
@@ -2873,26 +2957,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         }
                         catch { }
 
-                        if (isKnownVariant) score += 200000;      // very strong
-                        score += active * 2000;                 // active preference
-                        score += total * 50;                    // number of matches as tie-breaker
-                        if (haveRef && nearest < float.MaxValue) score -= (long)nearest; // prefer closer
+                        if (isKnownVariant) score += 200000;
+                        score += active * 2000;
+                        score += total * 50;
+                        if (haveRef && nearest < float.MaxValue) score -= (long)nearest;
 
-                        // require some positive indicator to consider (either known-variant or matches)
                         if (isKnownVariant || total > 0)
                         {
                             scored.Add((candidate, score, total, active, nearest));
                         }
                     }
 
-                    // Insert this immediately AFTER you build `scored` (List<(string name,long score,int total,int active,float nearest)>)
-                    // and BEFORE you pick the best candidate (e.g. before `var best = scored.OrderByDescending(s => s.score)...`).
+                    // adjust scores with blacklist/city tokens
                     try
                     {
                         var blacklistTokens = new[] {
-        "Gate","Vigil","Trigger","Lever","Visual","Template",
-        "Spawn","Respawn","Entrance","Portal","TriggerZone","GateTrigger","GateLever"
-    };
+                        "Gate","Vigil","Trigger","Lever","Visual","Template",
+                        "Spawn","Respawn","Entrance","Portal","TriggerZone","GateTrigger","GateLever"
+                    };
 
                         var cityTokens = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
                         try
@@ -2952,6 +3034,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         // non-fatal: leave `scored` unchanged on error
                     }
 
+                    // log scored summary before picking best
+                    TBPerf.Log($"DetectVariants:BuildScore:{city.name}", swBuildScore, $"candidates={candidates.Count}, scored={scored.Count}");
+
                     if (scored.Count > 0)
                     {
                         var best = scored.OrderByDescending(s => s.score)
@@ -2960,20 +3045,24 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                          .ThenBy(s => s.name)
                                          .First();
                         finalLast = best.name;
-                        // log for later verification
                         TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: selected variant='{finalLast}' score={best.score} for city='{cityNameForLog}'");
                     }
                 }
+                else
+                {
+                    TBPerf.Log($"DetectVariants:NoCandidates:{city.name}", swBuildScore, "no candidates");
+                }
             }
-            catch (Exception ex)
+            catch (Exception exBuild)
             {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: dynamic root-name detection failed: {ex.Message}");
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: dynamic root-name detection failed: {exBuild.Message}");
             }
-            
+
             // New persistence-guard: avoid overwriting a persisted token that is still present in scene
             try
             {
-                // read current persisted value
+                var swPersistGuard = TBPerf.StartTimer();
+
                 string persisted = null;
                 try
                 {
@@ -2983,7 +3072,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 }
                 catch { persisted = null; }
 
-                // helper: check whether a token exists as a scene object (roots/children)
                 bool ExistsInScene(string token)
                 {
                     if (string.IsNullOrWhiteSpace(token)) return false;
@@ -3002,23 +3090,18 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     return false;
                 }
 
-                // If there is a persisted token and it appears in the scene, keep it (do not overwrite)
                 if (!string.IsNullOrEmpty(persisted) && ExistsInScene(persisted))
                 {
-                    // keep persisted as finalLast (safe)
                     finalLast = persisted;
                     TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: keeping existing persisted variant='{persisted}' for city='{city?.name}' because it is present in scene");
                 }
                 else
                 {
-                    // No persisted-variant present in scene (or none existed). Only persist finalLast if it is confident.
                     bool confidentToPersist = false;
-                    // Consider confident if finalLast is an exact knownVariant OR component evidence exists OR score>threshold
                     try
                     {
                         if (!string.IsNullOrEmpty(finalLast))
                         {
-                            // exact knownVariant?
                             var ctype = city.GetType();
                             var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
                                       ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
@@ -3027,7 +3110,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 confidentToPersist = true;
                             }
 
-                            // (Optional) component evidence test: quick scan for components exposing finalLast as field/property
                             if (!confidentToPersist)
                             {
                                 var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
@@ -3043,7 +3125,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                         {
                                             if (comp == null) continue;
                                             var t = comp.GetType();
-                                            // inspect string fields/properties for match
                                             foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
                                             {
                                                 if (f.FieldType == typeof(string))
@@ -3066,25 +3147,22 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                     if (confidentToPersist) break;
                                 }
                             }
-
-                            // (Optional) bring in the detector score if your detection logic produced it (score variable)
-                            // Example: if (detectedScore > 100000) confidentToPersist = true;
                         }
                     }
                     catch { confidentToPersist = false; }
 
                     if (!confidentToPersist)
                     {
-                        // keep persisted (even if null) — do not persist the noisy newly-detected finalLast
-                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: not confident to persist detected variant='{finalLast}' for city='{city?.name}', keeping persisted='{persisted}'");
+                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: not confident to persist detected variant='{finalLast}' for city='{city?.name}', keeping persisted");
                         finalLast = persisted ?? ((!string.IsNullOrEmpty(foundLastVariant) ? foundLastVariant : (finalVariants != null && finalVariants.Count > 0 ? finalVariants[0] : (city?.lastKnownVariant ?? ""))));
                     }
                     else
                     {
-                        // confidentToPersist == true -> finalLast remains what detection chose and will be persisted as usual
                         TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: confident to persist detected variant='{finalLast}' for city='{city?.name}'");
                     }
                 }
+
+                TBPerf.Log($"DetectVariants:PersistGuard:{city.name}", swPersistGuard, $"finalLast={(finalLast ?? "<none>")}, persisted={(persisted ?? "<none>")}");
             }
             catch (Exception ex)
             {
@@ -3108,18 +3186,25 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
             if (changed)
             {
+                var swPersist = TBPerf.StartTimer();
                 TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: detected variants for '{city.name}': [{string.Join(", ", city.variants ?? new string[0])}], lastKnownVariant='{city.lastKnownVariant}'");
                 TravelButton.AppendOrUpdateCityInJsonAndSave(city);
+                TBPerf.Log($"DetectVariants:Persist:{city.name}", swPersist, $"variants={city.variants?.Length ?? 0}");
             }
             else
             {
                 TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant changes for '{city.name}' (variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant ?? ""}').");
             }
+
+            TBPerf.Log($"DetectVariants:Finalize:{city.name}", swFinalize, $"foundVariants={foundVariants.Count}, finalVariants={finalVariants.Count}, finalLast={(finalLast ?? "<none>")}");
         }
         catch (Exception ex)
         {
             TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: finalize failed for '{city?.name}': {ex.Message}");
         }
+
+        TBPerf.Log($"DetectVariants:Total:{city.name}", swTotal, $"foundVariants={foundVariants.Count}");
+        yield break;
     }
 
     // Choose best variant from an explicit candidate list using the same heuristic used interactively:
@@ -3482,7 +3567,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     }
                     
                     // after TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                    var plugin = TravelButtonPlugin.Instance;
+/*                    var plugin = TravelButtonPlugin.Instance;
                     if (plugin != null)
                     {
                         try
@@ -3498,7 +3583,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     else
                     {
                         TBLog.Info("StoreVisitedSceneToJson: plugin instance not available to start variant detection coroutine.");
-                    }
+                    }*/
                 }
                 catch (Exception ex)
                 {
