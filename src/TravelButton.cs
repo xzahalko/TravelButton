@@ -2977,7 +2977,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             ref var info = ref allTransformInfos[i];
                             if (info.Transform == null) continue;
                             
-                            // Match using precomputed normalized name
+                            // Match using precomputed normalized name (skip empty names)
+                            if (string.IsNullOrEmpty(info.NormalizedName)) continue;
                             bool isMatch = info.NormalizedName.Contains(candidateLower) || candidateLower.Contains(info.NormalizedName);
                             if (!isMatch) continue;
 
@@ -3171,13 +3172,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                     {
                                         if (tr == null) continue;
                                         
-                                        // Only inspect objects whose names match one of the top-K candidates
-                                        var trName = tr.name ?? "";
+                                        // Only inspect objects whose names match one of the top-K candidates (using normalized comparison)
+                                        var trName = (tr.name ?? "").ToLowerInvariant();
+                                        if (string.IsNullOrEmpty(trName)) continue;
                                         bool matchesTopK = false;
                                         foreach (var topCandidate in topKCandidates)
                                         {
-                                            if (trName.IndexOf(topCandidate, System.StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                                topCandidate.IndexOf(trName, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                            var topCandidateLower = topCandidate.ToLowerInvariant();
+                                            if (trName.Contains(topCandidateLower) || topCandidateLower.Contains(trName))
                                             {
                                                 matchesTopK = true;
                                                 break;
