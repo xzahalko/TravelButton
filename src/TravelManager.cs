@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 
+// Default city definitions for TravelButton mod
 public static class TravelManager
 {
     // Define the 6 default cities as specified
