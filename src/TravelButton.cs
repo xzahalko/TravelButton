@@ -1151,6 +1151,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                     TBLog.Info($"MarkCityVisitedByScene: scene matches city '{city.name}' (sceneName='{city.sceneName}' target='{city.targetGameObjectName}')");
 
+                    // Special handling: NewSirocco must always remain visited=false per specification
+                    if (string.Equals(city.sceneName, "NewSirocco", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        TBLog.Info($"MarkCityVisitedByScene: skipping NewSirocco - visited flag must remain false per specification");
+                        TBPerf.Log($"MarkCityVisitedByScene:CitySkip:{city.name}", swCity, "newsirocco_special");
+                        continue;
+                    }
+
                     var type = city.GetType();
 
                     // Try property first (Visited / visited)
@@ -3438,6 +3446,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 return;
             }
 
+            // Special handling: NewSirocco must always remain visited=false per specification
+            // We can still update coords/target but visited must stay false
+            bool isNewSirocco = string.Equals(sceneName, "NewSirocco", StringComparison.OrdinalIgnoreCase);
+            if (isNewSirocco)
+            {
+                TBLog.Info($"StoreVisitedSceneToJson: NewSirocco detected - will update coords/target but visited will remain false per specification.");
+            }
+
             // If coords missing/invalid, defer detection using coroutine (preserve original behavior)
             if (IsInvalidCoords(detectedCoords))
             {
@@ -3502,9 +3518,17 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 }
 
                 // mark visited and persist the single city (persist price/visited/lastKnownVariant changes if any)
+                // Special handling: NewSirocco must remain visited=false per specification
                 try
                 {
-                    existing.visited = true;
+                    if (!isNewSirocco)
+                    {
+                        existing.visited = true;
+                    }
+                    else
+                    {
+                        TBLog.Info($"StoreVisitedSceneToJson: keeping visited=false for NewSirocco per specification");
+                    }
                     // ensure variant keys present in memory before persisting
                     if (existing.variants == null) existing.variants = new string[0];
                     if (existing.lastKnownVariant == null) existing.lastKnownVariant = "";
@@ -3522,6 +3546,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     var newName = sceneName;
 
+                    // Special handling: NewSirocco must remain visited=false per specification
+                    bool visitedFlag = isNewSirocco ? false : true;
+
                     var city = new TravelButton.City(newName)
                     {
                         sceneName = sceneName,
@@ -3529,10 +3556,15 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         targetGameObjectName = !string.IsNullOrEmpty(detectedTarget) ? detectedTarget : (sceneName + "_Location"),
                         price = ResolveDefaultCityPrice(newName),
                         enabled = true,
-                        visited = true,
+                        visited = visitedFlag,
                         variants = new string[0],
                         lastKnownVariant = ""
                     };
+
+                    if (isNewSirocco)
+                    {
+                        TBLog.Info($"StoreVisitedSceneToJson: creating new city entry for NewSirocco with visited=false per specification");
+                    }
 
                     TravelButton.Cities.Add(city);
 

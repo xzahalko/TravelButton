@@ -2274,6 +2274,15 @@ public partial class TravelButtonUI : MonoBehaviour
                             continue;
                         }
 
+                        // Per spec: only show cities with enabled = true in travel dialog
+                        bool cityEnabled = false;
+                        try { cityEnabled = TravelButton.IsCityEnabled(city.name); } catch { cityEnabled = city.enabled; }
+                        if (!cityEnabled)
+                        {
+                            TBLog.Info($"OpenTravelDialog: skipping disabled city '{city.name}' (enabled=false)");
+                            continue;
+                        }
+
                         var bgo = new GameObject("CityButton_" + city.name);
                         bgo.transform.SetParent(contentRt, false);
                         bgo.AddComponent<CanvasRenderer>();
@@ -2334,8 +2343,35 @@ public partial class TravelButtonUI : MonoBehaviour
 
                         bbtn.interactable = initialInteractable;
                         bimg.raycastTarget = initialInteractable;
-                        try { bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor; } catch { }
-                        try { ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f); } catch { }
+
+                        // Per spec coloring rules:
+                        // - enabled + clickable => light (bright) color
+                        // - enabled + not visited => darkened color
+                        // - enabled + visited but not clickable => gray color
+                        Color buttonColor;
+                        Color textColor;
+                        if (initialInteractable)
+                        {
+                            // enabled + clickable => bright
+                            buttonColor = cb.normalColor;
+                            textColor = new Color(0.98f, 0.94f, 0.87f, 1f); // light cream
+                        }
+                        else if (!visitedInHistory)
+                        {
+                            // enabled + not visited => darkened color
+                            buttonColor = new Color(0.25f, 0.15f, 0.07f, 1f); // darker brown
+                            textColor = new Color(0.5f, 0.4f, 0.3f, 1f); // muted brown text
+                        }
+                        else
+                        {
+                            // enabled + visited but not clickable => gray
+                            buttonColor = cb.disabledColor;
+                            textColor = new Color(0.55f, 0.55f, 0.55f, 1f); // gray
+                        }
+
+                        try { bimg.color = buttonColor; } catch { }
+                        try { ltxt.color = textColor; } catch { }
+                        try { ptxt.color = textColor; } catch { }
 
                         // register and click handler
                         try { RegisterCityButton(city, bbtn); } catch (Exception ex) { TBLog.Warn("RegisterCityButton failed: " + ex.Message); }
@@ -2405,7 +2441,8 @@ public partial class TravelButtonUI : MonoBehaviour
                                 if (!deducted)
                                 {
                                     TBLog.Info($"City click: blocked - not enough resources for '{cityNameLocal}' (cost={cityPriceLocal}, playerMoney={pm})");
-                                    ShowInlineDialogMessage("not enough resources to travel");
+                                    // Per spec: show Czech message "Nemáš dostatek prostředků" when blocked due to insufficient currency
+                                    ShowInlineDialogMessage("Nemáš dostatek prostředků");
                                     return;
                                 }
 
@@ -2650,16 +2687,23 @@ public partial class TravelButtonUI : MonoBehaviour
     /// Convenience evaluator that computes the necessary inputs from the current runtime state
     /// and returns whether the city should be interactable for the given playerMoney.
     /// playerMoney: pass -1 if unknown (treats unknown permissively).
+    /// 
+    /// Per spec, city is clickable only if ALL of the following hold:
+    /// a) Enabled = true
+    /// b) visited = true
+    /// c) Player has enough currency
+    /// d) City has non-empty/non-zero values for Price, sceneName, lastKnownVariant
+    /// e) City sceneName != current scene (not active if player is currently in that scene)
     /// </summary>
     public static bool IsCityInteractable(TravelButton.City city, long playerMoney)
     {
         if (city == null) return false;
 
-        // 1) Config flag
+        // 1) Config flag (a - Enabled = true)
         bool enabledByConfig = false;
         try { enabledByConfig = IsCityEnabled(city.name); } catch { enabledByConfig = false; }
 
-        // 2) Use the canonical city-aware visited check (fast+fallback, cached)
+        // 2) Use the canonical city-aware visited check (b - visited = true)
         bool visited = false;
         try { visited = HasPlayerVisited(city); } catch { visited = false; }
 
@@ -2671,22 +2715,47 @@ public partial class TravelButtonUI : MonoBehaviour
         }
         catch { coordsAvailable = false; }
 
-        // 4) Price / player money
+        // 4) Price / player money (c - has enough currency)
         int price = cfgTravelCost.Value;
         try { if (city.price.HasValue) price = city.price.Value; } catch { /* ignore */ }
 
         bool playerMoneyKnown = playerMoney >= 0;
         bool hasEnoughMoney = !playerMoneyKnown || (playerMoney >= price);
 
-        // 5) Scene-aware allowance
+        // 5) Per spec (d): City has non-empty/non-zero values for Price, sceneName, lastKnownVariant
+        bool hasRequiredFields = true;
+        try
+        {
+            // Price must be > 0 (or at least defined)
+            bool hasPrice = city.price.HasValue && city.price.Value > 0;
+            if (!hasPrice) hasPrice = price > 0; // fallback to global price
+            
+            // sceneName must be non-empty
+            bool hasSceneName = !string.IsNullOrEmpty(city.sceneName);
+            
+            // lastKnownVariant must be non-empty (unless variants system is not used)
+            // Per spec this is required, but allow flexibility if not using variants
+            bool hasLastKnownVariant = !string.IsNullOrEmpty(city.lastKnownVariant) || 
+                                        (city.variants == null || city.variants.Length == 0);
+            
+            hasRequiredFields = hasPrice && hasSceneName && hasLastKnownVariant;
+        }
+        catch { hasRequiredFields = false; }
+
+        // 6) Scene-aware allowance (e - not current scene)
         bool targetSceneSpecified = !string.IsNullOrEmpty(city.sceneName);
         var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
         bool sceneMatches = !targetSceneSpecified || string.Equals(city.sceneName, activeScene.name, StringComparison.OrdinalIgnoreCase);
         bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
         bool isCurrentScene = targetSceneSpecified && sceneMatches;
 
-        // Use the core boolean evaluator (keeps rule centralized)
-        return IsCityInteractable(city, enabledByConfig, visited, coordsAvailable, allowWithoutCoords, hasEnoughMoney, isCurrentScene);
+        // Per spec: enabled && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney && hasRequiredFields && !isCurrentScene
+        return enabledByConfig
+            && visited
+            && (coordsAvailable || allowWithoutCoords)
+            && hasEnoughMoney
+            && hasRequiredFields
+            && !isCurrentScene;
     }
 
     // Add this static helper into the TravelButtonMod class (paste anywhere among the other static helpers).
