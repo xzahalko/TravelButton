@@ -2324,18 +2324,62 @@ public partial class TravelButtonUI : MonoBehaviour
                         bool visitedInHistory = false;
                         try { visitedInHistory = TravelButton.HasPlayerVisited(city); } catch (Exception ex) { TBLog.Warn("Visited check failed for '" + city.name + "': " + ex.Message); visitedInHistory = false; }
 
-                        // compute initial interactability
-                        bool initialInteractable = IsCityInteractable(city, playerMoney);
+                        // Color Logic:
+                        // Active/Clickable (Light) = enabled && visited && clickable
+                        // Inactive/Grey = enabled && visited && NOT clickable
+                        // Hidden/Black = enabled && NOT visited
+
+                        bool isEnabled = city.enabled;
+                        bool isClickable = IsCityInteractable(city, playerMoney);
+
+                        // Default colors
+                        Color buttonColor = cb.disabledColor; // Dark/Blackish for hidden
+                        Color textColor = new Color(0.55f, 0.55f, 0.55f, 1f); // Grey text
+                        bool interactable = false;
+
+                        if (isEnabled)
+                        {
+                            if (!visitedInHistory)
+                            {
+                                // Blackened / "zcernalou"
+                                buttonColor = new Color(0.1f, 0.1f, 0.1f, 1f); // Very dark
+                                textColor = new Color(0.3f, 0.3f, 0.3f, 1f);
+                                interactable = false;
+                            }
+                            else
+                            {
+                                if (isClickable)
+                                {
+                                    // Light / Active
+                                    buttonColor = cb.normalColor;
+                                    textColor = new Color(0.98f, 0.94f, 0.87f, 1f);
+                                    interactable = true;
+                                }
+                                else
+                                {
+                                    // Grey / Inactive but visible
+                                    buttonColor = cb.disabledColor;
+                                    textColor = new Color(0.7f, 0.7f, 0.7f, 1f);
+                                    interactable = true; // Make it clickable so we can show the warning
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Should not happen if we filter enabled cities, but just in case
+                            buttonColor = new Color(0.1f, 0.1f, 0.1f, 0.5f);
+                            interactable = false;
+                        }
 
                         // canvas group
                         var cg = bgo.GetComponent<CanvasGroup>() ?? bgo.AddComponent<CanvasGroup>();
-                        cg.blocksRaycasts = initialInteractable;
-                        cg.interactable = initialInteractable;
+                        cg.blocksRaycasts = interactable;
+                        cg.interactable = interactable;
 
-                        bbtn.interactable = initialInteractable;
-                        bimg.raycastTarget = initialInteractable;
-                        try { bimg.color = initialInteractable ? cb.normalColor : cb.disabledColor; } catch { }
-                        try { ltxt.color = initialInteractable ? new Color(0.98f, 0.94f, 0.87f, 1f) : new Color(0.55f, 0.55f, 0.55f, 1f); } catch { }
+                        bbtn.interactable = interactable;
+                        bimg.raycastTarget = interactable;
+                        try { bimg.color = buttonColor; } catch { }
+                        try { ltxt.color = textColor; } catch { }
 
                         // register and click handler
                         try { RegisterCityButton(city, bbtn); } catch (Exception ex) { TBLog.Warn("RegisterCityButton failed: " + ex.Message); }
@@ -2372,22 +2416,53 @@ public partial class TravelButtonUI : MonoBehaviour
                                 if (!cfgEnabled)
                                 {
                                     TBLog.Info($"City click: blocked - disabled by config for '{cityNameLocal}'");
-                                    ShowInlineDialogMessage("Destination disabled by config");
+                                    // Should be visually disabled/blackened, but if clicked:
                                     return;
                                 }
 
                                 if (!visitedNowInHistory)
                                 {
+                                    // "zcernalou" - should be non-interactable usually, but if clicked:
                                     TBLog.Info($"City click: blocked - not discovered yet for '{cityNameLocal}'");
-                                    ShowInlineDialogMessage("Destination not discovered yet");
                                     return;
                                 }
 
                                 if (pm < 0)
                                 {
                                     TBLog.Info($"City click: blocked - could not determine currency for '{cityNameLocal}'");
-                                    ShowInlineDialogMessage("Could not determine your currency amount; travel blocked");
+                                    ShowInlineDialogMessage("Nemáš dostatek prostředků"); // Treat unknown currency as failure or just warning
                                     return;
+                                }
+
+                                // Additional check: if not clickable for other reasons (e.g. current scene or funds)
+                                // We check this BEFORE deduction to prevent charging for a failed travel attempt warning.
+                                if (!IsCityInteractable(cityLocal, pm))
+                                {
+                                     // Check specific reasons to show correct message
+
+                                     // 1. Funds check
+                                     int p = TravelButton.cfgTravelCost.Value;
+                                     try { if (cityLocal.price.HasValue) p = cityLocal.price.Value; } catch { }
+                                     bool hasEnough = (pm >= 0) ? (pm >= p) : true; // if unknown (-1), assume enough to proceed to deduction step
+
+                                     if (!hasEnough)
+                                     {
+                                         ShowInlineDialogMessage("Nemáš dostatek prostředků");
+                                         return;
+                                     }
+
+                                     // 2. Current scene check
+                                     var active = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+                                     bool isCurrent = !string.IsNullOrEmpty(cityLocal.sceneName) && string.Equals(cityLocal.sceneName, active, StringComparison.OrdinalIgnoreCase);
+                                     if (isCurrent)
+                                     {
+                                         ShowInlineDialogMessage("Jsi v této lokaci");
+                                         return;
+                                     }
+
+                                     // Fallback message
+                                     ShowInlineDialogMessage("Nelze cestovat");
+                                     return;
                                 }
 
                                 TBLog.Info($"City click: attempting to deduct cost={cityPriceLocal} for '{cityNameLocal}' (simulation real attempt follows)");
@@ -2405,7 +2480,7 @@ public partial class TravelButtonUI : MonoBehaviour
                                 if (!deducted)
                                 {
                                     TBLog.Info($"City click: blocked - not enough resources for '{cityNameLocal}' (cost={cityPriceLocal}, playerMoney={pm})");
-                                    ShowInlineDialogMessage("not enough resources to travel");
+                                    ShowInlineDialogMessage("Nemáš dostatek prostředků");
                                     return;
                                 }
 
