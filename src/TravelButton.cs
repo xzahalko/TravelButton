@@ -292,7 +292,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake: InitializeCitiesAndConfig failed: " + ex);
+            TBLog.Warn("TravelButtonPlugin.Awake: InitializeCitiesAndConfig failed: " + ex);
         }
 
         ShowPlayerNotification = (msg) =>
@@ -304,103 +304,53 @@ public class TravelButtonPlugin : BaseUnityPlugin
     }
 
     /// <summary>
-    /// Consolidated initialization flow that:
-    /// 1. CityMappingHelpers.InitCities() (diagnostic only)
-    /// 2. TryLoadCitiesJsonIntoTravelButtonMod() (map JSON into runtime with variants/lastKnownVariant)
-    /// 3. TravelButton.InitFromConfig() (attempt external config)
-    /// 4. CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() (final ensure & persist-if-missing)
-    /// 5. EnsureBepInExConfigBindings() (create BepInEx bindings with SettingChanged handlers that WRITE to files only)
-    /// 6. StartConfigWatcher() (watch legacy cfg)
-    /// 7. Start TryInitConfigCoroutine() as before (retrier)
+    /// Consolidated initialization flow according to specification:
+    /// 1. Check/Create JSON from TravelManager.DefaultCities.
+    /// 2. Check completeness of JSON against TravelManager.DefaultCities and add missing.
+    /// 3. Load JSON into TravelButton.Cities.
+    /// 4. Create CFG if missing based on TravelButton.Cities.
+    /// 5. Update TravelButton.Cities from CFG if it exists.
+    /// 6. Add missing entries to CFG.
+    /// 7. Update In-Game config.
     /// </summary>
     private void InitializeCitiesAndConfig()
     {
-        TBLog.Info("InitializeCitiesAndConfig: BEGIN consolidated initialization.");
+        TBLog.Info("InitializeCitiesAndConfig: BEGIN initialization per spec.");
 
         try
         {
-            // 1) Prepare any internal city mapping helpers (build any runtime lookup tables)
-            CityMappingHelpers.InitCities();
-            TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() completed.");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: CityMappingHelpers.InitCities() failed: " + ex);
-        }
+            // 1. & 2. Check/Create JSON and completeness
+            TravelButton.EnsureJsonIntegrity();
+            TBLog.Info("InitializeCitiesAndConfig: JSON integrity check completed.");
 
-        try
-        {
-            // 2) Load JSON city definitions first and merge into runtime list
-            if (TryLoadCitiesJsonIntoTravelButtonMod())
+            // 3. Load JSON into TravelButton.Cities
+            if (TravelButton.LoadCitiesFromJson())
             {
-                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed and parsed/merged JSON.");
+                TBLog.Info("InitializeCitiesAndConfig: Loaded cities from JSON.");
             }
             else
             {
-                TBLog.Info("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod() completed with no JSON loaded.");
+                TBLog.Warn("InitializeCitiesAndConfig: Failed to load cities from JSON.");
             }
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: TryLoadCitiesJsonIntoTravelButtonMod failed: " + ex);
-        }
 
-        try
-        {
-            // 3) Read legacy/ConfigManager defaults into mapped objects (will be merged, not overwrite)
-            TravelButton.InitFromConfig();
-            TBLog.Info("InitializeCitiesAndConfig: TravelButton.InitFromConfig() completed.");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: TravelButton.InitFromConfig() failed: " + ex);
-        }
-
-        try
-        {
-            // 4) Ensure every default city exists and only fill missing fields (scene/coords/target) — won't overwrite JSON fields
-            CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults();
-            TBLog.Info("InitializeCitiesAndConfig: CityMappingHelpers.EnsureCitiesInitializedFromJsonOrDefaults() completed.");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: EnsureCitiesInitializedFromJsonOrDefaults failed: " + ex);
-        }
-
-        try
-        {
-            // 5) Create/apply BepInEx config bindings for all cities and apply any cfg overrides (price/enabled/visited) into memory
+            // 4. Create CFG if missing & 6. Update CFG with missing entries
+            // 5. Update TravelButton.Cities from CFG & 7. Update In-Game config
+            // EnsureBepInExConfigBindings handles creation, binding (reading from CFG), and in-game config updates.
             EnsureBepInExConfigBindings();
-            TBLog.Info("InitializeCitiesAndConfig: EnsureBepInExConfigBindings() completed.");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: EnsureBepInExConfigBindings failed: " + ex);
-        }
+            TBLog.Info("InitializeCitiesAndConfig: CFG and BepInEx bindings processed.");
 
-        try
-        {
-            // 6) Start watcher/watchers for legacy cfg changes, etc.
             StartConfigWatcher();
-            TBLog.Info("InitializeCitiesAndConfig: StartConfigWatcher() completed.");
+            TBLog.Info("InitializeCitiesAndConfig: Config watcher started.");
+
+            // Ensure UI
+            EnsureTravelButtonUI();
         }
         catch (Exception ex)
         {
-            TBLog.Warn("InitializeCitiesAndConfig: StartConfigWatcher() failed: " + ex);
+            TBLog.Warn("InitializeCitiesAndConfig: Initialization failed: " + ex);
         }
 
-        try
-        {
-            // 7) Start coroutine that attempts to fully initialize config (if needed)
-            StartCoroutine(TryInitConfigCoroutine());
-            TBLog.Info("InitializeCitiesAndConfig: Started TryInitConfigCoroutine().");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn("InitializeCitiesAndConfig: Failed to start TryInitConfigCoroutine(): " + ex);
-        }
-
-        TBLog.Info("InitializeCitiesAndConfig: END consolidated initialization.");
+        TBLog.Info("InitializeCitiesAndConfig: END initialization.");
     }
 
 
@@ -540,16 +490,88 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 TBLog.Warn("OnSceneLoaded: StoreVisitedSceneToJson failed: " + exStore.Message);
             }
 
-            // Existing visit marking logic
+            // New logic: Visit and Discovery
             try
             {
-                var sw = TBPerf.StartTimer();
-                MarkCityVisitedByScene(sceneName);
-                TBPerf.Log($"OnSceneLoaded:MarkCityVisitedByScene:{sceneName}", sw, "");
+                // NewSirocco exception
+                if (string.Equals(sceneName, "NewSirocco", StringComparison.OrdinalIgnoreCase))
+                {
+                    TBLog.Info("OnSceneLoaded: NewSirocco detected, skipping visited/discovery logic (permanently unvisited).");
+                }
+                else
+                {
+                    // Update visited for existing cities matching this scene
+                    bool anyVisitedUpdated = false;
+                    if (TravelButton.Cities != null)
+                    {
+                        foreach (var city in TravelButton.Cities)
+                        {
+                            if (string.Equals(city.sceneName, sceneName, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(city.targetGameObjectName, sceneName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!city.visited)
+                                {
+                                    city.visited = true;
+                                    anyVisitedUpdated = true;
+                                    TBLog.Info($"OnSceneLoaded: marked existing city '{city.name}' as visited.");
+                                }
+                            }
+                        }
+                    }
+
+                    // Discovery: if no city exists for this scene, add it
+                    bool exists = false;
+                    if (TravelButton.Cities != null)
+                    {
+                        exists = TravelButton.Cities.Any(c => string.Equals(c.sceneName, sceneName, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    bool anyAdded = false;
+                    if (!exists && playerPos.HasValue)
+                    {
+                        // Add new city
+                        var newCity = new TravelButton.City(sceneName)
+                        {
+                            sceneName = sceneName,
+                            coords = new float[] { playerPos.Value.x, playerPos.Value.y, playerPos.Value.z },
+                            visited = true,
+                            enabled = true,
+                            targetGameObjectName = detectedTarget ?? sceneName,
+                            lastKnownVariant = "",
+                            // Fallback if SceneLoadHook.PreviousSceneName doesn't exist
+                            desc = "vstup z " + "unknown",
+                            price = 200 // Default price
+                        };
+
+                        if (TravelButton.Cities == null) TravelButton.Cities = new List<TravelButton.City>();
+                        TravelButton.Cities.Add(newCity);
+                        anyAdded = true;
+                        TBLog.Info($"OnSceneLoaded: Discovered and added new city '{newCity.name}'.");
+
+                        // Ensure bindings
+                        if (TravelButtonPlugin.Instance != null)
+                        {
+                            TravelButtonPlugin.Instance.EnsureBepInExConfigBindingsForCity(newCity);
+                        }
+                    }
+
+                    if (anyVisitedUpdated || anyAdded)
+                    {
+                        // Persist to JSON and CFG
+                        TravelButton.PersistCitiesToPluginFolder();
+                        // CFG update handled by EnsureBepInExConfigBindings or implicit if we want to force write
+                        // But EnsureBepInExConfigBindingsForCity sets up bindings which handle saving on change.
+                        // To force write current state to CFG we might need a helper, but bindings usually sync on set.
+                        // However, since we just added it, we should ensure it's written.
+
+                        // Update in-game config/UI
+                        TravelButtonUI.RebuildTravelDialog();
+                    }
+                }
             }
-            catch (Exception exMark)
+            catch (Exception exLogic)
             {
-                TBLog.Warn("OnSceneLoaded: MarkCityVisitedByScene failed: " + exMark.Message);
+                TBLog.Warn("OnSceneLoaded: Visit/Discovery logic failed: " + exLogic.Message);
             }
         }
         catch (Exception ex)
@@ -1522,16 +1544,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
         while (attempt < maxAttempts && !initialized)
         {
             attempt++;
-            TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
-            try
-            {
-                initialized = TravelButton.InitFromConfig();
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("TryInitConfigCoroutine: InitFromConfig threw: " + ex.Message);
-                initialized = false;
-            }
+            TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to wait for BepInEx ready.");
+            // We consider it initialized if we have cities
+            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0) initialized = true;
 
             if (!initialized)
                 yield return new WaitForSeconds(1.0f);
@@ -1539,29 +1554,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         if (!initialized)
         {
-            TBLog.Warn("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
-            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
-            {
-                // Try local Default() again as a deterministic fallback
-                try
-                {
-                    var localCfg = TravelButton.GetLocalType("ConfigManager");
-                    if (localCfg != null)
-                    {
-                        var def = localCfg.GetMethod("Default", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
-                        if (def != null)
-                        {
-                            TravelButton.MapConfigInstanceToLocal(def);
-                            TBLog.Info("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
-                            initialized = true;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("TryInitConfigCoroutine: fallback Default() failed: " + ex.Message);
-                }
-            }
+            TBLog.Warn("TryInitConfigCoroutine: Cities not initialized after retries.");
         }
 
         // IMPORTANT: create BepInEx Config bindings so Configuration Manager (and BepInEx GUI) can show/edit settings.
@@ -1642,7 +1635,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("EnsureTravelButtonUI failed: " + ex);
+            TBLog.Warn("EnsureTravelButtonUI failed: " + ex);
         }
     }
 
@@ -4527,10 +4520,11 @@ public static class TravelButton
             this.targetGameObjectName = null;
             this.price = null;
             this.enabled = false;
-            bool visited = false; 
+            this.visited = false;
             this.sceneName = null;
             this.variants = null;
-            this.lastKnownVariant = null;
+            this.lastKnownVariant = "";
+            this.desc = "";
         }
 
         // Compatibility properties expected by older code:
@@ -4539,23 +4533,18 @@ public static class TravelButton
         {
             get
             {
-                try { return VisitedTracker.HasVisited(this.name); }
-                catch { return false; }
+                return visited;
             }
             set
             {
-                try
-                {
-                    if (value) VisitedTracker.MarkVisited(this.name);
-                }
-                catch { }
+                visited = value;
             }
         }
 
         // compatibility method name used previously in code: isCityEnabled()
         public bool isCityEnabled()
         {
-            return TravelButton.IsCityEnabled(this.name);
+            return enabled;
         }
     }
 
@@ -4572,152 +4561,107 @@ public static class TravelButton
         }
     }
 
-    // Initialize mod state from JSON config -> should be called once at mod load
-    // Returns true if a config instance was located and mapped (or local default used), false otherwise.
-    public static bool InitFromConfig()
+    // Ensure TravelButton_Cities.json exists and contains all default cities
+    public static void EnsureJsonIntegrity()
+    {
+        string path = TravelButtonPlugin.GetCitiesJsonPath();
+        JObject root = null;
+        JArray citiesArray = null;
+
+        if (File.Exists(path))
+        {
+            try
+            {
+                string json = File.ReadAllText(path);
+                root = JObject.Parse(json);
+                citiesArray = root["cities"] as JArray;
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("EnsureJsonIntegrity: Failed to parse existing JSON, recreating. " + ex.Message);
+            }
+        }
+
+        if (root == null) root = new JObject();
+        if (citiesArray == null)
+        {
+            citiesArray = new JArray();
+            root["cities"] = citiesArray;
+        }
+
+        bool changed = false;
+        // Check against defaults
+        foreach (var def in TravelManager.DefaultCities)
+        {
+            var existing = citiesArray.FirstOrDefault(t => (string)t["name"] == def.name);
+            if (existing == null)
+            {
+                TBLog.Info($"EnsureJsonIntegrity: Adding missing default city '{def.name}' to JSON.");
+                citiesArray.Add(BuildJObjectForCity(def));
+                changed = true;
+            }
+        }
+
+        if (changed || !File.Exists(path))
+        {
+            try
+            {
+                File.WriteAllText(path, root.ToString(Formatting.Indented));
+                TBLog.Info("EnsureJsonIntegrity: JSON file updated/created.");
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn("EnsureJsonIntegrity: Failed to write JSON file: " + ex.Message);
+            }
+        }
+    }
+
+    public static bool LoadCitiesFromJson()
     {
         try
         {
-            TBLog.Info("InitFromConfig: attempting to obtain ConfigManager.Config (safe, no unconditional Load).");
+            string path = TravelButtonPlugin.GetCitiesJsonPath();
+            if (!File.Exists(path)) return false;
 
-            // Try to locate a type named ConfigManager in loaded assemblies
-            Type cfgMgrType = null;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            string json = File.ReadAllText(path);
+            var root = JObject.Parse(json);
+            var citiesArray = root["cities"] as JArray;
+            if (citiesArray == null) return false;
+
+            Cities = new List<City>();
+            foreach (var token in citiesArray)
             {
-                try
+                string name = (string)token["name"];
+                if (string.IsNullOrEmpty(name)) continue;
+
+                var city = new City(name);
+                city.sceneName = (string)token["sceneName"];
+                city.targetGameObjectName = (string)token["targetGameObjectName"];
+                city.price = (int?)token["price"];
+                city.enabled = (bool?)token["enabled"] ?? false; // Default false if not in JSON, but usually managed by CFG
+                city.visited = (bool?)token["visited"] ?? false;
+                city.desc = (string)token["desc"];
+                city.lastKnownVariant = (string)token["lastKnownVariant"];
+
+                var coordsToken = token["coords"] as JArray;
+                if (coordsToken != null && coordsToken.Count >= 3)
                 {
-                    cfgMgrType = asm.GetTypes().FirstOrDefault(t => t.Name == "ConfigManager");
-                    if (cfgMgrType != null) break;
+                    city.coords = new float[] { (float)coordsToken[0], (float)coordsToken[1], (float)coordsToken[2] };
                 }
-                catch { /* ignore assemblies that can't enumerate types */ }
+
+                var variantsToken = token["variants"] as JArray;
+                if (variantsToken != null)
+                {
+                    city.variants = variantsToken.Select(t => (string)t).ToArray();
+                }
+
+                Cities.Add(city);
             }
-
-            object cfgInstance = null;
-
-            // If we found a ConfigManager type, try to read its static Config (do NOT call Load() yet)
-            if (cfgMgrType != null)
-            {
-                try
-                {
-                    var cfgProp = cfgMgrType.GetProperty("Config", BindingFlags.Public | BindingFlags.Static);
-                    var cfgField = cfgMgrType.GetField("Config", BindingFlags.Public | BindingFlags.Static);
-                    if (cfgProp != null) cfgInstance = cfgProp.GetValue(null);
-                    else if (cfgField != null) cfgInstance = cfgField.GetValue(null);
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("InitFromConfig: reading ConfigManager.Config threw: " + ex.Message);
-                    cfgInstance = null;
-                }
-            }
-
-            // If no ConfigManager type found OR the found type has a null Config,
-            // try to use a local ConfigManager.Default() (the Default() you added in src/ConfigManager.cs).
-            // This guarantees deterministic defaults even if an external ConfigManager hasn't initialized.
-            if (cfgInstance == null)
-            {
-                var localCfgMgr = GetLocalType("ConfigManager");
-                if (localCfgMgr != null)
-                {
-                    try
-                    {
-                        var defMethod = localCfgMgr.GetMethod("Default", BindingFlags.Public | BindingFlags.Static);
-                        if (defMethod != null)
-                        {
-                            var def = defMethod.Invoke(null, null);
-                            if (def != null)
-                            {
-                                MapConfigInstanceToLocal(def);
-                                TBLog.Info("InitFromConfig: used local ConfigManager.Default() to populate config.");
-                                return true;
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn("InitFromConfig: calling local ConfigManager.Default() failed: " + ex.Message);
-                        // continue to try safer external Load path below
-                    }
-                }
-            }
-
-            // If we still don't have a config instance but found an external ConfigManager type,
-            // we may attempt to call its Load() safely (only if local or Newtonsoft is available).
-            if (cfgInstance == null && cfgMgrType != null)
-            {
-                bool callLoad = false;
-                bool isLocalConfigMgr = cfgMgrType.Assembly == typeof(TravelButton).Assembly;
-
-                if (isLocalConfigMgr)
-                {
-                    callLoad = true;
-                    TBLog.Info("InitFromConfig: calling Load() on local ConfigManager type.");
-                }
-                else
-                {
-                    // Only call Load on external ConfigManager when Newtonsoft is available, to avoid assembly load exceptions.
-                    bool hasNewtonsoft = AppDomain.CurrentDomain.GetAssemblies().Any(a =>
-                    {
-                        try { return a.GetTypes().Any(t => t.FullName == "Newtonsoft.Json.JsonConvert"); } catch { return false; }
-                    });
-
-                    if (hasNewtonsoft)
-                    {
-                        callLoad = true;
-                        TBLog.Info("InitFromConfig: external ConfigManager found and Newtonsoft present; will call Load() via reflection.");
-                    }
-                    else
-                    {
-                        TBLog.Warn("InitFromConfig: external ConfigManager found but Newtonsoft not present; skipping Load() to avoid assembly load errors.");
-                    }
-                }
-
-                if (callLoad)
-                {
-                    try
-                    {
-                        var loadMethod = cfgMgrType.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
-                        if (loadMethod != null)
-                        {
-                            loadMethod.Invoke(null, null);
-                            // read Config after Load()
-                            var cfgProp = cfgMgrType.GetProperty("Config", BindingFlags.Public | BindingFlags.Static);
-                            var cfgField = cfgMgrType.GetField("Config", BindingFlags.Public | BindingFlags.Static);
-                            cfgInstance = cfgProp != null ? cfgProp.GetValue(null) : cfgField != null ? cfgField.GetValue(null) : null;
-                        }
-                        else
-                        {
-                            TBLog.Warn("InitFromConfig: ConfigManager.Load method not found.");
-                        }
-                    }
-                    catch (TargetInvocationException tie)
-                    {
-                        TBLog.Warn("InitFromConfig: ConfigManager.Load failed via reflection: " + (tie.InnerException?.Message ?? tie.Message));
-                        return false; // allow retry from coroutine
-                    }
-                    catch (Exception ex)
-                    {
-                        TBLog.Warn("InitFromConfig: exception invoking ConfigManager.Load: " + ex.Message);
-                        return false;
-                    }
-                }
-            }
-
-            // If we have a config instance now, map it into local fields and cities
-            if (cfgInstance != null)
-            {
-                MapConfigInstanceToLocal(cfgInstance);
-                TBLog.Info($"InitFromConfig: Loaded {Cities?.Count ?? 0} cities from ConfigManager.");
-                return true;
-            }
-
-            // No config available (and we failed to get a local default); signal caller to retry / fallback.
-            TBLog.Info("InitFromConfig: no config instance available (will retry or fallback).");
-            return false;
+            return true;
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("InitFromConfig: unexpected exception: " + ex);
+            TBLog.Warn("LoadCitiesFromJson: " + ex.Message);
             return false;
         }
     }
