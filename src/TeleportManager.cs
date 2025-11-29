@@ -2,7 +2,9 @@ using NodeCanvas.Tasks.Actions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -22,6 +24,24 @@ public partial class TeleportManager : MonoBehaviour
     // Event fired when a teleport attempt finished (success = true if teleport placed player).
     // Subscribers should not block; invoked on Unity main thread.
     public event Action<bool> OnTeleportFinished;
+
+    private const int TOP_K_REFLECTION = 3;
+
+    private struct TransformInfo
+    {
+        public string NormalizedName;   // normalized name (already processed by NormalizeGameObjectName)
+        public UnityEngine.Vector3 Position;
+        public bool Active;
+        public UnityEngine.Transform TransformRef;
+
+        public TransformInfo(string normName, UnityEngine.Vector3 pos, bool active, UnityEngine.Transform tRef)
+        {
+            NormalizedName = normName;
+            Position = pos;
+            Active = active;
+            TransformRef = tRef;
+        }
+    }
 
     private bool _isSceneTransitionInProgress = false;
 
@@ -806,6 +826,265 @@ public partial class TeleportManager : MonoBehaviour
         TBPerf.Log($"TeleportInLoadedScene total:{loadedScene.name}", swThis, $"teleported={teleported}");
         try { onComplete?.Invoke(teleported); } catch { /* swallow callback exceptions */ }
 
+        yield break;
+    }
+
+    // Normalize helper (unchanged)
+    private static string NormalizeGameObjectName(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return raw;
+        var s = Regex.Replace(raw, @"\s*\(Clone\)\s*$", "", RegexOptions.IgnoreCase).Trim();
+        s = Regex.Replace(s, @"\s+", " ");
+        return s;
+    }
+
+    // Replace the existing DetectAndPersistVariantsForCityCoroutine implementation with the code below.
+    // Keep the same method signature.
+
+    public static IEnumerator DetectAndPersistVariantsForCityCoroutine(TravelButton.City city, float initialDelay = 1.0f, float scanDurationSeconds = 3.0f)
+    {
+        var swTotal = TBPerf.StartTimer();
+
+        if (city == null || string.IsNullOrEmpty(city.name))
+        {
+            TBPerf.Log("DetectVariants:Total:<invalid_city>", swTotal, "");
+            yield break;
+        }
+
+        if (initialDelay > 0f)
+        {
+            var swDelay = TBPerf.StartTimer();
+            yield return new WaitForSeconds(initialDelay);
+            TBPerf.Log($"DetectVariants:InitialDelay:{city.name}", swDelay, $"delay={initialDelay:F2}s");
+        }
+
+        float deadline = Time.time + scanDurationSeconds;
+
+        var foundVariants = new List<string>();
+        string foundLastVariant = null;
+
+        string sceneKey = (city.sceneName ?? "").Trim();
+        string nameKey = (city.name ?? "").Trim();
+        string targetKey = (city.targetGameObjectName ?? "").Trim();
+
+        Func<string, IEnumerable<string>> makeTokens = s =>
+        {
+            if (string.IsNullOrEmpty(s)) return Enumerable.Empty<string>();
+            var cleaned = Regex.Replace(s, @"NewTerrain|Terrain|_Terrain|Clone", "", RegexOptions.IgnoreCase).Trim();
+            cleaned = Regex.Replace(cleaned, @"[^\w]", " ");
+            return cleaned.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                          .Select(t => t.Trim()).Where(t => t.Length >= 2).Distinct(StringComparer.OrdinalIgnoreCase);
+        };
+
+        var sceneTokens = makeTokens(sceneKey).ToArray();
+        var nameTokens = makeTokens(nameKey).ToArray();
+        var targetTokens = makeTokens(targetKey).ToArray();
+
+        // ---------- Stage 1: Scan loop (build list of candidate names) ----------
+        var swScanLoop = TBPerf.StartTimer();
+
+        while (Time.time <= deadline)
+        {
+            foundVariants.Clear();
+            foundLastVariant = null;
+
+            GameObject[] all = null;
+            try
+            {
+                all = UnityEngine.Object.FindObjectsOfType<GameObject>();
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: FindObjectsOfType threw for '{city.name}': {ex.Message}");
+                all = null;
+            }
+
+            if (all == null || all.Length == 0)
+            {
+                yield return null;
+                continue;
+            }
+
+            var swScanOnce = TBPerf.StartTimer();
+            try
+            {
+                foreach (var go in all)
+                {
+                    if (go == null) continue;
+                    var raw = go.name ?? "";
+                    var n = NormalizeGameObjectName(raw);
+                    if (string.IsNullOrEmpty(n)) continue;
+
+                    var low = n.ToLowerInvariant();
+                    if (low.Contains("canvas") || low.Contains("ui") || low.StartsWith("btn") || low.Contains("button"))
+                        continue;
+
+                    bool matched = false;
+
+                    if (!string.IsNullOrEmpty(targetKey) && n.IndexOf(targetKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
+                    if (!matched && targetTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
+
+                    if (!matched && !string.IsNullOrEmpty(nameKey) && n.IndexOf(nameKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
+                    if (!matched && nameTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
+
+                    if (!matched && !string.IsNullOrEmpty(sceneKey) && n.IndexOf(sceneKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
+                    if (!matched && sceneTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
+
+                    if (!matched) continue;
+                    if (n.Length < 3) continue;
+
+                    if (!foundVariants.Contains(n)) foundVariants.Add(n);
+
+                    if (go.activeInHierarchy)
+                    {
+                        // prefer active object variants as the "last" if available
+                        if (!string.Equals(n, nameKey, StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(n, sceneKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            foundLastVariant = n;
+                        }
+                        else if (string.IsNullOrEmpty(foundLastVariant))
+                        {
+                            foundLastVariant = n;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: scan exception for '{city.name}': {ex.Message}");
+            }
+            finally
+            {
+                TBPerf.Log($"DetectVariants:ScanOnce:{city.name}", swScanOnce, $"found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
+            }
+
+            if (foundVariants.Count > 0) break;
+
+            yield return null;
+        }
+
+        TBPerf.Log($"DetectVariants:ScanLoop:{city.name}", swScanLoop, $"durationRequested={scanDurationSeconds:F2}s");
+
+        // ---------- Stage 2: Fallback child search if nothing found ----------
+        if (foundVariants.Count == 0)
+        {
+            GameObject[] roots = null;
+            try
+            {
+                roots = UnityEngine.Object.FindObjectsOfType<GameObject>()
+                    .Where(g =>
+                    {
+                        var nn = NormalizeGameObjectName(g?.name ?? "");
+                        if (string.IsNullOrEmpty(nn)) return false;
+                        if (!string.IsNullOrEmpty(targetKey) && nn.IndexOf(targetKey, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        if (targetTokens.Any(t => nn.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) return true;
+                        if (!string.IsNullOrEmpty(sceneKey) && nn.IndexOf(sceneKey, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                        if (sceneTokens.Any(t => nn.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) return true;
+                        return false;
+                    }).ToArray();
+            }
+            catch (Exception ex)
+            {
+                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: fallback roots enumeration failed for '{city.name}': {ex.Message}");
+                roots = null;
+            }
+
+            if (roots != null && roots.Length > 0)
+            {
+                var swFallbackChildren = TBPerf.StartTimer();
+                try
+                {
+                    foreach (var r in roots)
+                    {
+                        if (r == null) continue;
+                        foreach (Transform child in r.transform)
+                        {
+                            var cn = NormalizeGameObjectName(child.name);
+                            if (!string.IsNullOrEmpty(cn) && !foundVariants.Contains(cn)) foundVariants.Add(cn);
+                            if (child.gameObject.activeInHierarchy && string.IsNullOrEmpty(foundLastVariant)) foundLastVariant = cn;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: fallback children scan failed for '{city.name}': {ex.Message}");
+                }
+                finally
+                {
+                    TBPerf.Log($"DetectVariants:FallbackChildren:{city.name}", swFallbackChildren, $"roots={(roots?.Length ?? 0)}, found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
+                }
+            }
+        }
+
+        // ---------- Stage 3: Sample names if still nothing found ----------
+        if (foundVariants.Count == 0)
+        {
+            try
+            {
+                var swSampleNames = TBPerf.StartTimer();
+                var allNames = UnityEngine.Object.FindObjectsOfType<GameObject>()
+                    .Where(g => g != null)
+                    .Select(g => NormalizeGameObjectName(g.name))
+                    .Where(n => !string.IsNullOrEmpty(n))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(80)
+                    .ToArray();
+
+                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant candidates found for '{city.name}'. Top scene object names (sample up to 80): [{string.Join(", ", allNames)}]");
+                TBPerf.Log($"DetectVariants:SampleNames:{city.name}", swSampleNames, $"sampleCount={allNames.Length}");
+            }
+            catch { }
+        }
+
+        // ---------- Stage 4: Determine finalLast and persist only lastKnownVariant ----------
+        try
+        {
+            string finalLast = null;
+
+            if (!string.IsNullOrEmpty(foundLastVariant))
+            {
+                finalLast = foundLastVariant;
+            }
+            else if (foundVariants.Count > 0)
+            {
+                finalLast = foundVariants[0];
+            }
+
+            if (!string.IsNullOrEmpty(finalLast))
+            {
+                try
+                {
+                    // Only update lastKnownVariant (do NOT modify city.variants list)
+                    city.lastKnownVariant = finalLast;
+                    TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: setting lastKnownVariant='{finalLast}' for city='{city.name}'");
+
+                    // Persist the city so the lastKnownVariant is saved (no variants array changes)
+                    try
+                    {
+                        TravelButton.AppendOrUpdateCityInJsonAndSave(city);
+                    }
+                    catch (Exception exSave)
+                    {
+                        TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: failed to persist lastKnownVariant for '{city.name}': {exSave.Message}");
+                    }
+                }
+                catch (Exception exSet)
+                {
+                    TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: failed to set lastKnownVariant for '{city.name}': {exSet.Message}");
+                }
+            }
+            else
+            {
+                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no confident last variant detected for '{city.name}' - leaving lastKnownVariant unchanged.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: finalize failed for '{city?.name}': {ex.Message}");
+        }
+
+        TBPerf.Log($"DetectVariants:Total:{city.name}", swTotal, $"foundVariants={foundVariants.Count}, lastKnown={(city.lastKnownVariant ?? "<none>")}");
         yield break;
     }
 }

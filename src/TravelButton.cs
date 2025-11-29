@@ -1188,22 +1188,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         {
                             if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
                             {
-                                var plugin = TravelButtonPlugin.Instance;
-                                if (plugin != null)
+                                if (TryStartVariantDetection(city))
                                 {
-                                    if (TryStartVariantDetection(plugin, city))
-                                    {
-                                        startedVariantDetection = true;
-                                        TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
-                                    }
-                                    else
-                                    {
-                                        TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
-                                    }
+                                    startedVariantDetection = true;
+                                    TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
                                 }
                                 else
                                 {
-                                    TBLog.Info("MarkCityVisitedByScene: plugin instance not available to start variant detection coroutine.");
+                                    TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                                 }
                             }
                         }
@@ -1249,22 +1241,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         {
                             if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
                             {
-                                var plugin = TravelButtonPlugin.Instance;
-                                if (plugin != null)
+                                if (TryStartVariantDetection(city))
                                 {
-                                    if (TryStartVariantDetection(plugin, city))
-                                    {
-                                        startedVariantDetection = true;
-                                        TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
-                                    }
-                                    else
-                                    {
-                                        TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
-                                    }
+                                    startedVariantDetection = true;
+                                    TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}'.");
                                 }
                                 else
                                 {
-                                    TBLog.Info("MarkCityVisitedByScene: plugin instance not available to start variant detection coroutine.");
+                                    TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                                 }
                             }
                         }
@@ -1284,22 +1268,14 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     {
                         if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
                         {
-                            var plugin = TravelButtonPlugin.Instance;
-                            if (plugin != null)
+                            if (TryStartVariantDetection(city))
                             {
-                                if (TryStartVariantDetection(plugin, city))
-                                {
-                                    startedVariantDetection = true;
-                                    TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}' (no visited field/property).");
-                                }
-                                else
-                                {
-                                    TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
-                                }
+                                startedVariantDetection = true;
+                                TBLog.Info($"MarkCityVisitedByScene: scheduled variant detection coroutine for '{city.name}' (no visited field/property).");
                             }
                             else
                             {
-                                TBLog.Info("MarkCityVisitedByScene: plugin instance not available to start variant detection coroutine.");
+                                TBLog.Info($"MarkCityVisitedByScene: variant detection already in progress for '{city.name}'.");
                             }
                         }
                     }
@@ -1368,9 +1344,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
     /// Try to start variant detection for a city only once concurrently.
     /// Returns true if a new detection coroutine was started; false if one was already running.
     /// </summary>
-    private static bool TryStartVariantDetection(TravelButtonPlugin plugin, TravelButton.City city)
+    private static bool TryStartVariantDetection(TravelButton.City city)
     {
-        if (plugin == null || city == null) return false;
+        if (city == null) return false;
         var cityKey = (city.name ?? "").Trim();
         if (string.IsNullOrEmpty(cityKey)) return false;
 
@@ -1383,7 +1359,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         // Start a wrapper coroutine that ensures the tracking set is cleared when done.
         try
         {
-            plugin.StartCoroutine(VariantDetectWrapper(plugin, city));
+            TeleportManager.Instance.StartCoroutine(VariantDetectWrapper(city));
             return true;
         }
         catch (Exception ex)
@@ -1397,13 +1373,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
     /// <summary>
     /// Wrapper coroutine: runs the actual DetectAndPersistVariantsForCityCoroutine and clears in-progress marker afterwards.
     /// </summary>
-    private static IEnumerator VariantDetectWrapper(TravelButtonPlugin plugin, TravelButton.City city)
+    private static IEnumerator VariantDetectWrapper(TravelButton.City city)
     {
         var cityKey = (city?.name ?? "").Trim();
         var sw = TBPerf.StartTimer();
 
         // Yield to the actual detection coroutine first (no try/catch around yield)
-        yield return plugin.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f);
+        yield return TeleportManager.DetectAndPersistVariantsForCityCoroutine(city, 0.25f, 1.5f);
 
         // After the inner coroutine completes (or Unity's coroutine runner finished it), do logging and cleanup.
         try
@@ -2639,574 +2615,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
     }
 
-    private IEnumerator DetectAndPersistVariantsForCityCoroutine(TravelButton.City city, float initialDelay = 1.0f, float scanDurationSeconds = 3.0f)
-    {
-        var swTotal = TBPerf.StartTimer();
-
-        if (city == null || string.IsNullOrEmpty(city.name))
-        {
-            TBPerf.Log("DetectVariants:Total:<invalid_city>", swTotal, "");
-            yield break;
-        }
-
-        if (initialDelay > 0f)
-        {
-            var swDelay = TBPerf.StartTimer();
-            yield return new WaitForSeconds(initialDelay);
-            TBPerf.Log($"DetectVariants:InitialDelay:{city.name}", swDelay, $"delay={initialDelay:F2}s");
-        }
-
-        float deadline = Time.time + scanDurationSeconds;
-
-        List<string> foundVariants = new List<string>();
-        string foundLastVariant = null;
-
-        string sceneKey = (city.sceneName ?? "").Trim();
-        string nameKey = (city.name ?? "").Trim();
-        string targetKey = (city.targetGameObjectName ?? "").Trim();
-
-        Func<string, IEnumerable<string>> makeTokens = s =>
-        {
-            if (string.IsNullOrEmpty(s)) return Enumerable.Empty<string>();
-            var cleaned = Regex.Replace(s, @"NewTerrain|Terrain|_Terrain|Clone", "", RegexOptions.IgnoreCase).Trim();
-            cleaned = Regex.Replace(cleaned, @"[^\w]", " ");
-            return cleaned.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                          .Select(t => t.Trim()).Where(t => t.Length >= 2).Distinct(StringComparer.OrdinalIgnoreCase);
-        };
-
-        var sceneTokens = makeTokens(sceneKey).ToArray();
-        var nameTokens = makeTokens(nameKey).ToArray();
-        var targetTokens = makeTokens(targetKey).ToArray();
-
-        // 1) Main timed scanning loop
-        var swScanLoop = TBPerf.StartTimer();
-        while (Time.time <= deadline)
-        {
-            foundVariants.Clear();
-            foundLastVariant = null;
-
-            GameObject[] all = null;
-            try
-            {
-                all = UnityEngine.Object.FindObjectsOfType<GameObject>();
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: FindObjectsOfType threw for '{city.name}': {ex.Message}");
-                all = null;
-            }
-
-            if (all == null || all.Length == 0)
-            {
-                yield return null;
-                continue;
-            }
-
-            var swScanOnce = TBPerf.StartTimer();
-            try
-            {
-                foreach (var go in all)
-                {
-                    if (go == null) continue;
-                    var raw = go.name ?? "";
-                    var n = NormalizeGameObjectName(raw);
-                    if (string.IsNullOrEmpty(n)) continue;
-
-                    var low = n.ToLowerInvariant();
-                    if (low.Contains("canvas") || low.Contains("ui") || low.StartsWith("btn") || low.Contains("button"))
-                        continue;
-
-                    bool matched = false;
-
-                    if (!string.IsNullOrEmpty(targetKey) && n.IndexOf(targetKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
-                    if (!matched && targetTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
-
-                    if (!matched && !string.IsNullOrEmpty(nameKey) && n.IndexOf(nameKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
-                    if (!matched && nameTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
-
-                    if (!matched && !string.IsNullOrEmpty(sceneKey) && n.IndexOf(sceneKey, StringComparison.OrdinalIgnoreCase) >= 0) matched = true;
-                    if (!matched && sceneTokens.Any(t => n.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) matched = true;
-
-                    if (!matched) continue;
-                    if (n.Length < 3) continue;
-
-                    if (!foundVariants.Contains(n)) foundVariants.Add(n);
-
-                    if (go.activeInHierarchy)
-                    {
-                        if (!string.Equals(n, nameKey, StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(n, sceneKey, StringComparison.OrdinalIgnoreCase))
-                        {
-                            foundLastVariant = n;
-                        }
-                        else if (string.IsNullOrEmpty(foundLastVariant))
-                        {
-                            foundLastVariant = n;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: scan exception for '{city.name}': {ex.Message}");
-                // continue to next iteration until deadline
-            }
-            finally
-            {
-                TBPerf.Log($"DetectVariants:ScanOnce:{city.name}", swScanOnce, $"found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
-            }
-
-            if (foundVariants.Count > 0) break;
-
-            yield return null;
-        }
-        TBPerf.Log($"DetectVariants:ScanLoop:{city.name}", swScanLoop, $"durationRequested={scanDurationSeconds:F2}s");
-
-        // 2) Fallback: search children of candidate roots (no yields inside try/catch)
-        if (foundVariants.Count == 0)
-        {
-            var swFallbackRoots = TBPerf.StartTimer();
-            GameObject[] roots = null;
-            try
-            {
-                roots = UnityEngine.Object.FindObjectsOfType<GameObject>()
-                    .Where(g =>
-                    {
-                        var nn = NormalizeGameObjectName(g?.name ?? "");
-                        if (string.IsNullOrEmpty(nn)) return false;
-                        if (!string.IsNullOrEmpty(targetKey) && nn.IndexOf(targetKey, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                        if (targetTokens.Any(t => nn.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) return true;
-                        if (!string.IsNullOrEmpty(sceneKey) && nn.IndexOf(sceneKey, StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                        if (sceneTokens.Any(t => nn.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0)) return true;
-                        return false;
-                    }).ToArray();
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: fallback roots enumeration failed for '{city.name}': {ex.Message}");
-                roots = null;
-            }
-
-            if (roots != null && roots.Length > 0)
-            {
-                var swFallbackChildren = TBPerf.StartTimer();
-                try
-                {
-                    foreach (var r in roots)
-                    {
-                        if (r == null) continue;
-                        foreach (Transform child in r.transform)
-                        {
-                            var cn = NormalizeGameObjectName(child.name);
-                            if (!string.IsNullOrEmpty(cn) && !foundVariants.Contains(cn)) foundVariants.Add(cn);
-                            if (child.gameObject.activeInHierarchy && string.IsNullOrEmpty(foundLastVariant)) foundLastVariant = cn;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: fallback children scan failed for '{city.name}': {ex.Message}");
-                }
-                finally
-                {
-                    TBPerf.Log($"DetectVariants:FallbackChildren:{city.name}", swFallbackChildren, $"roots={roots.Length}, found={foundVariants.Count}, last={foundLastVariant ?? "<none>"}");
-                }
-            }
-            else
-            {
-                TBPerf.Log($"DetectVariants:FallbackRootsNone:{city.name}", swFallbackRoots, "no candidate roots");
-            }
-        }
-
-        // 3) If still nothing, log a sample of top names
-        if (foundVariants.Count == 0)
-        {
-            try
-            {
-                var swSampleNames = TBPerf.StartTimer();
-                var allNames = UnityEngine.Object.FindObjectsOfType<GameObject>()
-                    .Where(g => g != null)
-                    .Select(g => NormalizeGameObjectName(g.name))
-                    .Where(n => !string.IsNullOrEmpty(n))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Take(80)
-                    .ToArray();
-
-                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant candidates found for '{city.name}'. Top scene object names (sample up to 80): [{string.Join(", ", allNames)}]");
-                TBPerf.Log($"DetectVariants:SampleNames:{city.name}", swSampleNames, $"sampleCount={allNames.Length}");
-            }
-            catch { }
-        }
-
-        // 4) Finalize and persist if changed (scoring and persistence)
-        try
-        {
-            var swFinalize = TBPerf.StartTimer();
-
-            var finalVariants = (foundVariants ?? new List<string>()).Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-
-            finalVariants = finalVariants.Where(v =>
-                !string.Equals(v, (city.targetGameObjectName ?? ""), StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(v, (city.name ?? ""), StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(v, (city.sceneName ?? ""), StringComparison.OrdinalIgnoreCase)
-            ).ToList();
-
-            if (finalVariants.Count == 0 && foundVariants.Count > 0)
-                finalVariants = foundVariants.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-
-            // Inline variant detection (no hardcoded "Normal"/"Destroyed").
-            string finalLast = null;
-            var swBuildScore = TBPerf.StartTimer();
-
-            try
-            {
-                var candidates = new System.Collections.Generic.List<string>();
-                if (finalVariants != null && finalVariants.Count > 0)
-                {
-                    candidates.AddRange(finalVariants.Where(s => !string.IsNullOrWhiteSpace(s)));
-                }
-                else
-                {
-                    try
-                    {
-                        var ctype = city.GetType();
-                        var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
-                                  ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
-                        if (cv != null) candidates.AddRange(cv.Where(s => !string.IsNullOrWhiteSpace(s)));
-                    }
-                    catch { }
-                }
-
-                // include city.name token (if present)
-                string cityNameForLog = "";
-                try
-                {
-                    var ctype = city.GetType();
-                    var cityName = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                 ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
-                    if (!string.IsNullOrWhiteSpace(cityName) && !candidates.Contains(cityName, StringComparer.OrdinalIgnoreCase))
-                        candidates.Add(cityName);
-                    cityNameForLog = cityName ?? "";
-                }
-                catch { }
-
-                candidates = candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-
-                if (candidates.Count > 0)
-                {
-                    var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                    var roots = scene.GetRootGameObjects();
-                    var allTransforms = roots.SelectMany(r => r.GetComponentsInChildren<UnityEngine.Transform>(true)).ToArray();
-
-                    // reference pos for proximity scoring
-                    UnityEngine.Vector3 refPos = UnityEngine.Vector3.zero;
-                    bool haveRef = false;
-                    try
-                    {
-                        var ctype = city.GetType();
-                        var coords = (float[])(ctype.GetField("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
-                                   ?? ctype.GetProperty("coords", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
-                        if (coords != null && coords.Length >= 3) { refPos = new UnityEngine.Vector3(coords[0], coords[1], coords[2]); haveRef = true; }
-                    }
-                    catch { }
-                    if (!haveRef)
-                    {
-                        var pgo = UnityEngine.GameObject.FindWithTag("Player");
-                        if (pgo != null) { refPos = pgo.transform.position; haveRef = true; }
-                        else if (UnityEngine.Camera.main != null) { refPos = UnityEngine.Camera.main.transform.position; haveRef = true; }
-                    }
-
-                    // small blacklist to avoid manager roots if they accidentally match tokens
-                    var blacklistPrefixes = new[] { "Effects", "Drops", "Spawn", "Assets", "SoundPool", "Weather", "UI", "Canvas" };
-
-                    var scored = new System.Collections.Generic.List<(string name, long score, int total, int active, float nearest)>();
-
-                    foreach (var candidate in candidates)
-                    {
-                        if (string.IsNullOrWhiteSpace(candidate)) continue;
-                        if (blacklistPrefixes.Any(b => candidate.StartsWith(b, System.StringComparison.OrdinalIgnoreCase))) continue;
-
-                        var matches = allTransforms.Where(t =>
-                        {
-                            if (t == null) return false;
-                            var n = t.name ?? "";
-                            return (n.IndexOf(candidate, System.StringComparison.OrdinalIgnoreCase) >= 0)
-                                   || (candidate.IndexOf(n, System.StringComparison.OrdinalIgnoreCase) >= 0);
-                        }).ToArray();
-
-                        int total = matches.Length;
-                        int active = matches.Count(m => m.gameObject.activeInHierarchy);
-
-                        float nearest = float.MaxValue;
-                        if (haveRef && matches.Length > 0)
-                        {
-                            foreach (var m in matches)
-                            {
-                                try { var d = UnityEngine.Vector3.Distance(refPos, m.position); if (d < nearest) nearest = d; } catch { }
-                            }
-                        }
-
-                        long score = 0;
-                        bool isKnownVariant = false;
-                        try
-                        {
-                            var ctype = city.GetType();
-                            var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
-                                      ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
-                            if (cv != null && cv.Any(v => string.Equals(v, candidate, System.StringComparison.OrdinalIgnoreCase))) isKnownVariant = true;
-                        }
-                        catch { }
-
-                        if (isKnownVariant) score += 200000;
-                        score += active * 2000;
-                        score += total * 50;
-                        if (haveRef && nearest < float.MaxValue) score -= (long)nearest;
-
-                        if (isKnownVariant || total > 0)
-                        {
-                            scored.Add((candidate, score, total, active, nearest));
-                        }
-                    }
-
-                    // adjust scores with blacklist/city tokens
-                    try
-                    {
-                        var blacklistTokens = new[] {
-                        "Gate","Vigil","Trigger","Lever","Visual","Template",
-                        "Spawn","Respawn","Entrance","Portal","TriggerZone","GateTrigger","GateLever"
-                    };
-
-                        var cityTokens = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
-                        try
-                        {
-                            var ctype = city.GetType();
-                            var sceneName = (ctype.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                         ?? (ctype.GetProperty("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
-                            var cityName = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                         ?? (ctype.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string);
-
-                            if (!string.IsNullOrWhiteSpace(sceneName))
-                            {
-                                var cleaned = System.Text.RegularExpressions.Regex.Replace(sceneName, @"NewTerrain|Terrain|_Terrain|Clone", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                foreach (var t in cleaned.Split(new[] { ' ', '_' }, System.StringSplitOptions.RemoveEmptyEntries))
-                                    if (t.Length >= 2) cityTokens.Add(t.Trim());
-                            }
-                            if (!string.IsNullOrWhiteSpace(cityName))
-                            {
-                                var cleaned = System.Text.RegularExpressions.Regex.Replace(cityName, @"NewTerrain|Terrain|_Terrain|Clone", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                foreach (var t in cleaned.Split(new[] { ' ', '_' }, System.StringSplitOptions.RemoveEmptyEntries))
-                                    if (t.Length >= 2) cityTokens.Add(t.Trim());
-                            }
-                        }
-                        catch { /* non-fatal */ }
-
-                        for (int i = 0; i < scored.Count; i++)
-                        {
-                            var item = scored[i];
-                            long adjust = 0;
-
-                            if (blacklistTokens.Any(bt => item.name.IndexOf(bt, System.StringComparison.OrdinalIgnoreCase) >= 0))
-                                adjust -= 200000;
-
-                            if (cityTokens.Count > 0 && cityTokens.Any(tok => item.name.IndexOf(tok, System.StringComparison.OrdinalIgnoreCase) >= 0))
-                                adjust += 300000;
-
-                            if (item.name.IndexOf("Normal", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                                adjust += 100000;
-
-                            try
-                            {
-                                var ctype = city.GetType();
-                                var fullScene = (ctype.GetField("sceneName", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                             ?? (ctype.GetProperty("sceneName")?.GetValue(city) as string);
-                                var fullCity = (ctype.GetField("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string)
-                                             ?? (ctype.GetProperty("name")?.GetValue(city) as string);
-                                if (!string.IsNullOrWhiteSpace(fullScene) && item.name.IndexOf(fullScene, System.StringComparison.OrdinalIgnoreCase) >= 0) adjust += 200000;
-                                if (!string.IsNullOrWhiteSpace(fullCity) && item.name.IndexOf(fullCity, System.StringComparison.OrdinalIgnoreCase) >= 0) adjust += 200000;
-                            }
-                            catch { }
-
-                            scored[i] = (item.name, item.score + adjust, item.total, item.active, item.nearest);
-                        }
-                    }
-                    catch
-                    {
-                        // non-fatal: leave `scored` unchanged on error
-                    }
-
-                    // log scored summary before picking best
-                    TBPerf.Log($"DetectVariants:BuildScore:{city.name}", swBuildScore, $"candidates={candidates.Count}, scored={scored.Count}");
-
-                    if (scored.Count > 0)
-                    {
-                        var best = scored.OrderByDescending(s => s.score)
-                                         .ThenByDescending(s => s.active)
-                                         .ThenByDescending(s => s.total)
-                                         .ThenBy(s => s.name)
-                                         .First();
-                        finalLast = best.name;
-                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: selected variant='{finalLast}' score={best.score} for city='{cityNameForLog}'");
-                    }
-                }
-                else
-                {
-                    TBPerf.Log($"DetectVariants:NoCandidates:{city.name}", swBuildScore, "no candidates");
-                }
-            }
-            catch (Exception exBuild)
-            {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: dynamic root-name detection failed: {exBuild.Message}");
-            }
-
-            // New persistence-guard: avoid overwriting a persisted token that is still present in scene
-            try
-            {
-                var swPersistGuard = TBPerf.StartTimer();
-
-                string persisted = null;
-                try
-                {
-                    var ctype = city.GetType();
-                    persisted = ctype.GetField("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string
-                             ?? ctype.GetProperty("lastKnownVariant", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city) as string;
-                }
-                catch { persisted = null; }
-
-                bool ExistsInScene(string token)
-                {
-                    if (string.IsNullOrWhiteSpace(token)) return false;
-                    var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                    var roots = scene.GetRootGameObjects();
-                    foreach (var r in roots)
-                    {
-                        if (r == null) continue;
-                        if ((r.name ?? "").IndexOf(token, System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                        foreach (UnityEngine.Transform ch in r.transform)
-                        {
-                            if (ch == null) continue;
-                            if ((ch.name ?? "").IndexOf(token, System.StringComparison.OrdinalIgnoreCase) >= 0) return true;
-                        }
-                    }
-                    return false;
-                }
-
-                if (!string.IsNullOrEmpty(persisted) && ExistsInScene(persisted))
-                {
-                    finalLast = persisted;
-                    TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: keeping existing persisted variant='{persisted}' for city='{city?.name}' because it is present in scene");
-                }
-                else
-                {
-                    bool confidentToPersist = false;
-                    try
-                    {
-                        if (!string.IsNullOrEmpty(finalLast))
-                        {
-                            var ctype = city.GetType();
-                            var cv = (string[])(ctype.GetField("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city)
-                                      ?? ctype.GetProperty("variants", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?.GetValue(city));
-                            if (cv != null && cv.Any(v => string.Equals(v, finalLast, System.StringComparison.OrdinalIgnoreCase)))
-                            {
-                                confidentToPersist = true;
-                            }
-
-                            if (!confidentToPersist)
-                            {
-                                var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                                var roots = scene.GetRootGameObjects();
-                                foreach (var r in roots)
-                                {
-                                    if (r == null) continue;
-                                    foreach (var tr in r.GetComponentsInChildren<UnityEngine.Transform>(true))
-                                    {
-                                        if (tr == null) continue;
-                                        var go = tr.gameObject;
-                                        foreach (var comp in go.GetComponents<UnityEngine.Component>())
-                                        {
-                                            if (comp == null) continue;
-                                            var t = comp.GetType();
-                                            foreach (var f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
-                                            {
-                                                if (f.FieldType == typeof(string))
-                                                {
-                                                    try { var sval = f.GetValue(comp) as string; if (!string.IsNullOrEmpty(sval) && sval.IndexOf(finalLast, System.StringComparison.OrdinalIgnoreCase) >= 0) { confidentToPersist = true; break; } } catch { }
-                                                }
-                                            }
-                                            if (confidentToPersist) break;
-                                            foreach (var p in t.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
-                                            {
-                                                if (p.PropertyType == typeof(string) && p.GetIndexParameters().Length == 0 && p.CanRead)
-                                                {
-                                                    try { var sval = p.GetValue(comp) as string; if (!string.IsNullOrEmpty(sval) && sval.IndexOf(finalLast, System.StringComparison.OrdinalIgnoreCase) >= 0) { confidentToPersist = true; break; } } catch { }
-                                                }
-                                            }
-                                            if (confidentToPersist) break;
-                                        }
-                                        if (confidentToPersist) break;
-                                    }
-                                    if (confidentToPersist) break;
-                                }
-                            }
-                        }
-                    }
-                    catch { confidentToPersist = false; }
-
-                    if (!confidentToPersist)
-                    {
-                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: not confident to persist detected variant='{finalLast}' for city='{city?.name}', keeping persisted");
-                        finalLast = persisted ?? ((!string.IsNullOrEmpty(foundLastVariant) ? foundLastVariant : (finalVariants != null && finalVariants.Count > 0 ? finalVariants[0] : (city?.lastKnownVariant ?? ""))));
-                    }
-                    else
-                    {
-                        TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: confident to persist detected variant='{finalLast}' for city='{city?.name}'");
-                    }
-                }
-
-                TBPerf.Log($"DetectVariants:PersistGuard:{city.name}", swPersistGuard, $"finalLast={(finalLast ?? "<none>")}, persisted={(persisted ?? "<none>")}");
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: persistence-guard failed: {ex.Message}");
-            }
-
-            // Continue with persisting finalVariants/finalLast into city and JSON if changed
-            var variantsArray = finalVariants.ToArray();
-            bool changed = false;
-            if (!Enumerable.SequenceEqual(city.variants ?? new string[0], variantsArray, StringComparer.OrdinalIgnoreCase))
-            {
-                city.variants = variantsArray;
-                changed = true;
-            }
-
-            if ((city.lastKnownVariant ?? "") != (finalLast ?? ""))
-            {
-                city.lastKnownVariant = finalLast ?? "";
-                changed = true;
-            }
-
-            if (changed)
-            {
-                var swPersist = TBPerf.StartTimer();
-                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: detected variants for '{city.name}': [{string.Join(", ", city.variants ?? new string[0])}], lastKnownVariant='{city.lastKnownVariant}'");
-                TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                TBPerf.Log($"DetectVariants:Persist:{city.name}", swPersist, $"variants={city.variants?.Length ?? 0}");
-            }
-            else
-            {
-                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant changes for '{city.name}' (variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant ?? ""}').");
-            }
-
-            TBPerf.Log($"DetectVariants:Finalize:{city.name}", swFinalize, $"foundVariants={foundVariants.Count}, finalVariants={finalVariants.Count}, finalLast={(finalLast ?? "<none>")}");
-        }
-        catch (Exception ex)
-        {
-            TBLog.Warn($"DetectAndPersistVariantsForCityCoroutine: finalize failed for '{city?.name}': {ex.Message}");
-        }
-
-        TBPerf.Log($"DetectVariants:Total:{city.name}", swTotal, $"foundVariants={foundVariants.Count}");
-        yield break;
-    }
-
     // Choose best variant from an explicit candidate list using the same heuristic used interactively:
     // prefer active instances (most), tie-break by nearest to player/camera, then by total matches, then first.
     private static string ResolveBestVariantFromCandidates(IEnumerable<string> candidates)
@@ -3297,15 +2705,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
             TBLog.Warn("ResolveBestVariantFromCandidates: unexpected: " + ex.Message);
             return string.Empty;
         }
-    }
-
-    // Normalize helper (unchanged)
-    private static string NormalizeGameObjectName(string raw)
-    {
-        if (string.IsNullOrEmpty(raw)) return raw;
-        var s = Regex.Replace(raw, @"\s*\(Clone\)\s*$", "", RegexOptions.IgnoreCase).Trim();
-        s = Regex.Replace(s, @"\s+", " ");
-        return s;
     }
 
     // EnsureBepInExConfigBindingsForCity: create/read BepInEx bindings for one city and apply cfg/legacy overrides to the runtime city.
