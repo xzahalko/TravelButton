@@ -1152,7 +1152,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                     TBLog.Info($"MarkCityVisitedByScene: scene matches city '{city.name}' (sceneName='{city.sceneName}' target='{city.targetGameObjectName}')");
 
                     // Special handling: NewSirocco must always remain visited=false per specification
-                    if (string.Equals(city.sceneName, "NewSirocco", System.StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(city.sceneName, TravelButton.NewSiroccoSceneName, StringComparison.OrdinalIgnoreCase))
                     {
                         TBLog.Info($"MarkCityVisitedByScene: skipping NewSirocco - visited flag must remain false per specification");
                         TBPerf.Log($"MarkCityVisitedByScene:CitySkip:{city.name}", swCity, "newsirocco_special");
@@ -3448,7 +3448,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
             // Special handling: NewSirocco must always remain visited=false per specification
             // We can still update coords/target but visited must stay false
-            bool isNewSirocco = string.Equals(sceneName, "NewSirocco", StringComparison.OrdinalIgnoreCase);
+            bool isNewSirocco = string.Equals(sceneName, TravelButton.NewSiroccoSceneName, StringComparison.OrdinalIgnoreCase);
             if (isNewSirocco)
             {
                 TBLog.Info($"StoreVisitedSceneToJson: NewSirocco detected - will update coords/target but visited will remain false per specification.");
@@ -3806,6 +3806,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
 public static class TravelButton
 {
+    // Scene name constant for NewSirocco - per specification, this scene must always remain visited=false
+    public const string NewSiroccoSceneName = "NewSirocco";
+
     // cached visited keys extracted from save root (raw strings)
 //    private static HashSet<string> s_visitedKeysSet = null;
     // whether the saved-key set appears useless (empty or only generic entries)

@@ -2371,7 +2371,7 @@ public partial class TravelButtonUI : MonoBehaviour
 
                         try { bimg.color = buttonColor; } catch { }
                         try { ltxt.color = textColor; } catch { }
-                        try { ptxt.color = textColor; } catch { }
+                        // Note: price text (ptxt) color is not changed per original design
 
                         // register and click handler
                         try { RegisterCityButton(city, bbtn); } catch (Exception ex) { TBLog.Warn("RegisterCityButton failed: " + ex.Message); }
@@ -2670,16 +2670,22 @@ public partial class TravelButtonUI : MonoBehaviour
         bool coordsAvailable,
         bool allowWithoutCoords,
         bool hasEnoughMoney,
-        bool isCurrentScene)
+        bool isCurrentScene,
+        bool hasRequiredFields = true)
     {
         if (city == null) return false;
 
-        // final rule:
-        // interactable = enabledByConfig && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney && !isCurrentScene
+        // Per spec, city is clickable only if ALL of the following hold:
+        // a) Enabled = true
+        // b) visited = true
+        // c) Player has enough currency
+        // d) City has non-empty/non-zero values for Price, sceneName, lastKnownVariant
+        // e) City sceneName != current scene
         return enabledByConfig
             && visited
             && (coordsAvailable || allowWithoutCoords)
             && hasEnoughMoney
+            && hasRequiredFields
             && !isCurrentScene;
     }
 
@@ -2733,10 +2739,9 @@ public partial class TravelButtonUI : MonoBehaviour
             // sceneName must be non-empty
             bool hasSceneName = !string.IsNullOrEmpty(city.sceneName);
             
-            // lastKnownVariant must be non-empty (unless variants system is not used)
-            // Per spec this is required, but allow flexibility if not using variants
-            bool hasLastKnownVariant = !string.IsNullOrEmpty(city.lastKnownVariant) || 
-                                        (city.variants == null || city.variants.Length == 0);
+            // lastKnownVariant is required per spec - must be non-empty for clickability
+            // If variants array is empty/null, the city doesn't use variants, so we still require lastKnownVariant
+            bool hasLastKnownVariant = !string.IsNullOrEmpty(city.lastKnownVariant);
             
             hasRequiredFields = hasPrice && hasSceneName && hasLastKnownVariant;
         }
@@ -2749,13 +2754,8 @@ public partial class TravelButtonUI : MonoBehaviour
         bool allowWithoutCoords = targetSceneSpecified && !sceneMatches;
         bool isCurrentScene = targetSceneSpecified && sceneMatches;
 
-        // Per spec: enabled && visited && (coordsAvailable || allowWithoutCoords) && hasEnoughMoney && hasRequiredFields && !isCurrentScene
-        return enabledByConfig
-            && visited
-            && (coordsAvailable || allowWithoutCoords)
-            && hasEnoughMoney
-            && hasRequiredFields
-            && !isCurrentScene;
+        // Use the core boolean evaluator (keeps rule centralized)
+        return IsCityInteractable(city, enabledByConfig, visited, coordsAvailable, allowWithoutCoords, hasEnoughMoney, isCurrentScene, hasRequiredFields);
     }
 
     // Add this static helper into the TravelButtonMod class (paste anywhere among the other static helpers).
