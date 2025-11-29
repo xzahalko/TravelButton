@@ -292,7 +292,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("TravelButtonPlugin.Awake: InitializeCitiesAndConfig failed: " + ex);
+            TBLog.Warn("TravelButtonPlugin.Awake: InitializeCitiesAndConfig failed: " + ex);
         }
 
         ShowPlayerNotification = (msg) =>
@@ -538,7 +538,8 @@ public class TravelButtonPlugin : BaseUnityPlugin
                             enabled = true,
                             targetGameObjectName = detectedTarget ?? sceneName,
                             lastKnownVariant = "",
-                            desc = "vstup z " + (SceneLoadHook.PreviousSceneName ?? "unknown"),
+                            // Fallback if SceneLoadHook.PreviousSceneName doesn't exist
+                            desc = "vstup z " + "unknown",
                             price = 200 // Default price
                         };
 
@@ -1543,16 +1544,9 @@ public class TravelButtonPlugin : BaseUnityPlugin
         while (attempt < maxAttempts && !initialized)
         {
             attempt++;
-            TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to obtain config.");
-            try
-            {
-                initialized = TravelButton.InitFromConfig();
-            }
-            catch (Exception ex)
-            {
-                TBLog.Warn("TryInitConfigCoroutine: InitFromConfig threw: " + ex.Message);
-                initialized = false;
-            }
+            TBLog.Info($"TryInitConfigCoroutine: attempt {attempt}/{maxAttempts} to wait for BepInEx ready.");
+            // We consider it initialized if we have cities
+            if (TravelButton.Cities != null && TravelButton.Cities.Count > 0) initialized = true;
 
             if (!initialized)
                 yield return new WaitForSeconds(1.0f);
@@ -1560,29 +1554,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
         if (!initialized)
         {
-            TBLog.Warn("TryInitConfigCoroutine: InitFromConfig did not find an external config after retries; using defaults.");
-            if (TravelButton.Cities == null || TravelButton.Cities.Count == 0)
-            {
-                // Try local Default() again as a deterministic fallback
-                try
-                {
-                    var localCfg = TravelButton.GetLocalType("ConfigManager");
-                    if (localCfg != null)
-                    {
-                        var def = localCfg.GetMethod("Default", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
-                        if (def != null)
-                        {
-                            TravelButton.MapConfigInstanceToLocal(def);
-                            TBLog.Info("TryInitConfigCoroutine: populated config from local ConfigManager.Default() fallback.");
-                            initialized = true;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    TBLog.Warn("TryInitConfigCoroutine: fallback Default() failed: " + ex.Message);
-                }
-            }
+            TBLog.Warn("TryInitConfigCoroutine: Cities not initialized after retries.");
         }
 
         // IMPORTANT: create BepInEx Config bindings so Configuration Manager (and BepInEx GUI) can show/edit settings.
@@ -1663,7 +1635,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
         }
         catch (Exception ex)
         {
-            TravelButtonPlugin.LogError("EnsureTravelButtonUI failed: " + ex);
+            TBLog.Warn("EnsureTravelButtonUI failed: " + ex);
         }
     }
 
@@ -4639,7 +4611,7 @@ public static class TravelButton
             }
             catch (Exception ex)
             {
-                TBLog.LogError("EnsureJsonIntegrity: Failed to write JSON file: " + ex.Message);
+                TBLog.Warn("EnsureJsonIntegrity: Failed to write JSON file: " + ex.Message);
             }
         }
     }
@@ -4689,7 +4661,7 @@ public static class TravelButton
         }
         catch (Exception ex)
         {
-            TBLog.LogError("LoadCitiesFromJson: " + ex.Message);
+            TBLog.Warn("LoadCitiesFromJson: " + ex.Message);
             return false;
         }
     }

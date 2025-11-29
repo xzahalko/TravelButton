@@ -484,7 +484,8 @@ public static class CityMappingHelpers
             // If runtime appears empty, attempt to populate from config defaults (best-effort)
             if ((runtime == null || runtime.Count == 0))
             {
-                TravelButton.InitFromConfig(); // safe to call (it returns quickly if nothing to load)
+                // TravelButton.InitFromConfig() removed.
+                // We rely on JSON load or default creation (handled before this call in new flow).
                 runtime = TravelButton.Cities ?? new List<TravelButton.City>();
             }
 
