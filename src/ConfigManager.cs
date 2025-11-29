@@ -138,7 +138,7 @@ public static class ConfigManager
         return cfg;
     }
 
-    /// <summary>
+    /// <summary> 
     /// Try to load a legacy config JSON file. Supports:
     ///  - object wrapper matching LegacyTravelConfig (JsonUtility)
     ///  - fallback keyed-object form where "cities" is an object (cityName -> cityObject)
