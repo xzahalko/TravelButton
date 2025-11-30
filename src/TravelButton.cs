@@ -38,7 +38,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
     private BepInEx.Configuration.ConfigEntry<bool> bex_enableMod;
     private BepInEx.Configuration.ConfigEntry<int> bex_globalPrice;
     private BepInEx.Configuration.ConfigEntry<string> bex_currencyItem;
-    //    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode;
+    //    private BepInEx.Configuration.ConfigEntry<string> bex_teleportMode; 
 
     // example: add in your plugin Init (BepInEx) so users can toggle:
     public static BepInEx.Configuration.ConfigEntry<bool> cfgUseTransitionScene;
