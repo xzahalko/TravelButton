@@ -1,0 +1,105 @@
+Here is the specification of the project TravelButton :
+-------------------------------------------------------
+
+TravelButton ( mod ) je modifikace do hry Outward definite version umožňující teleportaci odkudkoli
+---------------------------------------------------------------------------------------------------
+Mod pridava do hry tlacitko pred jiz existujici tlacitka horni listy inventare.
+Mod ma zajistovat moznost teleportace ( cestovani ) odkudkoli do jiz drive navstivenych lokaci.
+V definici modu je 6 zakladnich mest definovanych v TravelManager.cs a TravelButton_Cities.json.
+sceneName = "NewSirocco" je docasne permanentne vypnute "visited = false"
+
+Priprava ( spusteni hry ) ( bod po bodu )
+-----------------------------------------
+1. Mod kontroluje existenci souboru TravelButton_Cities.json, v priprade, ze neexistuje, vytvori jej podle specifikace v TravelManager.cs.
+2.  zkontroluje uplnost souboru TravelButton_Cities.json (dale jen JSON ) a doplni chybejici zaznamy pro default mesta podle TravelManager.cs.
+3. Mod nacte aktualizovany seznam mest JSON do vnitrni struktury TravelButton.Cities.
+4. V pripade neexistence configuracniho souboru cz.valheimskal.travelbutton.cfg ( dale jen CFG ) jej mod vytvori podle nactene struktury TravelButton.Cities.
+5. V priprade existenece CFG souboru mod aktualizuje TravelButton.Cities podle definice z CFG.
+6. Mod doplni do souboru CFG neexistujici nastaveni pro jeste nezakonfiugurovana mesta podle TravelButton.Cities.
+7. Mod aktualizuje in game config podle aktuálního CFG souboru.
+
+Ukazka JSON
+-----------
+  "cities": [
+    {
+      "name": "Cierzo",
+      "price": 200,
+      "coords": [
+        1410.3,
+        6.7,
+        1665.6
+      ],
+      "targetGameObjectName": "Cierzo",
+      "sceneName": "CierzoNewTerrain",
+      "desc": "Cierzo - example description",
+      "visited": false,
+      "lastKnownVariant": ""
+    }
+]
+
+Ukazka CFG
+----------
+[TravelButton]
+EnableMod = true
+GlobalTravelPrice = 200
+CurrencyItem = Silver
+
+[TravelButton.Cities]
+## Enable teleport destination Cierzo
+# Setting type: Boolean
+# Default value: true
+Cierzo.Enabled = true
+
+## Price for Cierzo
+# Setting type: Int32
+# Default value: 200
+Cierzo.Price = 1
+
+## Visited state for Cierzo (managed by plugin; mirrored here if desired)
+# Setting type: Boolean
+# Default value: false
+Cierzo.Visited = true
+
+NOTICE: TravelButton.Cities by mela obsahovat "enabled, price, coords, targetGameObjectName, sceneName, desc, visited, lastKnownVariant"
+
+In game config
+--------------
+Config obsahuje zakladni položky z CFG souboru "[TravelButton] ( EnableMod, GlobalTravelPrice, CurrencyItem)"
+Config take obsahuje analogicky pro kaze mesto položky "[TravelButton.Cities] ( mesto.Enabled, mesto.Price, mesto.Visited )"
+Nove polozky pro mesta se pridavaji na konec in game configu. 
+In game config je aktualizovan, vytvoren na zaklade drive nactenych/aktualizovanych hodnot v TravelButton.Cities, ne z CFG souboru.
+
+Dilog cestovani a barvy
+-----------------------
+V pripade zmeny nastaveni v in game configu je aktualizovan CFG soubor.
+Mesto je dostupne/zobrazeno v dialogu na zaklade nasleducjich podminek:
+1. v pripade povoleni mesta ( enabled ) ( TravelButton.Cities )
+
+Mesto je aktivni/klikatelne v dialogu na zaklade splneni vsech nasleducjich podminek:
+1. v pripade povoleni mesta "enabled" ( TravelButton.Cities )
+2. v pripade "visited = true" ( TravelButton.Cities )
+3. v pripade ze hrac ma dostatek meny ( Silver ) oproti "price" ( TravelButton.Cities )
+4. v pripade dostupnych neprazdnych/nenulovych hodnot v TravelButton.Cities ( Price, sceneName, lastKnownVariant )
+5. mesto neni aktivni v pripade, ze se v nem hrac nachazi (sceneMatches)
+
+Dialog by mel obsahovat vsechna mesta co jsou ve stavu "enabled=true"
+Pokud je mesto aktivni/klikatelne je svetlou barvou
+Pokud je mesto enabled a neni visited je barvou zcernalou
+Pokud je mesto enabled a visited a neni akticni/klikatelne je barvou sedivou
+
+Chovani v prubehu hry
+---------------------
+Po kliknuti na tlacitko cetovani ( v inventari ) se otevre dialog pro cestovani ( aktualizuji se zobrazena mesta podle struktury TravelButton.Cities a drive uvedenych pravidel ( zobrazuji se pouze Enabled )).
+Pokud je mesto klikatelne, dojde k overeni dostatecneho poctu meny ( Silver ) a provede se nacteni sceny a teleport ( existujicim implementovanym zpusobem )
+Po uspesne teleportaci se odecte pozadavany obnos z inventare ( implementovanym zpusobem )
+Pokud neni mesto klikatelne a je enabled ( je sedive ) objevi se in game warning hlaska: 
+	"Nemáš dostatek prostředků" v pripade nedostatku meny ( Silver )
+	
+Vstup do sceny
+--------------
+Po vstupu do sceny se pro vsechny mesta aktualizuje polozka visited => true ( TravelButton.Cities ).
+Po vstupu do sceny se struktura TravelButton.Cities rozsiri, neaktualizuje ( drive nastene hodnoty zustavaji stejne pro danou scenu "sceneName" , krome drive zmineneho visited )
+Pridava se ( Enabled = true, sceneName, coords ( detekovano pozici hrace ), visited = true, targetGameObjectName a lastKnownVariant a desc = "vstup z " + vyhozi scena odkud se prichazi ) 
+Zakladni hodnoty mest v definovane v TravelManager.cs se neaktualizuji !
+Po pridani novych definic do struktury TravelButton.Cities se data propisi do JSON a CFG souboru a aktualizuje se in game config a aktualizuje se dialog.
+sceneName = "NewSirocco" je docasne permanentne vypnute "visited = false" - nekatualizuje je se
