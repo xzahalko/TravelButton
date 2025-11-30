@@ -749,7 +749,7 @@ public static class TravelButton
     // Public list used by UI code (TravelButtonUI reads TravelButtonMod.Cities)
     public static List<City> Cities { get; set; } = new List<City>();
 
-    // Path/filename helpers exposed for debugging
+    // Path/filename helpers exposed for debugging 
     public static string ConfigFilePath
     {
         get
