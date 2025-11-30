@@ -1,4 +1,4 @@
-ï»¿// NOTE: This is the full TravelButtonUI.cs with additional debug logging and sanity checks
+// NOTE: This is the full TravelButtonUI.cs with additional debug logging and sanity checks
 // added to help diagnose bad/incorrect teleport target positions.
 //
 // Key changes:
@@ -231,7 +231,7 @@ public partial class TravelButtonUI : MonoBehaviour
             }
             else
             {
-                // No explicit target â€” keep button visible (safer default)
+                // No explicit target — keep button visible (safer default)
                 shouldShow = true;
                 TBLog.Info("Monitor: no inventoryVisibilityTarget => default shouldShow=true");
             }
@@ -1071,7 +1071,7 @@ public partial class TravelButtonUI : MonoBehaviour
             yield return new WaitForSeconds(pollInterval);
         }
 
-        // timed out ï¿½ fall back to your conservative fallback (screen top or inventory fallback)
+        // timed out ? fall back to your conservative fallback (screen top or inventory fallback)
         TBLog.Info("EnsurePlacedInTopSectionsCoroutine: timeout, using ForceTopToolbarPlacementImpl fallback.");
         ForceTopToolbarPlacementImpl(FindAllCanvasesSafeImpl().FirstOrDefault());
         if (buttonObject != null) buttonObject.SetActive(true);
@@ -1457,7 +1457,7 @@ public partial class TravelButtonUI : MonoBehaviour
             // ignore and try final fallback
         }
 
-        // 3) Final fallback: Resources.FindObjectsOfTypeAll (includes inactive and assets) ï¿½ filter to scene objects.
+        // 3) Final fallback: Resources.FindObjectsOfTypeAll (includes inactive and assets) ? filter to scene objects.
         try
         {
             var arr2 = UnityEngine.Resources.FindObjectsOfTypeAll(typeof(Canvas))
@@ -1791,7 +1791,7 @@ public partial class TravelButtonUI : MonoBehaviour
     }
 
     // Diagnostic: run while the inventory is open and paste the resulting log lines here
-    // Corrected DebugLogToolbarCandidates ï¿½ uses RectTransform list for the candidate scan
+    // Corrected DebugLogToolbarCandidates ? uses RectTransform list for the candidate scan
     private void DebugLogToolbarCandidates()
     {
         try
@@ -2143,7 +2143,7 @@ public partial class TravelButtonUI : MonoBehaviour
             catch (Exception ex)
             {
                 TBLog.Warn("OpenTravelDialog: creating dialogRoot failed: " + ex.Message);
-                // abort â€” cannot proceed without root
+                // abort — cannot proceed without root
                 return;
             }
 
@@ -2439,7 +2439,7 @@ public partial class TravelButtonUI : MonoBehaviour
                                     TBLog.Info($"City click: content parent not found; skipping disabling buttons for '{cityNameLocal}'");
                                 }
 
-                                // DO NOT set isTeleporting here â€” the coroutine should set/clear it.
+                                // DO NOT set isTeleporting here — the coroutine should set/clear it.
                                 TBLog.Info($"City click: starting TryTeleportThenCharge coroutine for '{cityNameLocal}', cost={cityPriceLocal}");
 
                                 // Start the coroutine (must call StartCoroutine to run the IEnumerator).
@@ -2627,7 +2627,7 @@ public partial class TravelButtonUI : MonoBehaviour
     /// Keeps the decision logic in one place so callers can use whichever inputs they already computed.
     /// </summary>
     public static bool IsCityInteractable(
-        TravelButton.City city,
+        City city,
         bool enabledByConfig,
         bool visited,
         bool coordsAvailable,
@@ -2651,7 +2651,7 @@ public partial class TravelButtonUI : MonoBehaviour
     /// and returns whether the city should be interactable for the given playerMoney.
     /// playerMoney: pass -1 if unknown (treats unknown permissively).
     /// </summary>
-    public static bool IsCityInteractable(TravelButton.City city, long playerMoney)
+    public static bool IsCityInteractable(City city, long playerMoney)
     {
         if (city == null) return false;
 
@@ -2824,7 +2824,7 @@ public partial class TravelButtonUI : MonoBehaviour
     }
 
     /// <summary>Register a Button instance for the given City so refresh/update code can find it later.</summary>
-    public static void RegisterCityButton(TravelButton.City city, UnityEngine.UI.Button btn)
+    public static void RegisterCityButton(City city, UnityEngine.UI.Button btn)
     {
         if (city == null || string.IsNullOrEmpty(city.name) || btn == null) return;
         try
@@ -2939,11 +2939,11 @@ public partial class TravelButtonUI : MonoBehaviour
     // Call StartCoroutine(TryTeleportThenCharge(city, cost)) where needed.
 
     // Replaced/updated methods inside TravelButtonUI: 
-    // - private IEnumerator TryTeleportThenCharge(TravelButton.City city, int cost)
+    // - private IEnumerator TryTeleportThenCharge(City city, int cost)
     // - public static SceneVariant DetectSceneVariant(Scene scene, string normalName = null, string destroyedName = null)
     // - private static string GetBaseTokenFromSceneName(string sceneName)
 
-    private IEnumerator TryTeleportThenCharge(TravelButton.City city, int cost)
+    private IEnumerator TryTeleportThenCharge(City city, int cost)
     {
         float entryTime = Time.realtimeSinceStartup;
         try { LogCityConfig(city?.name); } catch { }
@@ -4547,7 +4547,7 @@ public partial class TravelButtonUI : MonoBehaviour
 
     // Helper: more robust visited detection with fallbacks.
     // Returns true if any reasonable indicator suggests the player has visited the city.
-    public static bool IsCityVisitedFallback(TravelButton.City city)
+    public static bool IsCityVisitedFallback(City city)
     {
         try
         {
@@ -5521,7 +5521,7 @@ public partial class TravelButtonUI : MonoBehaviour
                 TBLog.Info("TryFindNearestNavMeshOrGround: NavMesh probe failed or not present: " + exNav.Message);
             }
 
-            // 2) Raycast z vï¿½ï¿½ky dolï¿½ (grounding)
+            // 2) Raycast z v??ky dol? (grounding)
             try
             {
                 Vector3 origin = new Vector3(desired.x, desired.y + 200f, desired.z);
@@ -5541,11 +5541,11 @@ public partial class TravelButtonUI : MonoBehaviour
                 TBLog.Warn("TryFindNearestNavMeshOrGround: ground raycast failed: " + exRay.Message);
             }
 
-            // 3) Konzervativnï¿½ fallback: jen malï¿½ zvednutï¿½ (max 1m). Pokud nic nenalezeno, vrï¿½tï¿½me false.
+            // 3) Konzervativn? fallback: jen mal? zvednut? (max 1m). Pokud nic nenalezeno, vr?t?me false.
             try
             {
                 const float step = 0.25f;
-                const float maxUp = 1.0f; // konzervativnï¿½
+                const float maxUp = 1.0f; // konzervativn?
                 for (float yoff = step; yoff <= maxUp; yoff += step)
                 {
                     var cand = new Vector3(desired.x, desired.y + yoff, desired.z);
@@ -6487,7 +6487,7 @@ public partial class TravelButtonUI : MonoBehaviour
             // If a real close method was used, hope it handled restored state; we still attempt to clear selection and restore cursor.
             if (_tb_menuManagerClosedByMethod)
             {
-                // Clear the flag â€” no other restoration we can do safely
+                // Clear the flag — no other restoration we can do safely
                 _tb_menuManagerClosedByMethod = false;
             }
 

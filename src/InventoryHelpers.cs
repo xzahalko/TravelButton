@@ -1,12 +1,12 @@
-ï»¿using System;
+using System;
 using System.Linq;
 using System.Reflection;
 using UnityEngine;
 
 public static class InventoryHelpers
 {
-    // PokusÃ­ se pÅ™idat poloÅ¾ku do hrÃ¡Äova inventÃ¡Å™e reflexivnÄ›.
-    // VracÃ­ true pokud volÃ¡nÃ­ vypadalo ÃºspÄ›Å¡nÄ›, false jinak.
+    // Pokusí se pøidat poloku do hráèova inventáøe reflexivnì.
+    // Vrací true pokud volání vypadalo úspìšnì, false jinak.
     public static bool TryAddItemToPlayerInventory(int itemId, int amount = 1)
     {
         try
@@ -632,7 +632,7 @@ public static class InventoryHelpers
         return tt == typeof(int) || tt == typeof(uint) || tt == typeof(short) || tt == typeof(long);
     }
 
-    // PokusÃ­ se vytvoÅ™it instanci "Item" typu pro API, pokud existuje ItemDatabase.CreateItem(int id) nebo podobnÃ©.
+    // Pokusí se vytvoøit instanci "Item" typu pro API, pokud existuje ItemDatabase.CreateItem(int id) nebo podobné.
     private static object TryCreateItemObjectById(Type itemType, int itemId)
     {
         try

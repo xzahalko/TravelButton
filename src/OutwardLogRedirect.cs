@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 /// <summary>
 /// Small compatibility redirector: replace direct writes to outward_log.txt

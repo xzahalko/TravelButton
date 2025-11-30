@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -145,7 +145,7 @@ public class CityDiscovery : MonoBehaviour
         }
 
         float bestDist = float.MaxValue;
-        TravelButton.City bestCity = null;
+        City bestCity = null;
         Vector3? bestPos = null;
 
         foreach (var city in cities)
@@ -228,15 +228,15 @@ public class CityDiscovery : MonoBehaviour
 
     // --- helper utilities ---
 
-    private IList<TravelButton.City> GetCitiesList()
+    private IList<City> GetCitiesList()
     {
-        IList<TravelButton.City> cities = null;
+        IList<City> cities = null;
         var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
-        if (citiesField != null) cities = citiesField.GetValue(null) as IList<TravelButton.City>;
+        if (citiesField != null) cities = citiesField.GetValue(null) as IList<City>;
         if (cities == null)
         {
             var prop = typeof(TravelButton).GetProperty("Cities", BindingFlags.Public | BindingFlags.Static);
-            if (prop != null) cities = prop.GetValue(null, null) as IList<TravelButton.City>;
+            if (prop != null) cities = prop.GetValue(null, null) as IList<City>;
         }
         return cities;
     }
@@ -305,7 +305,7 @@ public class CityDiscovery : MonoBehaviour
         return null;
     }
 
-    public Vector3? GetCityPosition(TravelButton.City city)
+    public Vector3? GetCityPosition(City city)
     {
         if (city == null) return null;
         try

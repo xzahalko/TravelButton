@@ -479,16 +479,16 @@ public static class CityMappingHelpers
     {
         try
         {
-            var runtime = TravelButton.Cities ?? new List<TravelButton.City>();
+            var runtime = TravelButton.Cities ?? new List<City>();
 
             // If runtime appears empty, attempt to populate from config defaults (best-effort)
             if ((runtime == null || runtime.Count == 0))
             {
                 TravelButton.InitFromConfig(); // safe to call (it returns quickly if nothing to load)
-                runtime = TravelButton.Cities ?? new List<TravelButton.City>();
+                runtime = TravelButton.Cities ?? new List<City>();
             }
 
-            var lookup = new Dictionary<string, TravelButton.City>(StringComparer.OrdinalIgnoreCase);
+            var lookup = new Dictionary<string, City>(StringComparer.OrdinalIgnoreCase);
             foreach (var c in runtime)
             {
                 if (string.IsNullOrEmpty(c?.name)) continue;
@@ -497,13 +497,13 @@ public static class CityMappingHelpers
 
             try
             {
-                var defaults = TravelButton.Cities ?? new List<TravelButton.City>();
+                var defaults = TravelButton.Cities ?? new List<City>();
                 foreach (var d in defaults)
                 {
                     if (string.IsNullOrEmpty(d?.name)) continue;
                     if (!lookup.TryGetValue(d.name, out var existing))
                     {
-                        var clone = new TravelButton.City(d.name)
+                        var clone = new City(d.name)
                         {
                             coords = d.coords,
                             sceneName = d.sceneName,

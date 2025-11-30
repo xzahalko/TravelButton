@@ -1,4 +1,4 @@
-ï»¿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -11,7 +11,7 @@ using UnityEngine;
 /// - TryRefundPlayerCurrency(amount): best-effort refund using common method/field/property names
 ///
 /// This helper preserves the original reflection-based heuristics used in the project so behavior remains compatible.
-/// Keep it small and conservative â€” it only centralizes the duplicated logic and logs via TravelButtonMod.
+/// Keep it small and conservative — it only centralizes the duplicated logic and logs via TravelButtonMod.
 /// </summary>
 public static class CurrencyHelpers
 {
@@ -292,7 +292,7 @@ public static class CurrencyHelpers
     /// Uses common method names (RemoveMoney, SpendMoney, RemoveSilver, etc.) or direct field/property mutation.
     /// If it finds a candidate and determines funds are insufficient it returns false.
     ///
-    /// NOTE: This version is more conservative than the previous one â€” it verifies effects when method return type is non-boolean.
+    /// NOTE: This version is more conservative than the previous one — it verifies effects when method return type is non-boolean.
     /// </summary>
     // Replace the existing TryDeductPlayerCurrency method with this improved implementation.
     public static bool TryDeductPlayerCurrency(int amount, string currencyKeyword = "silver")

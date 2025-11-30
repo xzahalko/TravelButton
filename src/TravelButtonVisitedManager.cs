@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -206,7 +206,7 @@ public static class TravelButtonVisitedManager
                 var citiesField = typeof(TravelButton).GetField("Cities", BindingFlags.Public | BindingFlags.Static);
                 if (citiesField != null)
                 {
-                    var cities = citiesField.GetValue(null) as IList<TravelButton.City>;
+                    var cities = citiesField.GetValue(null) as IList<City>;
                     if (cities != null)
                     {
                         foreach (var city in cities)
@@ -280,7 +280,7 @@ public static class TravelButtonVisitedManager
                 return;
             }
 
-            var cities = citiesField.GetValue(null) as IList<TravelButton.City>;
+            var cities = citiesField.GetValue(null) as IList<City>;
             if (cities == null)
             {
                 TBLog.Warn("TravelButtonVisitedManager.MergeVisitedFlagsIntoCities: TravelButtonMod.Cities is null.");
