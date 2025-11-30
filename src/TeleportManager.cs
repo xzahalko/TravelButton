@@ -323,6 +323,44 @@ public partial class TeleportManager : MonoBehaviour
             yield break;
         }
 
+        // NEW: Check if we should use transition scene
+        bool useTransitionScene = false;
+        try
+        {
+            if (TravelButtonPlugin.cfgUseTransitionScene != null)
+            {
+                useTransitionScene = TravelButtonPlugin.cfgUseTransitionScene.Value;
+                TBLog.Info($"TeleportManager: cfgUseTransitionScene = {useTransitionScene}");
+            }
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"TeleportManager: failed to read cfgUseTransitionScene: {ex.Message}");
+        }
+
+        // If using transition scene, load it first then load the target scene
+        if (useTransitionScene && !string.Equals(sceneName, "LowMemory_TransitionScene", StringComparison.OrdinalIgnoreCase))
+        {
+            TBLog.Info("TeleportManager: loading transition scene first (LowMemory_TransitionScene)");
+            var swTransition = TBPerf.StartTimer();
+            
+            bool transitionLoadSuccess = false;
+            yield return StartCoroutine(LoadSceneCoroutine("LowMemory_TransitionScene", Vector3.zero, (scene, asyncOp, ok) =>
+            {
+                transitionLoadSuccess = ok;
+            }));
+            
+            TBPerf.Log($"TransitionSceneLoad:{sceneName}", swTransition, $"success={transitionLoadSuccess}");
+
+            if (!transitionLoadSuccess)
+            {
+                TBLog.Warn("TeleportManager: transition scene load failed, proceeding anyway to target scene");
+            }
+
+            // Small delay to let transition scene initialize
+            yield return new WaitForSeconds(0.5f);
+        }
+
         // 1) Load scene (separate coroutine) -> results returned via callback
         var swLoadPhase = TBPerf.StartTimer();
         yield return StartCoroutine(LoadSceneCoroutine(sceneName, destCords, (scene, asyncOp, ok) =>
@@ -474,6 +512,27 @@ public partial class TeleportManager : MonoBehaviour
             TBLog.Warn("TeleportManager: exception while trying to activate loaded scene: " + ex);
         }
 
+        // NEW: Wait for scene readiness before proceeding
+        TBLog.Info($"TeleportManager: waiting for scene '{loadedScene.name}' to be ready...");
+        bool sceneReady = false;
+        yield return TravelButton.WaitForSceneReadiness(
+            loadedScene.name,
+            null, // requiredComponentTypeName - could be "TownController" if known
+            "Environment", // fallback object name to check
+            ready => { sceneReady = ready; },
+            maxWaitSeconds: 8f,
+            pollInterval: 0.5f
+        );
+
+        if (!sceneReady)
+        {
+            TBLog.Warn($"TeleportManager: scene '{loadedScene.name}' readiness timeout - proceeding anyway");
+        }
+        else
+        {
+            TBLog.Info($"TeleportManager: scene '{loadedScene.name}' is ready");
+        }
+
         // 2) Log root objects
         try
         {
@@ -617,6 +676,13 @@ public partial class TeleportManager : MonoBehaviour
         }
 
         TBPerf.Log($"AnchorSearch:{loadedScene.name}", swAnchorSearch, $"candidates={anchorCandidates}, haveTargetPos={haveTargetPos}");
+
+        // NEW: Stabilize scene before placement
+        if (haveTargetPos)
+        {
+            TBLog.Info("Stabilizing scene before teleport placement...");
+            yield return StartCoroutine(StabilizeSceneCoroutine(targetPos));
+        }
 
         // 4) Grounding / navmesh probe
         Vector3 groundedPos = targetPos;
@@ -807,5 +873,23 @@ public partial class TeleportManager : MonoBehaviour
         try { onComplete?.Invoke(teleported); } catch { /* swallow callback exceptions */ }
 
         yield break;
+    }
+
+    private IEnumerator StabilizeSceneCoroutine(Vector3 placementPoint)
+    {
+        try
+        {
+            var summary = SceneStabilizer.StabilizeSceneBeforePlacement(
+                SceneManager.GetActiveScene(), 
+                placementPoint, 
+                20f);
+            TBLog.Info($"Scene stabilization: {summary}");
+        }
+        catch (Exception ex)
+        {
+            TBLog.Warn($"StabilizeSceneBeforePlacement threw: {ex}");
+        }
+        
+        yield return new WaitForSeconds(0.5f); // Allow stabilization effects to settle
     }
 }

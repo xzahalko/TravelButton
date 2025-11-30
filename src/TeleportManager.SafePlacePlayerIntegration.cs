@@ -118,27 +118,15 @@ public static class TeleportManagerSafePlace
         float entryTime = Time.realtimeSinceStartup;
         TBLog.Info($"PlacePlayerUsingSafeRoutine_Internal: Enter (t={entryTime:F3}) requestedTarget={requestedTarget}, preserveRequestedY={preserveRequestedY}, host={(host != null ? host.name : "<null>")}");
 
-        // ---- NEW: small pause before the first enforcement attempt ----
+        // ---- ENABLED: small pause before the first enforcement attempt ----
         // This gives the scene and any TeleportHelpers/Reenable routines a short moment
         // to complete any delayed changes (e.g. reparenting, rigidbody resets) before we
         // set the player's transform for the first time.
 
-        //        const float preEnforcementDelay = 10.0f; // seconds (tuneable)
-        //        TBLog.Info($"TeleportManagerSafePlace: waiting {preEnforcementDelay:F3}s before first enforcement attempt to let scene/physics stabilize");
-        //        yield return new WaitForSecondsRealtime(preEnforcementDelay);
+        const float preEnforcementDelay = 2.0f; // seconds (tuneable - reduced from 10s for better UX)
+        TBLog.Info($"TeleportManagerSafePlace: waiting {preEnforcementDelay:F3}s before first enforcement attempt to let scene/physics stabilize");
+        yield return new WaitForSecondsRealtime(preEnforcementDelay);
 
-        /*
-                if (CoordsConvertor.TryConvertToVector3(requestedTarget, out Vector3 destCords))
-                {
-                    TBLog.Info($"Converted coords -> {destCords}");
-                    PlayerPositionHelpers.MovePlayerTo(destCords, safeTeleportAfter: false);
-                    // use coords
-                }
-                else
-                {
-                    TBLog.Warn("Could not convert coordsVal to Vector3");
-                }
-        */
         if (host == null)
         {
             TBLog.Warn("PlacePlayerUsingSafeRoutine_Internal: host is null; cannot run coroutine.");
