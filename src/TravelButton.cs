@@ -989,11 +989,6 @@ public static class TravelButton
 
                                     // Do NOT overwrite price/enabled/visited here — those should be set by EnsureBepInExConfigBindings which runs after merging.
                                     // However if a mapped city explicitly includes variants/lastKnownVariant and existing lacks them, merge those too:
-                                    if ((existing.variants == null || existing.variants.Length == 0) && mapped.variants != null && mapped.variants.Length > 0)
-                                    {
-                                        existing.variants = mapped.variants;
-                                        TBLog.Info($"MapConfigInstanceToLocal: merged variants for '{existing.name}' (count={mapped.variants.Length})");
-                                    }
 
                                     if (string.IsNullOrEmpty(existing.lastKnownVariant) && !string.IsNullOrEmpty(mapped.lastKnownVariant))
                                     {
@@ -1226,7 +1221,6 @@ public static class TravelButton
                 {
                     if (varVal is string[] sarr && sarr.Length > 0)
                     {
-                        city.variants = sarr;
                         variantsPopulated = true;
                         TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from 'variants' string[] (count={sarr.Length}).");
                     }
@@ -1236,7 +1230,6 @@ public static class TravelButton
                         foreach (var item in vlist) { var ss = SafeGetString(item); if (!string.IsNullOrEmpty(ss)) list.Add(ss); }
                         if (list.Count > 0)
                         {
-                            city.variants = list.ToArray();
                             variantsPopulated = true;
                             TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from 'variants' IList (count={list.Count}).");
                         }
@@ -1246,7 +1239,6 @@ public static class TravelButton
                         var single = SafeGetString(varVal);
                         if (!string.IsNullOrEmpty(single))
                         {
-                            city.variants = new string[] { single };
                             variantsPopulated = true;
                             TBLog.Info($"MapSingleCityFromObject: '{cname}' variants set from single 'variants' value = '{single}'.");
                         }
@@ -1263,9 +1255,8 @@ public static class TravelButton
                     if (!string.IsNullOrEmpty(destroyed)) vt.Add(destroyed);
                     if (vt.Count > 0)
                     {
-                        city.variants = vt.ToArray();
                         variantsPopulated = true;
-                        TBLog.Info($"MapSingleCityFromObject: '{cname}' variants assembled from variantNormalName/variantDestroyedName: [{string.Join(", ", city.variants)}].");
+                        TBLog.Info($"MapSingleCityFromObject: '{cname}' variants assembled from variantNormalName/variantDestroyedName");
                     }
                 }
 
@@ -1306,8 +1297,7 @@ public static class TravelButton
             try
             {
                 string coordsStr = city.coords != null ? string.Join(", ", city.coords) : "null";
-                string variantsStr = city.variants != null ? ("[" + string.Join(", ", city.variants) + "]") : "null";
-                TBLog.Info($"MapSingleCityFromObject: mapped city '{cname}' => scene='{city.sceneName ?? ""}', coords=[{coordsStr}], target='{city.targetGameObjectName ?? ""}', price={(city.price.HasValue ? city.price.Value.ToString() : "null")}, variants={variantsStr}, lastKnownVariant='{city.lastKnownVariant ?? ""}'");
+                TBLog.Info($"MapSingleCityFromObject: mapped city '{cname}' => scene='{city.sceneName ?? ""}', coords=[{coordsStr}], target='{city.targetGameObjectName ?? ""}', price={(city.price.HasValue ? city.price.Value.ToString() : "null")}, lastKnownVariant='{city.lastKnownVariant ?? ""}'");
             }
             catch { /* ignore final logging failures */ }
 
@@ -1723,7 +1713,6 @@ public static class TravelButton
             foreach (var city in TravelButton.Cities ?? Enumerable.Empty<City>())
             {
                 // Ensure runtime objects have non-null fields
-                if (city.variants == null) city.variants = new string[0];
                 if (city.lastKnownVariant == null) city.lastKnownVariant = "";
 
                 jCities.Add(TravelButton.BuildJObjectForCity(city));
@@ -4433,12 +4422,6 @@ public static class TravelButton
             ["visited"] = city.visited
         };
 
-        // variants: always present (default empty array)
-        if (city.variants != null && city.variants.Length > 0)
-            jo["variants"] = new JArray(city.variants);
-        else
-            jo["variants"] = new JArray();
-
         // lastKnownVariant: always present (default empty string)
         jo["lastKnownVariant"] = city.lastKnownVariant ?? "";
 
@@ -4539,17 +4522,6 @@ public static class TravelButton
 
             city.lastKnownVariant = newVariant;
             TBLog.Info($"OnVariantDetectedForCity: '{cityName}' lastKnownVariant set to '{city.lastKnownVariant}' in memory; persisting JSON.");
-
-            // Ensure variants array contains the detected variant if not present
-            if (!string.IsNullOrEmpty(newVariant))
-            {
-                var variants = city.variants ?? new string[0];
-                if (!variants.Contains(newVariant))
-                {
-                    var list = new List<string>(variants) { newVariant };
-                    city.variants = list.ToArray();
-                }
-            }
 
             AppendOrUpdateCityInJsonAndSave(city);
         }

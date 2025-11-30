@@ -834,25 +834,12 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                 // variants: prefer 'variants'; fallback to variantNormalName/variantDestroyedName if present
                 var variantsToken = token["variants"] as JArray;
-                if (variantsToken != null && variantsToken.Count > 0)
-                {
-                    city.variants = variantsToken.Select(v => (string)v).Where(s => !string.IsNullOrEmpty(s)).ToArray();
-                }
-                else
-                {
-                    var normal = token.Value<string>("variantNormalName");
-                    var destroyed = token.Value<string>("variantDestroyedName");
-                    var vt = new List<string>();
-                    if (!string.IsNullOrEmpty(normal)) vt.Add(normal);
-                    if (!string.IsNullOrEmpty(destroyed)) vt.Add(destroyed);
-                    city.variants = vt.ToArray(); // possibly empty
-                }
 
                 // lastKnownVariant (default to empty string to ensure key exists downstream)
                 city.lastKnownVariant = token.Value<string>("lastKnownVariant") ?? "";
 
                 parsed.Add(city);
-                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: parsed city '{name}' (scene='{city.sceneName}', variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant}').");
+                TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: parsed city '{name}' (scene='{city.sceneName}', lastKnownVariant='{city.lastKnownVariant}').");
             }
 
             // Merge parsed JSON entries into existing TravelButton.Cities (do not blindly overwrite)
@@ -916,13 +903,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         {
                             existing.price = p.price;
                             TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged JSON price for '{existing.name}': {p.price}");
-                        }
-
-                        // variants/lastKnown: accept JSON-provided arrays/lastKnown if present (replace only if JSON has content)
-                        if (p.variants != null && p.variants.Length > 0)
-                        {
-                            existing.variants = p.variants;
-                            TBLog.Info($"TryLoadCitiesJsonIntoTravelButtonMod: merged JSON variants for '{existing.name}' (count={p.variants.Length})");
                         }
 
                         if (!string.IsNullOrEmpty(p.lastKnownVariant))
@@ -1186,7 +1166,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         // Start variant detection coroutine if needed (guarded)
                         try
                         {
-                            if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
+                            if (string.IsNullOrEmpty(city.lastKnownVariant))
                             {
                                 var plugin = TravelButtonPlugin.Instance;
                                 if (plugin != null)
@@ -1247,7 +1227,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         // Start variant detection coroutine if needed (guarded)
                         try
                         {
-                            if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
+                            if (string.IsNullOrEmpty(city.lastKnownVariant))
                             {
                                 var plugin = TravelButtonPlugin.Instance;
                                 if (plugin != null)
@@ -1282,7 +1262,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
 
                     try
                     {
-                        if (string.IsNullOrEmpty(city.lastKnownVariant) || (city.variants == null || city.variants.Length == 0))
+                        if (string.IsNullOrEmpty(city.lastKnownVariant))
                         {
                             var plugin = TravelButtonPlugin.Instance;
                             if (plugin != null)
@@ -3170,13 +3150,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
             }
 
             // Continue with persisting finalVariants/finalLast into city and JSON if changed
-            var variantsArray = finalVariants.ToArray();
             bool changed = false;
-            if (!Enumerable.SequenceEqual(city.variants ?? new string[0], variantsArray, StringComparer.OrdinalIgnoreCase))
-            {
-                city.variants = variantsArray;
-                changed = true;
-            }
 
             if ((city.lastKnownVariant ?? "") != (finalLast ?? ""))
             {
@@ -3187,13 +3161,13 @@ public class TravelButtonPlugin : BaseUnityPlugin
             if (changed)
             {
                 var swPersist = TBPerf.StartTimer();
-                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: detected variants for '{city.name}': [{string.Join(", ", city.variants ?? new string[0])}], lastKnownVariant='{city.lastKnownVariant}'");
+                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: detected variants for '{city.name}': lastKnownVariant='{city.lastKnownVariant}'");
                 TravelButton.AppendOrUpdateCityInJsonAndSave(city);
-                TBPerf.Log($"DetectVariants:Persist:{city.name}", swPersist, $"variants={city.variants?.Length ?? 0}");
+                TBPerf.Log($"DetectVariants:Persist:{city.name}", swPersist);
             }
             else
             {
-                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant changes for '{city.name}' (variantsCount={city.variants?.Length ?? 0}, lastKnownVariant='{city.lastKnownVariant ?? ""}').");
+                TBLog.Info($"DetectAndPersistVariantsForCityCoroutine: no variant changes for '{city.name}': lastKnownVariant='{city.lastKnownVariant ?? ""}').");
             }
 
             TBPerf.Log($"DetectVariants:Finalize:{city.name}", swFinalize, $"foundVariants={foundVariants.Count}, finalVariants={finalVariants.Count}, finalLast={(finalLast ?? "<none>")}");
