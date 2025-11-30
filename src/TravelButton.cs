@@ -682,7 +682,7 @@ public class TravelButtonPlugin : BaseUnityPlugin
                                 string cityName = null;
                                 try { cityName = t.GetProperty("name", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.IgnoreCase)?.GetValue(c, null) as string; } catch { }
                                 if (!string.IsNullOrEmpty(cityName) && !tryTokens.Exists(x => string.Equals(x, cityName, StringComparison.OrdinalIgnoreCase)))
-                                    tryTokens.Add(cityName);
+                                    tryTokens.Add(citName);
 
                                 // targetGameObjectName (may contain BGM_TownCierzo(Clone) etc)
                                 string targetName = null;
