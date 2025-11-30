@@ -2,6 +2,7 @@ using NodeCanvas.Tasks.Actions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -492,6 +493,41 @@ public partial class TeleportManager : MonoBehaviour
         TBLog.Info($"TeleportManager: TeleportInLoadedSceneCoroutine starting for scene='{loadedScene.name}' targetGameObjectName='{targetGameObjectName}' haveCoordsHint={haveCoordsHint} coordsHint={coordsHint}");
         var swThis = TBPerf.StartTimer();
 
+        // CRITICAL: Apply scene state setter BEFORE activating scene to fix variant references (Normal vs Destroyed)
+        // This ensures the scene composition (fires, NPCs, etc.) is correct
+        try
+        {
+            TBLog.Info($"TeleportManager: Applying ExtraSceneStateSetter for scene '{loadedScene.name}'");
+            
+            // Extract display name from targetGameObjectName or city name
+            string sceneDisplayName = null;
+            if (!string.IsNullOrEmpty(targetGameObjectName))
+            {
+                sceneDisplayName = targetGameObjectName;
+            }
+            else
+            {
+                // Try to find matching city for this scene
+                try
+                {
+                    var city = TravelButton.Cities?.FirstOrDefault(c => 
+                        string.Equals(c.sceneName, loadedScene.name, StringComparison.OrdinalIgnoreCase));
+                    if (city != null)
+                    {
+                        sceneDisplayName = city.name;
+                    }
+                }
+                catch { }
+            }
+            
+            ExtraSceneStateSetter.Apply(loadedScene, loadedScene.name, sceneDisplayName);
+            TBLog.Info($"TeleportManager: ExtraSceneStateSetter.Apply completed for scene '{loadedScene.name}'");
+        }
+        catch (Exception exSetter)
+        {
+            TBLog.Warn($"TeleportManager: ExtraSceneStateSetter.Apply threw (continuing anyway): {exSetter}");
+        }
+
         // 1) Ensure loaded scene is active
         try
         {
@@ -568,6 +604,7 @@ public partial class TeleportManager : MonoBehaviour
         {
             if (!string.IsNullOrEmpty(targetGameObjectName))
             {
+                // Try active object first (fast path)
                 try
                 {
                     var foundGo = GameObject.Find(targetGameObjectName);
@@ -581,6 +618,64 @@ public partial class TeleportManager : MonoBehaviour
                 }
                 catch { /* swallow */ }
 
+                // NEW: Search ALL objects including inactive using Resources.FindObjectsOfTypeAll
+                if (!haveTargetPos)
+                {
+                    try
+                    {
+                        TBLog.Info($"TeleportManager: searching for inactive objects matching '{targetGameObjectName}'");
+                        var all = Resources.FindObjectsOfTypeAll<GameObject>();
+                        
+                        // Exact name match (prefer objects in valid loaded scenes, not assets)
+                        foreach (var go in all)
+                        {
+                            if (go == null || string.IsNullOrEmpty(go.name)) continue;
+                            
+                            // Filter out UI objects
+                            if (go.GetComponent<RectTransform>() != null) continue;
+                            if (go.GetComponentInParent<Canvas>() != null) continue;
+                            
+                            // Require valid loaded scene (not an asset)
+                            if (!go.scene.IsValid() || !go.scene.isLoaded) continue;
+                            
+                            if (string.Equals(go.name, targetGameObjectName, StringComparison.Ordinal))
+                            {
+                                targetPos = go.transform.position;
+                                haveTargetPos = true;
+                                anchorCandidates++;
+                                TBLog.Info($"TeleportManager: Found target by exact match (including inactive) '{go.name}' in scene '{go.scene.name}' at {targetPos}");
+                                break;
+                            }
+                        }
+                        
+                        // Substring/contains match if exact failed
+                        if (!haveTargetPos)
+                        {
+                            foreach (var go in all)
+                            {
+                                if (go == null || string.IsNullOrEmpty(go.name)) continue;
+                                if (go.GetComponent<RectTransform>() != null) continue;
+                                if (go.GetComponentInParent<Canvas>() != null) continue;
+                                if (!go.scene.IsValid() || !go.scene.isLoaded) continue;
+                                
+                                if (go.name.IndexOf(targetGameObjectName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    targetPos = go.transform.position;
+                                    haveTargetPos = true;
+                                    anchorCandidates++;
+                                    TBLog.Info($"TeleportManager: Found target by substring match '{go.name}' in scene '{go.scene.name}' at {targetPos}");
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception exAll)
+                    {
+                        TBLog.Warn($"TeleportManager: Resources.FindObjectsOfTypeAll search threw: {exAll}");
+                    }
+                }
+
+                // Fallback: search root objects by name
                 if (!haveTargetPos)
                 {
                     try

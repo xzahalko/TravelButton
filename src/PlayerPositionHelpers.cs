@@ -359,8 +359,9 @@ public static class PlayerPositionHelpers
             RaycastHit hit;
             if (Physics.Raycast(rayStart, Vector3.down, out hit, RAYCAST_UP_OFFSET + RAYCAST_MAX_DOWN, ~0, QueryTriggerInteraction.Ignore))
             {
-                // Use hit.point as ground; add small offset to avoid interpenetration
-                finalPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
+                // FIXED: Increase ground clearance from 0.1 to 1.0 to account for CharacterController height
+                // CharacterController typically has height ~2.0 and center at ~1.0, so we need proper clearance
+                finalPos = new Vector3(requestedTarget.x, hit.point.y + 1.0f, requestedTarget.z);
                 groundedViaRaycast = true;
                 TBLog.Info($"PlayerPositionHelpers.FallbackSafePlaceCoroutine: grounded by raycast to {hit.point} => finalPos={finalPos} (collider='{hit.collider?.name}')");
             }
@@ -371,7 +372,7 @@ public static class PlayerPositionHelpers
         }
         catch (Exception ex)
         {
-            TBLog.Warn("PlayerPositionHelpers.FallbackSafePlaceCoroutine: raycast grounding threw: " + ex.ToString());
+            TBLog.Warn($"PlayerPositionHelpers.FallbackSafePlaceCoroutine: raycast threw: {ex.ToString()}");
         }
 
         // 2) If no raycast ground, try NavMesh.SamplePosition near requestedTarget

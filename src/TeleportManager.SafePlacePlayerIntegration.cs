@@ -270,7 +270,9 @@ public static class TeleportManagerSafePlace
             TBLog.Info($"TeleportManagerSafePlace: performing Raycast from {rayStart} down {rayLen}");
             if (Physics.Raycast(rayStart, Vector3.down, out hit, rayLen, ~0, QueryTriggerInteraction.Ignore))
             {
-                groundedPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
+                // FIXED: Increase ground clearance from 0.1 to 1.0 to account for CharacterController height
+                // CharacterController typically has height ~2.0 and center at ~1.0, so we need proper clearance
+                groundedPos = new Vector3(requestedTarget.x, hit.point.y + 1.0f, requestedTarget.z);
                 groundedByRaycast = true;
                 string colliderName = hit.collider != null ? hit.collider.name : "<none>";
                 string colliderTag = hit.collider != null ? hit.collider.tag : "<none>";
@@ -753,7 +755,7 @@ public static class TeleportManagerSafePlace
         // STEP A: Raycast grounding
         Vector3 groundedPos = requestedTarget;
         bool groundedByRaycast = false;
-/*        try
+        try
         {
             const float RAY_UP = 4.0f;
             const float RAY_DOWN = 20.0f;
@@ -763,7 +765,9 @@ public static class TeleportManagerSafePlace
             TBLog.Info($"ComputeSafePlacementCoords: performing Raycast from {rayStart} down {rayLen}");
             if (Physics.Raycast(rayStart, Vector3.down, out hit, rayLen, ~0, QueryTriggerInteraction.Ignore))
             {
-                groundedPos = new Vector3(requestedTarget.x, hit.point.y + 0.1f, requestedTarget.z);
+                // FIXED: Increase ground clearance from 0.1 to 1.0 to account for CharacterController height
+                // CharacterController typically has height ~2.0 and center at ~1.0, so we need proper clearance
+                groundedPos = new Vector3(requestedTarget.x, hit.point.y + 1.0f, requestedTarget.z);
                 groundedByRaycast = true;
                 string colliderName = hit.collider != null ? hit.collider.name : "<none>";
                 TBLog.Info($"ComputeSafePlacementCoords: raycast hit point={hit.point}, normal={hit.normal}, collider='{colliderName}' => groundedPos={groundedPos}");
@@ -777,7 +781,7 @@ public static class TeleportManagerSafePlace
         {
             TBLog.Warn("ComputeSafePlacementCoords: raycast threw: " + ex);
         }
-*/
+
         // STEP B: NavMesh fallback if raycast not used
         if (!groundedByRaycast)
         {
