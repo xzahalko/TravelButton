@@ -22,8 +22,7 @@ public class City
 
     public string sceneName;
     
-    // New fields for multi-variant support
-    public string[] variants;
+    // Field for tracking the last known variant state
     public string lastKnownVariant;
 
     public City(string name)
@@ -33,9 +32,8 @@ public class City
         this.targetGameObjectName = null;
         this.price = null;
         this.enabled = false;
-        bool visited = false; 
+        this.visited = false; 
         this.sceneName = null;
-        this.variants = null;
         this.lastKnownVariant = null;
     }
 

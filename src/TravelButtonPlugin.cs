@@ -3506,7 +3506,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                 {
                     existing.visited = true;
                     // ensure variant keys present in memory before persisting
-                    if (existing.variants == null) existing.variants = new string[0];
                     if (existing.lastKnownVariant == null) existing.lastKnownVariant = "";
                     TravelButton.AppendOrUpdateCityInJsonAndSave(existing);
                 }
@@ -3530,7 +3529,6 @@ public class TravelButtonPlugin : BaseUnityPlugin
                         price = ResolveDefaultCityPrice(newName),
                         enabled = true,
                         visited = true,
-                        variants = new string[0],
                         lastKnownVariant = ""
                     };
 

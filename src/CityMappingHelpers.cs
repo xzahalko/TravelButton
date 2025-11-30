@@ -511,7 +511,6 @@ public static class CityMappingHelpers
                             price = d.price,
                             enabled = d.enabled,
                             visited = d.visited,
-                            variants = d.variants ?? new string[0],
                             lastKnownVariant = d.lastKnownVariant ?? ""
                         };
                         lookup[clone.name] = clone;
@@ -519,7 +518,6 @@ public static class CityMappingHelpers
                     }
                     else
                     {
-                        if (existing.variants == null) existing.variants = d.variants ?? new string[0];
                         if (existing.lastKnownVariant == null) existing.lastKnownVariant = d.lastKnownVariant ?? "";
                         if (existing.sceneName == null) existing.sceneName = d.sceneName;
                         if (existing.targetGameObjectName == null) existing.targetGameObjectName = d.targetGameObjectName;
@@ -535,7 +533,6 @@ public static class CityMappingHelpers
             var final = lookup.Values.ToList();
             foreach (var c in final)
             {
-                if (c.variants == null) c.variants = new string[0];
                 if (c.lastKnownVariant == null) c.lastKnownVariant = "";
             }
 

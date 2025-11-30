@@ -17,8 +17,7 @@ public class JsonCityConfig
     public string desc;
     public bool visited = false;
     
-    // New fields for multi-variant support
-    public string[] variants;
+    // Field for tracking the last known variant state
     public string lastKnownVariant;
 
     public JsonCityConfig() { }
@@ -126,7 +125,6 @@ public class JsonTravelConfig
                             sceneName = TryGetStringFromObject(src, "sceneName") ?? TryGetStringFromObject(src, "scene"),
                             desc = TryGetStringFromObject(src, "desc") ?? TryGetStringFromObject(src, "description"),
                             visited = TryGetBoolFromObject(src, "visited") ?? false,
-                            variants = TryGetStringArrayFromObject(src, "variants"),
                             lastKnownVariant = TryGetStringFromObject(src, "lastKnownVariant")
                         };
                         result.cities.Add(jc);
@@ -156,7 +154,6 @@ public class JsonTravelConfig
                             sceneName = TryGetStringFromObject(item, "sceneName") ?? TryGetStringFromObject(item, "scene"),
                             desc = TryGetStringFromObject(item, "desc") ?? TryGetStringFromObject(item, "description"),
                             visited = TryGetBoolFromObject(item, "visited") ?? false,
-                            variants = TryGetStringArrayFromObject(item, "variants"),
                             lastKnownVariant = TryGetStringFromObject(item, "lastKnownVariant")
                         };
                         result.cities.Add(jc);

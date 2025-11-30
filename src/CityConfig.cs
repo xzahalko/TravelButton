@@ -17,8 +17,7 @@ public class CityConfig
     public string desc;
     public bool visited = false;
     
-    // New fields for multi-variant support
-    public string[] variants;
+    // Field for tracking the last known variant state
     public string lastKnownVariant;
     
     public CityConfig() { }
@@ -207,30 +206,16 @@ public class TravelConfig
             bool? visitedVal = ExtractBool(cityJson, "visited");
             city.visited = visitedVal ?? false;
             
-            // Try to extract variants array if present
-            city.variants = ExtractStringArray(cityJson, "variants");
-            
             // Try to extract lastKnownVariant if present
             city.lastKnownVariant = ExtractString(cityJson, "lastKnownVariant");
             
-            // Backward compatibility: if variants not present but legacy variant fields exist, migrate them
-            if ((city.variants == null || city.variants.Length == 0))
+            // Backward compatibility: if lastKnownVariant not present but legacy variant fields exist, migrate them
+            if (string.IsNullOrEmpty(city.lastKnownVariant))
             {
                 var variantNormal = ExtractString(cityJson, "variantNormalName");
-                var variantDestroyed = ExtractString(cityJson, "variantDestroyedName");
-                
-                if (!string.IsNullOrEmpty(variantNormal) || !string.IsNullOrEmpty(variantDestroyed))
+                if (!string.IsNullOrEmpty(variantNormal))
                 {
-                    var variantsList = new List<string>();
-                    if (!string.IsNullOrEmpty(variantNormal)) variantsList.Add(variantNormal);
-                    if (!string.IsNullOrEmpty(variantDestroyed)) variantsList.Add(variantDestroyed);
-                    city.variants = variantsList.ToArray();
-                    
-                    // If lastKnownVariant not present, default to normal variant
-                    if (string.IsNullOrEmpty(city.lastKnownVariant) && !string.IsNullOrEmpty(variantNormal))
-                    {
-                        city.lastKnownVariant = variantNormal;
-                    }
+                    city.lastKnownVariant = variantNormal;
                 }
             }
 
