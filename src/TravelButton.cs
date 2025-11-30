@@ -740,13 +740,6 @@ public static class TravelButton
         }
     }
 
-    // Simple configurable wrappers to keep compatibility with existing code
-    public class ConfigEntry<T>
-    {
-        public T Value;
-        public ConfigEntry(T v) { Value = v; }
-    }
-
     // Global config entries (accessed as TravelButtonMod.cfgTravelCost.Value in existing UI)
     public static ConfigEntry<int> cfgTravelCost = new ConfigEntry<int>(100);
     public static ConfigEntry<bool> cfgEnableTeleport = new ConfigEntry<bool>(true);
