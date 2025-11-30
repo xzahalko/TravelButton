@@ -610,7 +610,7 @@ public class JsonTravelConfig
         }
         catch { }
 
-        // Fallback to plugin assembly directory
+        // Fallback to plugin assembly directory 
         try
         {
             var asmDir = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
